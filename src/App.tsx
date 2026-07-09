@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 import './Me.css'
+import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 
 type Page = 'home' | 'hall' | 'breed' | 'detail' | 'family' | 'service' | 'me' | 'login' | 'orders' | 'favorites' | 'follows' | 'footprints' | 'addresses' | 'coupons' | 'settings' | 'about' | 'agreement' | 'privacy'
 const dogBreeds = [
@@ -58,9 +59,7 @@ function Detail({go}:{go:(p:Page)=>void}) {
   </div>
 }
 function Parent({title,sex}:{title:string,sex:string}) {return <div className="parent"><img src={petPhoto}/><div><h3>{title} <i>{sex}</i></h3><p>品种：金毛寻回犬<br/>毛色：金黄色<br/>血统：纯种<br/>年龄：3岁　体重：32kg</p></div></div>}
-function Simple({title,text}:{title:string,text:string}) {return <section className="simple"><h1>{title}</h1><p>{text}</p><div className="simple-card">功能内容正在按正式业务数据结构接入</div></section>}
-
-function Me({go}:{go:(p:Page)=>void}) {
+function Me({go,user}:{go:(p:Page)=>void;user:User|null}) {
  const orders=[['待付款','0'],['待确认','1'],['待发货','0'],['待收货','2'],['售后/退款','0']]
  const services=[
   ['♡','我的收藏','收藏的宠物与心愿清单','favorites'],['☆','我的关注','关注的商家与动态','follows'],
@@ -71,7 +70,7 @@ function Me({go}:{go:(p:Page)=>void}) {
  return <div className="me-page">
    <section className="me-hero">
     <div className="me-top"><span>个人中心</span><button onClick={()=>go('settings')}>⚙</button></div>
-    <button className="profile" onClick={()=>go('login')}><div className="avatar">福</div><div><h1>登录 / 注册</h1><p>登录后同步订单、收藏和宠物档案</p></div><b>›</b></button>
+    <button className="profile" onClick={()=>go('login')}><div className="avatar">{user?'宠':'福'}</div><div><h1>{user?.nickname||'登录 / 注册'}</h1><p>{user?(user.phone||'点击绑定手机号'):'登录后同步订单、收藏和宠物档案'}</p></div><b>›</b></button>
     <div className="member-card"><div><small>FUCHONG MEMBER</small><h3>福宠安心会员</h3><p>专属顾问 · 健康档案 · 成长陪伴</p></div><button>了解权益</button></div>
    </section>
    <section className="me-orders"><div className="card-head"><h2>我的订单</h2><button onClick={()=>go('orders')}>全部订单 ›</button></div>
@@ -89,9 +88,13 @@ function SubPage({title,go}:{title:string,go:(p:Page)=>void}) {
 }
 
 export default function App(){
- const [page,setPage]=useState<Page>('home'); const go=(p:Page)=>{setPage(p);scrollTo(0,0)}
+ const [page,setPage]=useState<Page>('home'); const [user,setUser]=useState<User|null>(()=>{try{return JSON.parse(localStorage.getItem('fuchong-user')||'null')}catch{return null}})
+ const go=(p:Page)=>{setPage(p);scrollTo(0,0)};const login=(u:User)=>{setUser(u);localStorage.setItem('fuchong-user',JSON.stringify(u))};const logout=()=>{setUser(null);localStorage.removeItem('fuchong-user')}
  return <main className="phone-shell">{page==='home'&&<Home go={go}/>} {page==='hall'&&<Hall go={go}/>} {page==='breed'&&<Breed go={go}/>} {page==='detail'&&<Detail go={go}/>}
- {page==='family'&&<Simple title="宠物家" text="收藏、关注、到家档案与成长记录"/>}{page==='service'&&<Simple title="专属客服" text="售前咨询、订单服务与售后保障"/>}{page==='me'&&<Me go={go}/>}
- {!['home','hall','breed','detail','family','service','me'].includes(page)&&<SubPage title={({login:'登录 / 注册',orders:'我的订单',favorites:'我的收藏',follows:'我的关注',footprints:'浏览足迹',addresses:'收货地址',coupons:'优惠券',settings:'设置',about:'关于福宠',agreement:'用户协议',privacy:'隐私政策'} as Record<string,string>)[page]} go={go}/>}
+ {page==='family'&&<CollectionPage mode="favorites" back={()=>go('home')}/>} {page==='service'&&<MessagesPage back={()=>go('home')}/>} {page==='me'&&<Me go={go} user={user}/>}
+ {page==='login'&&<LoginPage back={()=>go('me')} user={user} onLogin={login} onLogout={logout}/>} {page==='orders'&&<OrdersPage back={()=>go('me')}/>}
+ {page==='favorites'&&<CollectionPage mode="favorites" back={()=>go('me')}/>} {page==='follows'&&<CollectionPage mode="follows" back={()=>go('me')}/>}
+ {page==='footprints'&&<FootprintsPage back={()=>go('me')}/>} {page==='addresses'&&<AddressesPage back={()=>go('me')}/>} {page==='coupons'&&<CouponsPage back={()=>go('me')}/>}
+ {['settings','about','agreement','privacy'].includes(page)&&<SubPage title={({settings:'设置',about:'关于福宠',agreement:'用户协议',privacy:'隐私政策'} as Record<string,string>)[page]} go={go}/>}
  {!['hall','breed','detail'].includes(page)&&<Nav go={go} page={page}/>}</main>
 }
