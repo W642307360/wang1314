@@ -1,17 +1,13 @@
 import { useState } from 'react'
 import './App.css'
 import './Me.css'
+import './Catalog.css'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
+import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
 
 type Page = 'home' | 'hall' | 'breed' | 'detail' | 'family' | 'service' | 'me' | 'login' | 'orders' | 'favorites' | 'follows' | 'footprints' | 'addresses' | 'coupons' | 'settings' | 'about' | 'agreement' | 'privacy'
-const dogBreeds = [
-  { name:'金毛寻回犬', en:'Golden Retriever', desc:'温顺友善 · 聪明忠诚', img:'https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=90' },
-  { name:'柴犬', en:'Shiba Inu', desc:'独立勇敢 · 干净安静', img:'https://images.unsplash.com/photo-1561037404-61cd46aa615b?auto=format&fit=crop&w=600&q=90' },
-  { name:'边境牧羊犬', en:'Border Collie', desc:'聪颖敏捷 · 活力充沛', img:'https://images.unsplash.com/photo-1503256207526-0d5d80fa2f47?auto=format&fit=crop&w=600&q=90' },
-  { name:'萨摩耶', en:'Samoyed', desc:'微笑天使 · 亲人活泼', img:'https://images.unsplash.com/photo-1529429617124-aee711a7078b?auto=format&fit=crop&w=600&q=90' },
-  { name:'柯基犬', en:'Welsh Corgi', desc:'热情大胆 · 短腿萌趣', img:'https://images.unsplash.com/photo-1546975490-e8b92a360b24?auto=format&fit=crop&w=600&q=90' },
-]
-const petPhoto=dogBreeds[0].img
+const dogBreeds=hallByKey('dogs').breeds.slice(0,5)
+const petPhoto=dogBreeds[0].image
 
 function Back({onClick}:{onClick:()=>void}) { return <button className="back" onClick={onClick}>‹</button> }
 function Nav({go,page}:{go:(p:Page)=>void,page:Page}) {
@@ -19,25 +15,25 @@ function Nav({go,page}:{go:(p:Page)=>void,page:Page}) {
     <button key={p} className={page===p?'active':''} onClick={()=>go(p as Page)}><i>{i}</i><span>{t}</span></button>)}</nav>
 }
 
-function Home({go}:{go:(p:Page)=>void}) {
-  const halls=[['猫猫馆','布偶、英短、缅因等','https://images.unsplash.com/photo-1574158622682-e40e69881006?auto=format&fit=crop&w=700&q=88'],['狗狗馆','金毛、柴犬、柯基等',dogBreeds[0].img],['鸟类馆','鹦鹉、文鸟、金丝雀','https://images.unsplash.com/photo-1552728089-57bdde30beb3?auto=format&fit=crop&w=700&q=88'],['水族馆','观赏鱼与水生萌宠','https://images.unsplash.com/photo-1522069169874-c58ec4b76be5?auto=format&fit=crop&w=700&q=88'],['异宠馆','守宫、蜜袋鼯、龙猫','https://images.unsplash.com/photo-1548767797-d8c844163c4c?auto=format&fit=crop&w=700&q=88'],['更多馆','发现更多生命伙伴','https://images.unsplash.com/photo-1452857297128-d9c29adba80b?auto=format&fit=crop&w=700&q=88']]
+function Home({openHall}:{openHall:(key:HallKey)=>void}) {
   return <><header><div className="brand"><small>FUCHONG PET FAMILY</small><h1>福宠</h1><span>成都⌄</span></div><button className="search">⌕&nbsp; 搜索宠物品种、昵称或商家</button></header>
     <section className="home-title"><small>SELECT YOUR COMPANION</small><h2>选择你的宠物场馆</h2><p>每一种生命，都值得被认真了解</p></section>
-    <div className="hall-list">{halls.map((h,i)=><button key={h[0]} onClick={()=>i===1?go('hall'):undefined}><img src={h[2]} /><div><h3>{h[0]}</h3><p>{h[1]}</p><b>{i===1?'进入场馆':'即将开放'} →</b></div></button>)}</div></>
+    <div className="hall-list">{halls.map(h=><button key={h.key} onClick={()=>openHall(h.key)}><img src={h.hero}/><div><h3>{h.name}</h3><p>{h.subtitle}</p><b>进入场馆 →</b></div></button>)}</div></>
 }
 
-function Hall({go}:{go:(p:Page)=>void}) {
- return <><div className="subhead"><Back onClick={()=>go('home')}/><div><small>PET PAVILION</small><h2>狗狗馆</h2></div><button>⌕</button></div>
-   <section className="hall-hero"><div><small>找到你的忠诚伙伴</small><h2>认识每一个犬种<br/>再做一生的选择</h2><p>收录 68 个犬种 · 326 只在售</p></div></section>
-   <div className="filter"><b>热门犬种</b><span>小型犬</span><span>中型犬</span><span>大型犬</span></div>
-   <section className="breed-grid">{dogBreeds.map((b,i)=><button key={b.name} onClick={()=>go('breed')}><div className="headshot"><img src={b.img}/><span>{i+12}只在售</span></div><h3>{b.name}</h3><small>{b.en}</small><p>{b.desc}</p></button>)}</section></>
+function Hall({go,hallKey,openBreed}:{go:(p:Page)=>void;hallKey:HallKey;openBreed:(b:BreedItem)=>void}) {
+ const hall=hallByKey(hallKey);const [query,setQuery]=useState('');const visible=hall.breeds.filter(b=>b.name.includes(query)||b.en.toLowerCase().includes(query.toLowerCase()))
+ return <><div className="subhead"><Back onClick={()=>go('home')}/><div><small>PET PAVILION</small><h2>{hall.name}</h2></div><button>⌕</button></div>
+   <section className="hall-hero" style={{backgroundImage:`linear-gradient(90deg,#392a1edb,#392a1e20),url(${hall.hero})`}}><div><small>{hall.subtitle}</small><h2>{hall.name}<br/>先了解，再选择</h2><p>收录 {hall.breeds.length} 个品种 · 持续更新</p></div></section>
+   <div className="hall-search"><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={`搜索${hall.name}品种`}/><span>{visible.length} 个结果</span></div>
+   <section className="breed-grid">{visible.map((b,i)=><button key={b.id} onClick={()=>openBreed(b)}><div className="headshot"><img src={b.image}/><span>{i%7+3}只在售</span></div><h3>{b.name}</h3><small>{b.en}</small><p>{b.desc}</p></button>)}</section></>
 }
 
-function Breed({go}:{go:(p:Page)=>void}) {
- const b=dogBreeds[0]
+function Breed({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
+ const b=breed
  return <><div className="subhead"><Back onClick={()=>go('hall')}/><div><small>BREED PROFILE</small><h2>犬种资料</h2></div><button>♡</button></div>
-  <section className="breed-cover"><img src={b.img}/><span>AKC 认证犬种</span></section>
-  <section className="breed-copy"><small>{b.en.toUpperCase()}</small><h1>{b.name}</h1><p>忠诚、温和而聪慧的家庭伙伴。它们热爱人与户外活动，对儿童友善，拥有稳定且包容的性格。</p>
+  <section className="breed-cover"><img src={b.image}/><span>标准品种档案</span></section>
+  <section className="breed-copy"><small>{b.en.toUpperCase()}</small><h1>{b.name}</h1><p>{b.desc}。平台档案包含外形、性格、饲养建议、健康注意事项与专属成长记录。</p>
     <div className="metric"><div><b>大型犬</b><small>体型</small></div><div><b>10–12年</b><small>寿命</small></div><div><b>友善</b><small>性格</small></div><div><b>中等</b><small>饲养难度</small></div></div>
   </section>
   <section className="trait-card"><h3>犬种特征</h3>{[['亲人程度','95%'],['运动需求','85%'],['掉毛程度','70%'],['训练难度','30%']].map(x=><div className="trait" key={x[0]}><span>{x[0]}</span><i><b style={{width:x[1]}}/></i><small>{x[1]}</small></div>)}</section>
@@ -89,8 +85,10 @@ function SubPage({title,go}:{title:string,go:(p:Page)=>void}) {
 
 export default function App(){
  const [page,setPage]=useState<Page>('home'); const [user,setUser]=useState<User|null>(()=>{try{return JSON.parse(localStorage.getItem('fuchong-user')||'null')}catch{return null}})
+ const [hallKey,setHallKey]=useState<HallKey>('dogs');const [breed,setBreed]=useState<BreedItem>(dogBreeds[0])
  const go=(p:Page)=>{setPage(p);scrollTo(0,0)};const login=(u:User)=>{setUser(u);localStorage.setItem('fuchong-user',JSON.stringify(u))};const logout=()=>{setUser(null);localStorage.removeItem('fuchong-user')}
- return <main className="phone-shell">{page==='home'&&<Home go={go}/>} {page==='hall'&&<Hall go={go}/>} {page==='breed'&&<Breed go={go}/>} {page==='detail'&&<Detail go={go}/>}
+ const openHall=(key:HallKey)=>{setHallKey(key);go('hall')};const openBreed=(item:BreedItem)=>{setBreed(item);go('breed')}
+ return <main className="phone-shell">{page==='home'&&<Home openHall={openHall}/>} {page==='hall'&&<Hall go={go} hallKey={hallKey} openBreed={openBreed}/>} {page==='breed'&&<Breed go={go} breed={breed}/>} {page==='detail'&&<Detail go={go}/>}
  {page==='family'&&<CollectionPage mode="favorites" back={()=>go('home')}/>} {page==='service'&&<MessagesPage back={()=>go('home')}/>} {page==='me'&&<Me go={go} user={user}/>}
  {page==='login'&&<LoginPage back={()=>go('me')} user={user} onLogin={login} onLogout={logout}/>} {page==='orders'&&<OrdersPage back={()=>go('me')}/>}
  {page==='favorites'&&<CollectionPage mode="favorites" back={()=>go('me')}/>} {page==='follows'&&<CollectionPage mode="follows" back={()=>go('me')}/>}
