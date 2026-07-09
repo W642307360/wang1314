@@ -449,7 +449,20 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
       go("orders");
     }
   };
-  const toggleFollow=async()=>{const seller="福宠认证宠物馆";await fetch(`http://127.0.0.1:3001/api/follows${following?`?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`:""}`,{method:following?"DELETE":"POST",headers:{"content-type":"application/json"},body:following?undefined:JSON.stringify({user_id:userId,seller_name:seller})}).catch(()=>{});setFollowing(!following)}
+  const toggleFollow = async () => {
+    const seller = "福宠认证宠物馆";
+    await fetch(
+      `http://127.0.0.1:3001/api/follows${following ? `?user_id=${userId}&seller_name=${encodeURIComponent(seller)}` : ""}`,
+      {
+        method: following ? "DELETE" : "POST",
+        headers: { "content-type": "application/json" },
+        body: following
+          ? undefined
+          : JSON.stringify({ user_id: userId, seller_name: seller }),
+      },
+    ).catch(() => {});
+    setFollowing(!following);
+  };
   return (
     <div className="detail">
       <section className="detail-hero">
@@ -593,7 +606,9 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
           <h3>所属商家</h3>
           <b>福宠认证宠物馆　★★★★★</b>
           <p>健康保障 · 售后无忧 · 已售3289+</p>
-          <button onClick={toggleFollow}>{following?"已关注商家":"＋ 关注商家"}</button>
+          <button onClick={toggleFollow}>
+            {following ? "已关注商家" : "＋ 关注商家"}
+          </button>
         </div>
       </section>
       <section className="reviews">

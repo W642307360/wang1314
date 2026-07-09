@@ -262,6 +262,12 @@ function AdminPanel({ token }: { token: string }) {
           <Products
             products={products}
             open={() => setShowForm(true)}
+            token={token}
+            update={(id, patch) =>
+              setProducts((v) =>
+                v.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+              )
+            }
             remove={async (id) => {
               await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
                 method: "DELETE",
@@ -271,12 +277,12 @@ function AdminPanel({ token }: { token: string }) {
             }}
           />
         )}{" "}
-        {tab === "users" && <UsersManager token={token}/>}{" "}
-        {tab === "orders" && <OrdersManager token={token}/>}{" "}
+        {tab === "users" && <UsersManager token={token} />}{" "}
+        {tab === "orders" && <OrdersManager token={token} />}{" "}
         {tab === "transactions" && <Transactions />}
-        {tab === "logistics" && <Logistics token={token}/>}
-        {tab === "afterSales" && <AfterSales token={token}/>}
-        {tab === "content" && <ContentManager token={token}/>}
+        {tab === "logistics" && <Logistics token={token} />}
+        {tab === "afterSales" && <AfterSales token={token} />}
+        {tab === "content" && <ContentManager token={token} />}
         {tab === "feishu" && <FeishuManager token={token} />}
       </main>
       {showForm && (
@@ -484,17 +490,95 @@ function Dashboard() {
     </>
   );
 }
-function Products({ products, open, remove }: { products: any[]; open: () => void; remove: (id: number) => void }) {
+function Products({
+  products,
+  open,
+  remove,
+  update,
+  token,
+}: {
+  products: any[];
+  open: () => void;
+  remove: (id: number) => void;
+  update: (id: number, patch: any) => void;
+  token: string;
+}) {
+  const [selected, setSelected] = useState<number[]>([]);
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  const patch = async (id: number, data: any) => {
+    const r = await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (r.ok) update(id, data);
+  };
+  const edit = async (p: any) => {
+    const price = prompt("修改商品价格", String(p.price));
+    if (price) await patch(p.id, { price: Number(price) });
+  };
+  const sku = async (p: any) => {
+    const name = prompt("SKU 名称", "标准档案");
+    const stock = prompt("库存数量", "1");
+    if (name && stock)
+      await fetch(`http://127.0.0.1:3001/api/admin/pets/${p.id}/skus`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          sku_name: name,
+          price: p.price,
+          stock: Number(stock),
+        }),
+      });
+  };
+  const media = async (p: any, type: "images" | "videos") => {
+    const url = prompt(type === "images" ? "图片地址" : "视频地址");
+    if (url)
+      await fetch(`http://127.0.0.1:3001/api/admin/pets/${p.id}/${type}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ url }),
+      });
+  };
+  const batch = async (status: string) => {
+    await Promise.all(selected.map((id) => patch(id, { status })));
+    setSelected([]);
+  };
+  const bulkImport = async () => {
+    const text = prompt("粘贴商品 JSON 数组");
+    if (!text) return;
+    try {
+      const list = JSON.parse(text);
+      for (const item of list) {
+        await fetch("http://127.0.0.1:3001/api/admin/pets", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(item),
+        });
+      }
+      location.reload();
+    } catch {
+      alert("JSON 格式错误");
+    }
+  };
   return (
     <section className="admin-table">
       <div>
-        <h3>宠物商品列表</h3>
-        <button onClick={open}>＋ 新增宠物</button>
+        <h3>宠物商品管理</h3>
+        <span>
+          <button onClick={bulkImport}>批量上传</button>{" "}
+          <button onClick={() => batch("published")}>批量上架</button>{" "}
+          <button onClick={() => batch("offline")}>批量下架</button>{" "}
+          <button onClick={open}>＋ 新增宠物</button>
+        </span>
       </div>
       <table>
         <thead>
           <tr>
-            {["商品ID", "宠物名称", "品种", "售价", "库存", "状态", "操作"].map(
+            {["选择", "商品ID", "宠物名称", "品种", "售价", "状态", "操作"].map(
               (x) => (
                 <th>{x}</th>
               ),
@@ -503,19 +587,49 @@ function Products({ products, open, remove }: { products: any[]; open: () => voi
         </thead>
         <tbody>
           {products.map((p) => (
-            <tr onDoubleClick={() => confirm("确定删除该商品吗？") && remove(p.id)}>
+            <tr key={p.id}>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(p.id)}
+                  onChange={(e) =>
+                    setSelected((v) =>
+                      e.target.checked
+                        ? [...v, p.id]
+                        : v.filter((id) => id !== p.id),
+                    )
+                  }
+                />
+              </td>
               <td>{p.id}</td>
               <td>
                 <b>{p.name}</b>
               </td>
               <td>{p.breed}</td>
               <td>¥{p.price}</td>
-              <td>{p.stock}</td>
               <td>
                 <span>{p.status}</span>
               </td>
               <td>
-                <button>编辑</button> <button>更多</button>
+                <button onClick={() => edit(p)}>编辑价格</button>
+                <button
+                  onClick={() =>
+                    patch(p.id, {
+                      status:
+                        p.status === "published" ? "offline" : "published",
+                    })
+                  }
+                >
+                  {p.status === "published" ? "下架" : "上架"}
+                </button>
+                <button onClick={() => sku(p)}>SKU/库存</button>
+                <button onClick={() => media(p, "images")}>图片</button>
+                <button onClick={() => media(p, "videos")}>视频</button>
+                <button
+                  onClick={() => confirm("确定删除该商品吗？") && remove(p.id)}
+                >
+                  删除
+                </button>
               </td>
             </tr>
           ))}
@@ -592,27 +706,490 @@ function Transactions() {
   );
 }
 
-function UsersManager({token}:{token:string}){const [users,setUsers]=useState<any[]>([]),[detail,setDetail]=useState<any>(null);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/users",{headers}).then(r=>r.json()).then(setUsers)},[]);const open=async(id:number)=>setDetail(await fetch(`http://127.0.0.1:3001/api/admin/users/${id}`,{headers}).then(r=>r.json()));return <section className="admin-table"><div><h3>用户管理</h3></div><table><thead><tr><th>用户</th><th>手机号</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody>{users.map(u=><tr key={u.id}><td>{u.nickname}</td><td>{u.phone||"未绑定"}</td><td>{u.status}</td><td>{u.created_at}</td><td><button onClick={()=>open(u.id)}>查看详情</button></td></tr>)}</tbody></table>{detail&&<div className="user-detail"><h3>{detail.nickname}</h3><p>订单 {detail.orders.length} · 收藏 {detail.favorites.length} · 足迹 {detail.footprints.length} · 地址 {detail.addresses.length}</p><button onClick={()=>setDetail(null)}>关闭</button></div>}</section>}
-function OrdersManager({token}:{token:string}){const [orders,setOrders]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/orders",{headers}).then(r=>r.json()).then(setOrders)},[]);return <section className="admin-table"><div><h3>订单管理</h3></div><table><thead><tr><th>订单号</th><th>买家</th><th>金额</th><th>支付</th><th>状态</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{o.order_no}</td><td>{o.nickname} {o.phone}</td><td>¥{o.total_amount}</td><td>{o.payment_status}</td><td>{o.status}</td></tr>)}</tbody></table></section>}
-function Logistics({token}:{token:string}) {
-  const [orders,setOrders]=useState<any[]>([]);const [company,setCompany]=useState("");const [tracking,setTracking]=useState("");const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/orders",{headers}).then(r=>r.json()).then(setOrders)},[])
-  const update=async(id:number)=>{await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}/logistics`,{method:"PUT",headers,body:JSON.stringify({company,tracking_no:tracking,status:"shipped",progress:[{time:new Date().toISOString(),text:"已发货"}]})});alert("物流已更新")}
-  return <section className="admin-table"><div><h3>物流管理</h3></div><div className="feishu-form"><input value={company} onChange={e=>setCompany(e.target.value)} placeholder="物流公司"/><input value={tracking} onChange={e=>setTracking(e.target.value)} placeholder="物流单号"/></div><table><thead><tr><th>订单号</th><th>买家</th><th>订单状态</th><th>操作</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{o.order_no}</td><td>{o.nickname} {o.phone}</td><td>{o.status}</td><td><button onClick={()=>update(o.id)}>更新并发货</button></td></tr>)}</tbody></table></section>;
+function UsersManager({ token }: { token: string }) {
+  const [users, setUsers] = useState<any[]>([]),
+    [detail, setDetail] = useState<any>(null);
+  const headers = { authorization: `Bearer ${token}` };
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/users", { headers })
+      .then((r) => r.json())
+      .then(setUsers);
+  }, []);
+  const open = async (id: number) =>
+    setDetail(
+      await fetch(`http://127.0.0.1:3001/api/admin/users/${id}`, {
+        headers,
+      }).then((r) => r.json()),
+    );
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>用户管理</h3>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>手机号</th>
+            <th>状态</th>
+            <th>注册时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {users.map((u) => (
+            <tr key={u.id}>
+              <td>{u.nickname}</td>
+              <td>{u.phone || "未绑定"}</td>
+              <td>{u.status}</td>
+              <td>{u.created_at}</td>
+              <td>
+                <button onClick={() => open(u.id)}>查看详情</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {detail && (
+        <div className="user-detail">
+          <h3>{detail.nickname}</h3>
+          <p>
+            订单 {detail.orders.length} · 收藏 {detail.favorites.length} · 足迹{" "}
+            {detail.footprints.length} · 地址 {detail.addresses.length}
+          </p>
+          <button onClick={() => setDetail(null)}>关闭</button>
+        </div>
+      )}
+    </section>
+  );
 }
-function AfterSales({token}:{token:string}) {
-  const [items,setItems]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};const load=()=>Promise.all(["complaints","after-sales"].map(x=>fetch(`http://127.0.0.1:3001/api/admin/${x}`,{headers}).then(r=>r.json()))).then(([a,b])=>setItems([...a.map((x:any)=>({...x,kind:"投诉"})),...b.map((x:any)=>({...x,kind:"售后"}))]));useEffect(()=>{void load()},[])
-  return <section className="admin-table"><div><h3>客诉与售后</h3></div><table><thead><tr><th>类型</th><th>关联订单</th><th>原因/内容</th><th>状态</th></tr></thead><tbody>{items.map(x=><tr key={`${x.kind}-${x.id}`}><td>{x.kind}</td><td>{x.order_id}</td><td>{x.reason||x.content}</td><td>{x.status}</td></tr>)}</tbody></table></section>;
+function OrdersManager({ token }: { token: string }) {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [detail, setDetail] = useState<any>(null);
+  const headers = { authorization: `Bearer ${token}` };
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
+      .then((r) => r.json())
+      .then(setOrders);
+  }, []);
+  const update = async (id: number, status: string) => {
+    await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
+      method: "PATCH",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    setOrders((v) => v.map((o) => (o.id === id ? { ...o, status } : o)));
+  };
+  const open = async (id: number) =>
+    setDetail(
+      await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
+        headers,
+      }).then((r) => r.json()),
+    );
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>订单管理</h3>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>订单号</th>
+            <th>买家</th>
+            <th>金额</th>
+            <th>支付</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((o) => (
+            <tr key={o.id}>
+              <td>{o.order_no}</td>
+              <td>
+                {o.nickname} {o.phone}
+              </td>
+              <td>¥{o.total_amount}</td>
+              <td>{o.payment_status}</td>
+              <td>{o.status}</td>
+              <td>
+                <button onClick={() => open(o.id)}>详情</button>
+                <button onClick={() => update(o.id, "pending_ship")}>
+                  确认付款
+                </button>
+                <button onClick={() => update(o.id, "completed")}>完成</button>
+                <button
+                  onClick={() =>
+                    alert(`联系买家：${o.phone || "未绑定手机号"}`)
+                  }
+                >
+                  联系买家
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {detail && (
+        <div className="user-detail">
+          <h3>订单 {detail.order_no}</h3>
+          <p>
+            买家：{detail.nickname} {detail.phone}
+          </p>
+          <p>
+            商品项目：{detail.items?.length || 0} · 支付：
+            {detail.payment_status} · 物流：
+            {detail.logistics?.status || "待发货"}
+          </p>
+          <button onClick={() => setDetail(null)}>关闭详情</button>
+        </div>
+      )}
+    </section>
+  );
 }
-function ContentManager({token}:{token:string}) {
-  const [banners,setBanners]=useState<any[]>([]),[categories,setCategories]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/banners",{headers}).then(r=>r.json()).then(setBanners);fetch("http://127.0.0.1:3001/api/admin/categories",{headers}).then(r=>r.json()).then(setCategories)},[])
-  return <section className="admin-table"><div><h3>首页内容管理</h3></div><table><thead><tr><th>类型</th><th>标题</th><th>排序</th><th>状态</th></tr></thead><tbody>{banners.map(x=><tr key={`b-${x.id}`}><td>Banner</td><td>{x.title}</td><td>{x.sort_order}</td><td>{x.status}</td></tr>)}{categories.map(x=><tr key={`c-${x.id}`}><td>分类</td><td>{x.name}</td><td>{x.sort_order}</td><td>{x.status}</td></tr>)}</tbody></table></section>;
+function Logistics({ token }: { token: string }) {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [company, setCompany] = useState("");
+  const [tracking, setTracking] = useState("");
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
+      .then((r) => r.json())
+      .then(setOrders);
+  }, []);
+  const update = async (id: number) => {
+    await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}/logistics`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        company,
+        tracking_no: tracking,
+        status: "shipped",
+        progress: [{ time: new Date().toISOString(), text: "已发货" }],
+      }),
+    });
+    alert("物流已更新");
+  };
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>物流管理</h3>
+      </div>
+      <div className="feishu-form">
+        <input
+          value={company}
+          onChange={(e) => setCompany(e.target.value)}
+          placeholder="物流公司"
+        />
+        <input
+          value={tracking}
+          onChange={(e) => setTracking(e.target.value)}
+          placeholder="物流单号"
+        />
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>订单号</th>
+            <th>买家</th>
+            <th>订单状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((o) => (
+            <tr key={o.id}>
+              <td>{o.order_no}</td>
+              <td>
+                {o.nickname} {o.phone}
+              </td>
+              <td>{o.status}</td>
+              <td>
+                <button onClick={() => update(o.id)}>更新并发货</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+function AfterSales({ token }: { token: string }) {
+  const [items, setItems] = useState<any[]>([]);
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  const load = () =>
+    Promise.all(
+      ["complaints", "after-sales"].map((x) =>
+        fetch(`http://127.0.0.1:3001/api/admin/${x}`, { headers }).then((r) =>
+          r.json(),
+        ),
+      ),
+    ).then(([a, b]) =>
+      setItems([
+        ...a.map((x: any) => ({ ...x, kind: "投诉" })),
+        ...b.map((x: any) => ({ ...x, kind: "售后" })),
+      ]),
+    );
+  useEffect(() => {
+    void load();
+  }, []);
+  const resolve = async (x: any) => {
+    const result = prompt(
+      x.kind === "投诉" ? "回复客户" : "填写处理结果",
+      "已处理完成",
+    );
+    if (!result) return;
+    const resource = x.kind === "投诉" ? "complaints" : "after-sales";
+    await fetch(`http://127.0.0.1:3001/api/admin/${resource}/${x.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify(
+        x.kind === "投诉"
+          ? { reply: result, status: "completed" }
+          : { result, status: "completed" },
+      ),
+    });
+    load();
+  };
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>客诉与售后</h3>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>关联订单</th>
+            <th>原因/内容</th>
+            <th>状态</th>
+            <th>处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((x) => (
+            <tr key={`${x.kind}-${x.id}`}>
+              <td>{x.kind}</td>
+              <td>{x.order_id}</td>
+              <td>{x.reason || x.content}</td>
+              <td>{x.status}</td>
+              <td>
+                <button onClick={() => resolve(x)}>回复并完成</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+function ContentManager({ token }: { token: string }) {
+  const [banners, setBanners] = useState<any[]>([]),
+    [categories, setCategories] = useState<any[]>([]);
+  const [bannerTitle, setBannerTitle] = useState("");
+  const [bannerImage, setBannerImage] = useState("");
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryImage, setCategoryImage] = useState("");
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  const load = () => {
+    fetch("http://127.0.0.1:3001/api/admin/banners", { headers })
+      .then((r) => r.json())
+      .then(setBanners);
+    fetch("http://127.0.0.1:3001/api/admin/categories", { headers })
+      .then((r) => r.json())
+      .then(setCategories);
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const addBanner = async () => {
+    if (!bannerTitle || !bannerImage) return alert("请填写 Banner 标题和图片");
+    await fetch("http://127.0.0.1:3001/api/admin/banners", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: bannerTitle,
+        image: bannerImage,
+        link: "#",
+        sort_order: banners.length + 1,
+        status: "active",
+      }),
+    });
+    setBannerTitle("");
+    setBannerImage("");
+    load();
+  };
+  const addCategory = async () => {
+    if (!categoryName) return alert("请填写分类名称");
+    await fetch("http://127.0.0.1:3001/api/admin/categories", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name: categoryName,
+        image: categoryImage,
+        sort_order: categories.length + 1,
+        status: "active",
+      }),
+    });
+    setCategoryName("");
+    setCategoryImage("");
+    load();
+  };
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>首页内容管理</h3>
+      </div>
+      <div className="feishu-form">
+        <input
+          value={bannerTitle}
+          onChange={(e) => setBannerTitle(e.target.value)}
+          placeholder="Banner 标题"
+        />
+        <input
+          value={bannerImage}
+          onChange={(e) => setBannerImage(e.target.value)}
+          placeholder="Banner 图片地址"
+        />
+        <button onClick={addBanner}>新增 Banner</button>
+      </div>
+      <div className="feishu-form">
+        <input
+          value={categoryName}
+          onChange={(e) => setCategoryName(e.target.value)}
+          placeholder="分类名称"
+        />
+        <input
+          value={categoryImage}
+          onChange={(e) => setCategoryImage(e.target.value)}
+          placeholder="分类图片地址"
+        />
+        <button onClick={addCategory}>新增分类</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>标题</th>
+            <th>排序</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {banners.map((x) => (
+            <tr key={`b-${x.id}`}>
+              <td>Banner</td>
+              <td>{x.title}</td>
+              <td>{x.sort_order}</td>
+              <td>{x.status}</td>
+            </tr>
+          ))}
+          {categories.map((x) => (
+            <tr key={`c-${x.id}`}>
+              <td>分类</td>
+              <td>{x.name}</td>
+              <td>{x.sort_order}</td>
+              <td>{x.status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
 }
 
-function FeishuManager({token}:{token:string}){
-  const [configs,setConfigs]=useState<any[]>([]);const [name,setName]=useState("");const [url,setUrl]=useState("");const headers={authorization:`Bearer ${token}`,"content-type":"application/json"}
-  const load=()=>fetch("http://127.0.0.1:3001/api/admin/feishu/configs",{headers}).then(r=>r.json()).then(setConfigs)
-  useEffect(()=>{void load()},[])
-  const save=async()=>{await fetch("http://127.0.0.1:3001/api/admin/feishu/configs",{method:"POST",headers,body:JSON.stringify({name,document_url:url,field_mapping:{name:"宠物名称",breed:"品种",price:"价格",images:"图片",videos:"视频"}})});setName("");setUrl("");load()}
-  const sync=async(id:number)=>{await fetch("http://127.0.0.1:3001/api/admin/feishu/sync",{method:"POST",headers,body:JSON.stringify({config_id:id,mode:"incremental"})});alert("同步任务已进入队列")}
-  return <section className="admin-table"><div><h3>飞书数据源</h3></div><div className="feishu-form"><input value={name} onChange={e=>setName(e.target.value)} placeholder="数据源名称"/><input value={url} onChange={e=>setUrl(e.target.value)} placeholder="飞书多维表格链接"/><button onClick={save}>保存连接</button></div><table><thead><tr><th>名称</th><th>文档链接</th><th>字段映射</th><th>操作</th></tr></thead><tbody>{configs.map(c=><tr key={c.id}><td>{c.name}</td><td>{c.document_url}</td><td>名称、品种、价格、媒体</td><td><button onClick={()=>sync(c.id)}>增量同步</button></td></tr>)}</tbody></table></section>
+function FeishuManager({ token }: { token: string }) {
+  const [configs, setConfigs] = useState<any[]>([]);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  const load = () =>
+    fetch("http://127.0.0.1:3001/api/admin/feishu/configs", { headers })
+      .then((r) => r.json())
+      .then(setConfigs);
+  useEffect(() => {
+    void load();
+  }, []);
+  const save = async () => {
+    await fetch("http://127.0.0.1:3001/api/admin/feishu/configs", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        name,
+        document_url: url,
+        field_mapping: {
+          name: "宠物名称",
+          breed: "品种",
+          price: "价格",
+          images: "图片",
+          videos: "视频",
+        },
+      }),
+    });
+    setName("");
+    setUrl("");
+    load();
+  };
+  const sync = async (id: number) => {
+    await fetch("http://127.0.0.1:3001/api/admin/feishu/sync", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ config_id: id, mode: "incremental" }),
+    });
+    alert("同步任务已进入队列");
+  };
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>飞书数据源</h3>
+      </div>
+      <div className="feishu-form">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="数据源名称"
+        />
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="飞书多维表格链接"
+        />
+        <button onClick={save}>保存连接</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>文档链接</th>
+            <th>字段映射</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {configs.map((c) => (
+            <tr key={c.id}>
+              <td>{c.name}</td>
+              <td>{c.document_url}</td>
+              <td>名称、品种、价格、媒体</td>
+              <td>
+                <button onClick={() => sync(c.id)}>增量同步</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
 }

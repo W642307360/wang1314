@@ -157,8 +157,15 @@ createServer(async (req, res) => {
         res,
         200,
         rows(
-          "SELECT * FROM pets WHERE status=? AND (name LIKE ? OR breed LIKE ? OR description LIKE ?) ORDER BY id DESC LIMIT 100",
+          `SELECT p.*,c.name AS category_name
+           FROM pets p
+           LEFT JOIN categories c ON c.id=p.category_id
+           WHERE p.status=?
+             AND (p.name LIKE ? OR p.breed LIKE ? OR p.description LIKE ? OR c.name LIKE ?)
+           ORDER BY p.id DESC
+           LIMIT 100`,
           status,
+          q,
           q,
           q,
           q,
@@ -202,7 +209,24 @@ createServer(async (req, res) => {
     }
     if (petMatch && method === "PATCH") {
       const d = await body(req),
-        allowed = ["name", "breed", "price", "status", "stock", "description"],
+        allowed = [
+          "name",
+          "category_id",
+          "breed",
+          "gender",
+          "age_months",
+          "color",
+          "body_type",
+          "personality",
+          "health_status",
+          "vaccine_record",
+          "father_info",
+          "mother_info",
+          "description",
+          "price",
+          "seller_name",
+          "status",
+        ],
         sets = allowed.filter((k) => d[k] !== undefined);
       if (sets.length)
         db.prepare(
@@ -429,9 +453,9 @@ createServer(async (req, res) => {
           d.user_id || 1,
           d.name,
           d.phone,
-          d.province??null,
-          d.city??null,
-          d.district??null,
+          d.province ?? null,
+          d.city ?? null,
+          d.district ?? null,
           d.detail,
           d.is_default ? 1 : 0,
         );
@@ -483,8 +507,9 @@ createServer(async (req, res) => {
     if (mediaRoute && method === "POST") {
       const d = await body(req),
         petId = Number(mediaRoute[1]);
-      if(!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))return json(res,404,{message:"宠物不存在，不能关联媒体"});
-      if(!d.url)return json(res,400,{message:"媒体地址不能为空"});
+      if (!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))
+        return json(res, 404, { message: "宠物不存在，不能关联媒体" });
+      if (!d.url) return json(res, 400, { message: "媒体地址不能为空" });
       if (mediaRoute[2] === "images") {
         const r = db
           .prepare(
