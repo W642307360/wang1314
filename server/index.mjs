@@ -134,6 +134,26 @@ const petDetail = (id) => {
     inventory: rows("SELECT * FROM inventory WHERE pet_id=?", id),
   };
 };
+const aiReply = (text, pet) => {
+  const q = String(text || "");
+  if (q.includes("价格") || q.includes("多少钱"))
+    return pet
+      ? `${pet.name}当前展示价为 ¥${pet.price}，下单后会进入平台担保流程。`
+      : "您可以在商品详情页查看实时价格，也可以发给我具体宠物名称。";
+  if (q.includes("健康") || q.includes("疫苗"))
+    return pet
+      ? `${pet.name}健康状态：${pet.health_status || "健康"}；疫苗记录：${pet.vaccine_record || "待商家补充"}。`
+      : "平台商品会展示健康状态、疫苗记录和售后保障。";
+  if (q.includes("品种"))
+    return pet
+      ? `这只宠物品种是${pet.breed}，详情页包含品种特征、成长记录和起源资料。`
+      : "您可以从场馆进入具体品种页，我会根据商品资料回答。";
+  if (q.includes("人工"))
+    return "我已经为您准备转人工入口，点击“转人工客服”后后台会进入人工队列。";
+  return pet
+    ? `关于 ${pet.name}（${pet.breed}），我可以帮您查询价格、健康、疫苗、库存和购买流程。`
+    : "您好，我是福宠 AI 客服，可以咨询商品、订单、物流、售后，也可以转人工。";
+};
 const logAdmin = (admin, req, action, resource, resourceId, detail = {}) => {
   if (!admin || !admin.sub) return;
   db.prepare(
@@ -294,6 +314,63 @@ createServer(async (req, res) => {
         token,
         userId: visitor.user_id,
         visitorId: visitor.id,
+      });
+    }
+    if (path === "/api/users/login" && method === "POST") {
+      const d = await body(req);
+      const account =
+        d.account ||
+        d.phone ||
+        d.openid ||
+        `mock:${randomBytes(8).toString("hex")}`;
+      let user = db
+        .prepare(
+          "SELECT * FROM users WHERE account=? OR phone=? OR openid=? OR wechat_openid=? LIMIT 1",
+        )
+        .get(account, d.phone || "", d.openid || "", d.openid || "");
+      if (user) {
+        db.prepare(
+          "UPDATE users SET account=COALESCE(?,account),phone=COALESCE(?,phone),openid=COALESCE(?,openid),wechat_openid=COALESCE(?,wechat_openid),nickname=COALESCE(?,nickname),avatar=COALESCE(?,avatar),last_login_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(
+          account,
+          d.phone || null,
+          d.openid || null,
+          d.openid || null,
+          d.nickname || null,
+          d.avatar || null,
+          user.id,
+        );
+      } else {
+        const r = db
+          .prepare(
+            "INSERT INTO users(account,openid,wechat_openid,nickname,avatar,phone,status,last_login_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+          )
+          .run(
+            account,
+            d.openid || null,
+            d.openid || null,
+            d.nickname || "福宠新朋友",
+            d.avatar || null,
+            d.phone || null,
+            "active",
+          );
+        user = db
+          .prepare("SELECT * FROM users WHERE id=?")
+          .get(r.lastInsertRowid);
+      }
+      db.prepare(
+        "INSERT INTO user_login_logs(user_id,login_type,ip,user_agent) VALUES(?,?,?,?)",
+      ).run(
+        user.id,
+        d.login_type || "mock_wechat",
+        req.socket.remoteAddress || "",
+        req.headers["user-agent"] || "",
+      );
+      return json(res, 200, {
+        id: user.id,
+        nickname: d.nickname || user.nickname,
+        avatar: d.avatar || user.avatar,
+        phone: d.phone || user.phone || "",
       });
     }
     if (path === "/api/admin/login" && method === "POST") {
@@ -587,35 +664,121 @@ createServer(async (req, res) => {
         ),
       );
     }
-    if (path === "/api/messages" && method === "GET")
+    if (path === "/api/messages" && method === "GET") {
+      const sessionId = url.searchParams.get("session_id");
+      return json(
+        res,
+        200,
+        sessionId
+          ? rows(
+              "SELECT * FROM messages WHERE session_id=? ORDER BY id",
+              Number(sessionId),
+            )
+          : rows(
+              "SELECT * FROM messages WHERE user_id=? ORDER BY id",
+              Number(url.searchParams.get("user_id") || 1),
+            ),
+      );
+    }
+    if (path === "/api/messages" && method === "POST") {
+      const d = await body(req);
+      const userId = Number(d.user_id || 1);
+      const pet = d.product_id ? petDetail(Number(d.product_id)) : null;
+      let sessionId = Number(d.session_id || 0);
+      if (!sessionId) {
+        const existing = db
+          .prepare(
+            "SELECT * FROM customer_service_sessions WHERE user_id=? AND COALESCE(product_id,0)=COALESCE(?,0) AND status IN ('ai','human_pending','human') ORDER BY id DESC LIMIT 1",
+          )
+          .get(userId, d.product_id || null);
+        if (existing) sessionId = existing.id;
+        else {
+          const s = db
+            .prepare(
+              "INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status) VALUES(?,?,?,?,?,?)",
+            )
+            .run(
+              userId,
+              d.product_id || null,
+              d.product_name || pet?.name || null,
+              d.seller_name || pet?.seller_name || "福宠认证宠物馆",
+              d.source || "message_center",
+              "ai",
+            );
+          sessionId = s.lastInsertRowid;
+        }
+      }
+      const r = db
+        .prepare(
+          "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status) VALUES(?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          userId,
+          d.sender || "user",
+          d.type || "service",
+          d.content,
+          sessionId,
+          d.product_id || null,
+          d.product_name || pet?.name || null,
+          d.seller_name || pet?.seller_name || "福宠认证宠物馆",
+          "sent",
+        );
+      const reply = aiReply(d.content, pet);
+      db.prepare(
+        "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status) VALUES(?,?,?,?,?,?,?,?,?)",
+      ).run(
+        userId,
+        "service",
+        "service",
+        reply,
+        sessionId,
+        d.product_id || null,
+        d.product_name || pet?.name || null,
+        d.seller_name || pet?.seller_name || "福宠认证宠物馆",
+        "sent",
+      );
+      db.prepare(
+        "UPDATE customer_service_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(sessionId);
+      return json(res, 201, {
+        id: r.lastInsertRowid,
+        session_id: sessionId,
+        reply,
+      });
+    }
+    const serviceSession = path.match(
+      /^\/api\/customer-service\/sessions\/(\d+)\/handoff$/,
+    );
+    if (serviceSession && method === "POST") {
+      db.prepare(
+        "UPDATE customer_service_sessions SET status='human_pending',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(Number(serviceSession[1]));
+      return json(res, 200, { ok: true, status: "human_pending" });
+    }
+    if (path === "/api/admin/customer-service/sessions" && method === "GET")
       return json(
         res,
         200,
         rows(
-          "SELECT * FROM messages WHERE user_id=? ORDER BY id",
-          Number(url.searchParams.get("user_id") || 1),
+          `SELECT s.*,u.nickname,u.phone
+           FROM customer_service_sessions s
+           JOIN users u ON u.id=s.user_id
+           ORDER BY s.updated_at DESC LIMIT 200`,
         ),
       );
-    if (path === "/api/messages" && method === "POST") {
-      const d = await body(req);
-      const r = db
-        .prepare("INSERT INTO messages(user_id,sender,content) VALUES(?,?,?)")
-        .run(d.user_id || 1, d.sender || "user", d.content);
-      db.prepare(
-        "INSERT INTO messages(user_id,sender,content) VALUES(?,?,?)",
-      ).run(
-        d.user_id || 1,
-        "service",
-        "您好，专属客服已收到消息，将尽快为您处理。",
-      );
-      return json(res, 201, { id: r.lastInsertRowid });
-    }
     if (path === "/api/favorites" && method === "GET")
       return json(
         res,
         200,
         rows(
-          "SELECT f.*,p.name,p.breed,p.price FROM favorites f JOIN pets p ON p.id=f.pet_id WHERE f.user_id=?",
+          `SELECT f.*,p.name,p.breed,p.price,p.gender,p.age_months,p.color,p.health_status,p.seller_name,
+                  COALESCE(p.thumbnail_url,p.highres_url,pi.thumbnail_url,pi.url) AS image
+           FROM favorites f
+           JOIN pets p ON p.id=f.pet_id
+           LEFT JOIN pet_images pi ON pi.pet_id=p.id
+           WHERE f.user_id=?
+           GROUP BY f.id
+           ORDER BY f.created_at DESC`,
           Number(url.searchParams.get("user_id") || 1),
         ),
       );
@@ -844,6 +1007,14 @@ createServer(async (req, res) => {
               favorites: rows("SELECT * FROM favorites WHERE user_id=?", id),
               footprints: rows("SELECT * FROM footprints WHERE user_id=?", id),
               addresses: rows("SELECT * FROM addresses WHERE user_id=?", id),
+              loginLogs: rows(
+                "SELECT * FROM user_login_logs WHERE user_id=? ORDER BY id DESC LIMIT 20",
+                id,
+              ),
+              serviceSessions: rows(
+                "SELECT * FROM customer_service_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 20",
+                id,
+              ),
             }
           : { message: "用户不存在" },
       );
@@ -895,15 +1066,17 @@ createServer(async (req, res) => {
       const d = await body(req);
       const r = db
         .prepare(
-          "INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status) VALUES(?,?,?,?,?,?)",
+          "INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status,app_id,base_url) VALUES(?,?,?,?,?,?,?,?)",
         )
         .run(
           d.name,
           d.document_url,
           d.app_token ?? null,
-          d.table_id ?? null,
+          d.table_id ?? "tblUaCqyE3xkk1Bj",
           JSON.stringify(d.field_mapping || {}),
           d.status || "active",
+          d.app_id ?? "cli_a902ca6a2cb85cc0",
+          d.base_url ?? d.document_url ?? null,
         );
       return json(res, 201, { id: r.lastInsertRowid });
     }

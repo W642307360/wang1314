@@ -1,0 +1,15 @@
+.pet-skeleton {
+  min-height: 220px;
+  border: 0;
+  border-radius: 18px;
+  background: linear-gradient(100deg, #fff 10%, #f0ebe4 35%, #fff 60%);
+  background-size: 220% 100%;
+  animation: skeletonMove 1.1s ease-in-out infinite;
+  box-shadow: 0 8px 24px #5d46310f;
+}
+
+@keyframes skeletonMove {
+  to {
+    background-position: -220% 0;
+  }
+}

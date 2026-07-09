@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import "./Me.css";
 import "./Catalog.css";
@@ -7,6 +7,7 @@ import "./Commerce.css";
 import "./AdminEntry.css";
 import "./SearchPage.css";
 import "./HomeLayout.css";
+import "./Stability.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
@@ -16,6 +17,7 @@ import {
   LoginPage,
   MessagesPage,
   OrdersPage,
+  type ServiceContext,
   type User,
 } from "./UserModules";
 import { hallByKey, halls, type BreedItem, type HallKey } from "./catalog";
@@ -42,8 +44,24 @@ type Page =
   | "about"
   | "agreement"
   | "privacy";
+type ApiPet = {
+  id: number;
+  name: string;
+  breed: string;
+  price: number;
+  gender?: string;
+  age_months?: number;
+  color?: string;
+  health_status?: string;
+  seller_name?: string;
+  thumbnail_url?: string;
+  highres_url?: string;
+  image?: string;
+};
 const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
+const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
+  pet?.thumbnail_url || pet?.image || pet?.highres_url || fallback;
 
 function Back({ onClick }: { onClick: () => void }) {
   return (
@@ -163,9 +181,11 @@ function Home({
 function SearchPage({
   go,
   openBreed,
+  openPet,
 }: {
   go: (page: Page) => void;
   openBreed: (breed: BreedItem) => void;
+  openPet: (pet: ApiPet, breed?: BreedItem) => void;
 }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -213,8 +233,12 @@ function SearchPage({
           </p>
           <div className="search-result-list">
             {apiPets.map((p) => (
-              <button key={`api-${p.id}`}>
-                <div className="search-placeholder">宠</div>
+              <button key={`api-${p.id}`} onClick={() => openPet(p)}>
+                {petImage(p) ? (
+                  <img src={petImage(p)} loading="lazy" decoding="async" />
+                ) : (
+                  <div className="search-placeholder">宠</div>
+                )}
                 <div>
                   <h3>{p.name}</h3>
                   <p>
@@ -317,8 +341,56 @@ function Hall({
   );
 }
 
-function Breed({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
+function Breed({
+  go,
+  breed,
+  openPet,
+}: {
+  go: (p: Page) => void;
+  breed: BreedItem;
+  openPet: (pet: ApiPet, breed?: BreedItem) => void;
+}) {
   const b = breed;
+  const [pets, setPets] = useState<ApiPet[]>([]);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(true);
+  const sentinel = useRef<HTMLDivElement | null>(null);
+  const load = useCallback(async (nextPage: number, reset = false) => {
+    setLoading(true);
+    try {
+      const r = await fetch(
+        `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(b.name)}&page=${nextPage}&pageSize=12`,
+      );
+      const list = await r.json();
+      const safe = Array.isArray(list) ? list : [];
+      setPets((v) => (reset ? safe : [...v, ...safe]));
+      setHasMore(safe.length === 12);
+      setPage(nextPage);
+    } catch {
+      if (reset) setPets([]);
+      setHasMore(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [b.name]);
+  useEffect(() => {
+    setPets([]);
+    setPage(1);
+    setHasMore(true);
+    load(1, true);
+  }, [b.name, load]);
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && !loading && hasMore) {
+        load(page + 1);
+      }
+    });
+    io.observe(node);
+    return () => io.disconnect();
+  }, [loading, hasMore, page, load]);
   return (
     <>
       <div className="subhead">
@@ -378,47 +450,95 @@ function Breed({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
       </section>
       <div className="section-bar">
         <h2>等待回家的它们</h2>
-        <span>共 12 只</span>
+        <span>
+          {loading && !pets.length ? "加载中" : `已加载 ${pets.length} 只`}
+        </span>
       </div>
       <div className="available">
-        {[1, 2, 3, 4].map((x) => (
-          <button key={x} onClick={() => go("detail")}>
-            <img src={petPhoto} />
+        {!pets.length && loading
+          ? Array.from({ length: 6 }).map((_, x) => (
+              <button key={x} className="pet-skeleton" aria-label="加载中" />
+            ))
+          : pets.map((pet) => (
+              <button key={pet.id} onClick={() => openPet(pet, b)}>
+                <img
+                  src={petImage(pet, b.image)}
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span>{pet.health_status || "健康认证"}</span>
+                <h3>{pet.name}</h3>
+                <p>
+                  {pet.breed} · {pet.age_months || 3}个月 ·{" "}
+                  {pet.gender || "待确认"}
+                </p>
+                <b>¥ {pet.price}</b>
+              </button>
+            ))}
+        {!pets.length && !loading && (
+          <button
+            onClick={() =>
+              openPet({ id: 0, name: b.name, breed: b.name, price: 6800 }, b)
+            }
+          >
+            <img src={b.image} loading="lazy" decoding="async" />
             <span>健康认证</span>
-            <h3>小太阳 {x}号</h3>
-            <p>金毛寻回犬 · {x + 2}个月 · ♂</p>
-            <b>¥ {6800 + x * 500}</b>
+            <h3>{b.name}档案</h3>
+            <p>暂无在售商品 · 可咨询客服</p>
+            <b>预约咨询</b>
           </button>
-        ))}
+        )}
       </div>
+      <div ref={sentinel} />
+      <RefreshHint refreshing={loading} hasMore={hasMore} />
     </>
   );
 }
 
-function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
+function Detail({
+  go,
+  breed,
+  pet,
+  openService,
+}: {
+  go: (p: Page) => void;
+  breed: BreedItem;
+  pet: ApiPet | null;
+  openService: (context: ServiceContext) => void;
+}) {
   const [featureTab, setFeatureTab] = useState("品种");
   const [playing, setPlaying] = useState(false);
   const [favorite, setFavorite] = useState(false);
   const [following, setFollowing] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
-  const [petDbId, setPetDbId] = useState<number | null>(null);
+  const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
+  const [detailPet, setDetailPet] = useState<any>(pet);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
-    fetch(`http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}`)
+    const url =
+      pet?.id && pet.id > 0
+        ? `http://127.0.0.1:3001/api/pets/${pet.id}`
+        : `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}&page=1&pageSize=1`;
+    fetch(url)
       .then((r) => r.json())
       .then(async (d) => {
-        if (Array.isArray(d) && d[0]) {
-          setPetDbId(d[0].id);
+        const item = Array.isArray(d) ? d[0] : d;
+        if (item?.id) {
+          setPetDbId(item.id);
+          setDetailPet(item);
           await fetch("http://127.0.0.1:3001/api/footprints", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ user_id: userId, pet_id: d[0].id }),
+            body: JSON.stringify({ user_id: userId, pet_id: item.id }),
           });
         }
       })
       .catch(() => {});
-  }, [breed.name, userId]);
+  }, [breed.name, pet?.id, userId]);
+  const displayName = detailPet?.name || "Coco";
+  const displayPrice = detailPet?.price || 6800;
+  const displaySeller = detailPet?.seller_name || "福宠认证宠物馆";
   const toggleFavorite = async () => {
     if (petDbId) {
       await fetch(
@@ -466,17 +586,17 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
   return (
     <div className="detail">
       <section className="detail-hero">
-        <img src={breed.image} />
+        <img src={petImage(detailPet, breed.image)} loading="eager" />
         <Back onClick={() => go("breed")} />
         <span className="life">♢ 可查看3日常生活照</span>
         <div className="pet-name">
           <em>Coco</em>
           <i>♀</i>
-          <b>纯种{breed.name}</b>
+          <b>纯种{detailPet?.breed || breed.name}</b>
           <p>温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养</p>
         </div>
         <strong className="price">
-          ¥6800 <small>已售 128</small>
+          ¥{displayPrice} <small>已售 128</small>
         </strong>
         <span className="count">1/6</span>
       </section>
@@ -510,7 +630,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
         <div className="breed-detail">
           <div>
             <h3>
-              {breed.name} ({breed.en})
+              {detailPet?.breed || breed.name} ({breed.en})
             </h3>
             <p>
               {breed.desc}
@@ -604,7 +724,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
         </div>
         <div>
           <h3>所属商家</h3>
-          <b>福宠认证宠物馆　★★★★★</b>
+          <b>{displaySeller}　★★★★★</b>
           <p>健康保障 · 售后无忧 · 已售3289+</p>
           <button onClick={toggleFollow}>
             {following ? "已关注商家" : "＋ 关注商家"}
@@ -624,7 +744,16 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
       </section>
       {cart && <div className="toast">已加入购物车，可在订单确认时查看</div>}
       <div className="buybar">
-        <button onClick={() => go("service")}>
+        <button
+          onClick={() =>
+            openService({
+              productId: petDbId,
+              productName: displayName,
+              sellerName: displaySeller,
+              source: "product_detail",
+            })
+          }
+        >
           ♧<small>客服</small>
         </button>
         <button className={favorite ? "selected" : ""} onClick={toggleFavorite}>
@@ -638,21 +767,23 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
           🛒<small>{cart ? "已加入" : "加入购物车"}</small>
         </button>
         <button className="buy" onClick={() => setBuyOpen(true)}>
-          立即购买 <small>¥6800</small>
+          立即购买 <small>¥{displayPrice}</small>
         </button>
       </div>
       {buyOpen && (
         <div className="modal-mask" onClick={() => setBuyOpen(false)}>
           <section className="buy-modal" onClick={(e) => e.stopPropagation()}>
             <i />
-            <h2>确认迎接 Coco 回家</h2>
+            <h2>确认迎接 {displayName} 回家</h2>
             <div className="buy-pet">
-              <img src={breed.image} />
+              <img src={petImage(detailPet, breed.image)} />
               <p>
-                <b>Coco · {breed.name}</b>
+                <b>
+                  {displayName} · {detailPet?.breed || breed.name}
+                </b>
                 <span>健康认证 · 疫苗齐全 · 纯种保障</span>
               </p>
-              <strong>¥6800</strong>
+              <strong>¥{displayPrice}</strong>
             </div>
             <div className="buy-line">
               <span>配送地址</span>
@@ -664,7 +795,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
             </div>
             <div className="buy-total">
               <span>应付合计</span>
-              <strong>¥6800</strong>
+              <strong>¥{displayPrice}</strong>
             </div>
             <button onClick={submitOrder}>提交订单</button>
             <small>提交即代表同意《活体宠物购买保障协议》</small>
@@ -849,6 +980,10 @@ export default function App() {
   });
   const [hallKey, setHallKey] = useState<HallKey>("dogs");
   const [breed, setBreed] = useState<BreedItem>(dogBreeds[0]);
+  const [selectedPet, setSelectedPet] = useState<ApiPet | null>(null);
+  const [serviceContext, setServiceContext] = useState<ServiceContext | null>(
+    null,
+  );
   const go = (p: Page) => {
     setPage(p);
     scrollTo(0, 0);
@@ -867,22 +1002,49 @@ export default function App() {
   };
   const openBreed = (item: BreedItem) => {
     setBreed(item);
+    setSelectedPet(null);
     go("breed");
+  };
+  const openPet = (pet: ApiPet, fallbackBreed?: BreedItem) => {
+    if (fallbackBreed) setBreed(fallbackBreed);
+    else
+      setBreed((b) => ({
+        ...b,
+        name: pet.breed || b.name,
+        image: petImage(pet, b.image),
+      }));
+    setSelectedPet(pet);
+    go("detail");
+  };
+  const openService = (context: ServiceContext) => {
+    setServiceContext(context);
+    go("service");
   };
   if (adminMode) return <AdminApp />;
   return (
     <main className="phone-shell">
       {page === "home" && <Home openHall={openHall} go={go} />}{" "}
-      {page === "search" && <SearchPage go={go} openBreed={openBreed} />}
+      {page === "search" && (
+        <SearchPage go={go} openBreed={openBreed} openPet={openPet} />
+      )}
       {page === "hall" && (
         <Hall go={go} hallKey={hallKey} openBreed={openBreed} />
       )}{" "}
-      {page === "breed" && <Breed go={go} breed={breed} />}{" "}
-      {page === "detail" && <Detail go={go} breed={breed} />}
+      {page === "breed" && <Breed go={go} breed={breed} openPet={openPet} />}{" "}
+      {page === "detail" && (
+        <Detail
+          go={go}
+          breed={breed}
+          pet={selectedPet}
+          openService={openService}
+        />
+      )}
       {page === "family" && (
         <CollectionPage mode="favorites" back={() => go("home")} />
       )}{" "}
-      {page === "service" && <MessagesPage back={() => go("home")} />}{" "}
+      {page === "service" && (
+        <MessagesPage back={() => go("home")} context={serviceContext} />
+      )}{" "}
       {page === "me" && <Me go={go} user={user} />}
       {page === "login" && (
         <LoginPage

@@ -8,6 +8,12 @@ export type User = {
   phone: string;
   avatar: string;
 };
+export type ServiceContext = {
+  productId?: number | null;
+  productName?: string;
+  sellerName?: string;
+  source?: string;
+};
 export type Order = {
   id: string;
   status: string;
@@ -61,6 +67,23 @@ export function LoginPage({
   onLogout: () => void;
 }) {
   const [phone, setPhone] = useState("");
+  const doLogin = async (payload: Partial<User> & { login_type: string }) => {
+    const r = await fetch("http://127.0.0.1:3001/api/users/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const saved = await r.json();
+    localStorage.setItem("fuchong-user-id", String(saved.id));
+    onLogin({
+      id: String(saved.id),
+      nickname: saved.nickname || "福宠新朋友",
+      phone: saved.phone || "",
+      avatar:
+        saved.avatar ||
+        "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80",
+    });
+  };
   if (user)
     return (
       <div className="module-page">
@@ -87,12 +110,12 @@ export function LoginPage({
       <button
         className="wechat"
         onClick={() =>
-          onLogin({
-            id: "u_mock_001",
+          doLogin({
             nickname: "福宠新朋友",
             phone: "",
             avatar:
               "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80",
+            login_type: "mock_wechat",
           })
         }
       >
@@ -104,7 +127,17 @@ export function LoginPage({
         onChange={(e) => setPhone(e.target.value)}
         placeholder="输入手机号（功能预留）"
       />
-      <button className="phone-login" disabled={phone.length < 11}>
+      <button
+        className="phone-login"
+        disabled={phone.length < 11}
+        onClick={() =>
+          doLogin({
+            nickname: `手机用户${phone.slice(-4)}`,
+            phone,
+            login_type: "phone",
+          })
+        }
+      >
         手机号登录
       </button>
       <small>登录即代表同意《用户协议》和《隐私政策》</small>
@@ -120,14 +153,17 @@ export function CollectionPage({
   back: () => void;
 }) {
   const [tab, setTab] = useState(mode);
-  const [favorites, setFavorites] = useState([1, 2, 3]);
+  const [favorites, setFavorites] = useState<any[]>([]);
   const [follows, setFollows] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
+    setLoading(true);
     fetch(`http://127.0.0.1:3001/api/favorites?user_id=${userId}`)
       .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setFavorites(d.map((x) => x.pet_id)))
-      .catch(() => {});
+      .then((d) => Array.isArray(d) && setFavorites(d))
+      .catch(() => setFavorites([]))
+      .finally(() => setLoading(false));
   }, [userId]);
   useEffect(() => {
     fetch(`http://127.0.0.1:3001/api/follows?user_id=${userId}`)
@@ -140,7 +176,7 @@ export function CollectionPage({
       `http://127.0.0.1:3001/api/favorites/${petId}?user_id=${userId}`,
       { method: "DELETE" },
     ).catch(() => {});
-    setFavorites((v) => v.filter((i) => i !== petId));
+    setFavorites((v) => v.filter((i) => i.pet_id !== petId));
   };
   const removeFollow = async (seller: string) => {
     await fetch(
@@ -167,21 +203,30 @@ export function CollectionPage({
         </button>
       </div>
       {tab === "favorites" ? (
-        favorites.length ? (
+        loading ? (
+          <div className="collection-grid">
+            {[1, 2, 3, 4].map((x) => (
+              <article className="pet-skeleton" key={x} />
+            ))}
+          </div>
+        ) : favorites.length ? (
           <div className="collection-grid">
             {favorites.map((x) => (
-              <article key={x}>
-                <img src={petImg} />
+              <article key={x.id}>
+                <img src={x.image || petImg} loading="lazy" decoding="async" />
                 <button
                   onClick={() =>
-                    confirm("确定取消收藏吗？") && removeFavorite(x)
+                    confirm("确定取消收藏吗？") && removeFavorite(x.pet_id)
                   }
                 >
                   ♥
                 </button>
-                <h3>小太阳 {x}号</h3>
-                <p>金毛 · {x + 2}个月 · 健康认证</p>
-                <b>¥ {6800 + x * 300}</b>
+                <h3>{x.name}</h3>
+                <p>
+                  {x.breed} · {x.age_months || 3}个月 ·{" "}
+                  {x.health_status || "健康认证"}
+                </p>
+                <b>¥ {x.price}</b>
               </article>
             ))}
           </div>
@@ -544,38 +589,64 @@ export function OrdersPage({ back }: { back: () => void }) {
   );
 }
 
-export function MessagesPage({ back }: { back: () => void }) {
+export function MessagesPage({
+  back,
+  context,
+}: {
+  back: () => void;
+  context?: ServiceContext | null;
+}) {
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   const [chat, setChat] = useState([
     {
       id: 1,
       sender: "service",
-      content: "您好，我是福宠专属客服，请问有什么可以帮助您？",
+      content: context?.productName
+        ? `您好，我是福宠 AI 客服，正在为您查看「${context.productName}」。`
+        : "您好，我是福宠专属客服，请问有什么可以帮助您？",
     },
   ]);
   const [text, setText] = useState("");
-  const send = async () => {
-    const value = text.trim();
-    if (!value) return;
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [humanPending, setHumanPending] = useState(false);
+  const send = async (override?: string) => {
+    const value = (override ?? text).trim();
+    if (!value) return sessionId;
     setChat((v) => [...v, { id: Date.now(), sender: "user", content: value }]);
-    setText("");
+    if (!override) setText("");
     try {
       await fetch("http://127.0.0.1:3001/api/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ user_id: 1, sender: "user", content: value }),
+        body: JSON.stringify({
+          user_id: userId,
+          sender: "user",
+          content: value,
+          session_id: sessionId,
+          product_id: context?.productId || null,
+          product_name: context?.productName || "",
+          seller_name: context?.sellerName || "福宠认证宠物馆",
+          source: context?.source || "message_center",
+        }),
       });
-      setTimeout(
-        () =>
-          setChat((v) => [
-            ...v,
-            {
-              id: Date.now() + 1,
-              sender: "service",
-              content: "已收到您的消息，客服正在为您查询。",
-            },
-          ]),
-        500,
+      const r = await fetch(
+        `http://127.0.0.1:3001/api/messages?user_id=${userId}`,
       );
+      const messages = await r.json();
+      if (Array.isArray(messages)) {
+        const latestSession = messages[messages.length - 1]?.session_id;
+        if (latestSession) setSessionId(latestSession);
+        setChat(
+          messages
+            .filter((m) => !latestSession || m.session_id === latestSession)
+            .map((m) => ({
+              id: m.id,
+              sender: m.sender,
+              content: m.content,
+            })),
+        );
+        return latestSession || sessionId;
+      }
     } catch {
       setChat((v) => [
         ...v,
@@ -586,13 +657,32 @@ export function MessagesPage({ back }: { back: () => void }) {
         },
       ]);
     }
+    return sessionId;
+  };
+  const handoff = async () => {
+    const sid = sessionId || (await send("需要转人工客服"));
+    if (!sid) return;
+    await fetch(
+      `http://127.0.0.1:3001/api/customer-service/sessions/${sid}/handoff`,
+      { method: "POST" },
+    ).catch(() => {});
+    setHumanPending(true);
+    setChat((v) => [
+      ...v,
+      {
+        id: Date.now() + 3,
+        sender: "service",
+        content: "已为您转入人工客服队列，后台客服会看到商品和聊天记录。",
+      },
+    ]);
   };
   return (
     <div className="module-page">
-      <Header title="专属客服" back={back} />
+      <Header title={context?.sellerName || "专属客服"} back={back} />
       <div className="chat-status">
         <i />
-        福宠客服在线 <span>通常 1 分钟内回复</span>
+        {context?.productName || "福宠客服在线"}{" "}
+        <span>{humanPending ? "人工排队中" : "AI 即时回复 · 可转人工"}</span>
       </div>
       <div className="chat-window">
         {chat.map((m) => (
@@ -609,7 +699,8 @@ export function MessagesPage({ back }: { back: () => void }) {
           onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="输入咨询内容…"
         />
-        <button onClick={send}>发送</button>
+        <button onClick={handoff}>转人工</button>
+        <button onClick={() => send()}>发送</button>
       </div>
     </div>
   );
