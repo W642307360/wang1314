@@ -1,6 +1,7 @@
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, salt TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'admin', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, openid TEXT UNIQUE, nickname TEXT NOT NULL, avatar TEXT, phone TEXT UNIQUE, status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS visitors(id INTEGER PRIMARY KEY, token TEXT UNIQUE NOT NULL, user_id INTEGER NOT NULL REFERENCES users(id), first_seen TEXT DEFAULT CURRENT_TIMESTAMP, last_seen TEXT DEFAULT CURRENT_TIMESTAMP, visit_count INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent_id INTEGER REFERENCES categories(id), image TEXT, sort_order INTEGER DEFAULT 0, status TEXT DEFAULT 'active');
 CREATE TABLE IF NOT EXISTS pets(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category_id INTEGER REFERENCES categories(id), breed TEXT NOT NULL, gender TEXT, age_months INTEGER, color TEXT, body_type TEXT, personality TEXT, health_status TEXT, vaccine_record TEXT, father_info TEXT, mother_info TEXT, description TEXT, price INTEGER NOT NULL, seller_name TEXT, status TEXT DEFAULT 'draft', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS pet_skus(id INTEGER PRIMARY KEY, pet_id INTEGER NOT NULL REFERENCES pets(id) ON DELETE CASCADE, sku_name TEXT NOT NULL, price INTEGER NOT NULL, stock INTEGER NOT NULL DEFAULT 1, status TEXT DEFAULT 'active');
@@ -19,6 +20,8 @@ CREATE TABLE IF NOT EXISTS coupons(id INTEGER PRIMARY KEY, title TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS user_coupons(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), coupon_id INTEGER NOT NULL REFERENCES coupons(id), status TEXT DEFAULT 'available');
 CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), sender TEXT NOT NULL, type TEXT DEFAULT 'service', content TEXT NOT NULL, is_read INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS banners(id INTEGER PRIMARY KEY, title TEXT, image TEXT NOT NULL, link TEXT, sort_order INTEGER DEFAULT 0, status TEXT DEFAULT 'active');
+CREATE TABLE IF NOT EXISTS feishu_sync_configs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, document_url TEXT NOT NULL, app_token TEXT, table_id TEXT, field_mapping TEXT DEFAULT '{}', status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS feishu_sync_tasks(id INTEGER PRIMARY KEY, config_id INTEGER REFERENCES feishu_sync_configs(id), mode TEXT DEFAULT 'incremental', status TEXT DEFAULT 'pending', total INTEGER DEFAULT 0, success INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, finished_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_pets_search ON pets(status, category_id, breed, name);
 CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id,status,created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id,created_at);

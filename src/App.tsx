@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 import "./Me.css";
 import "./Catalog.css";
@@ -20,6 +20,7 @@ import {
 } from "./UserModules";
 import { hallByKey, halls, type BreedItem, type HallKey } from "./catalog";
 import AdminApp from "./Admin";
+import { ensureVisitor } from "./visitor";
 
 type Page =
   | "home"
@@ -82,6 +83,13 @@ function Home({ openHall, go }: { openHall: (key: HallKey) => void; go: (page: P
         </div>
         <button className="search" onClick={() => go("search")}>⌕&nbsp; 搜索宠物名称、品种或分类</button>
       </header>
+      <section className="home-carousel">
+        <div className="carousel-track">
+          <article><img src={halls[0].hero}/><div><small>生命伙伴计划</small><h2>遇见值得陪伴一生的它</h2><p>真实档案 · 健康保障 · 全程守护</p></div></article>
+          <article><img src={halls[1].hero}/><div><small>科学养宠</small><h2>认真了解，再做一生选择</h2><p>品种资料 · 成长记录 · 专业顾问</p></div></article>
+          <article><img src={halls[4].hero}/><div><small>尊重生命</small><h2>每一种特别，都值得被看见</h2><p>规范交易 · 公益救助 · 长期陪伴</p></div></article>
+        </div>
+      </section>
       <section className="home-title">
         <h2>选择你的宠物场馆</h2>
         <p>每一种生命，都值得被认真了解</p>
@@ -98,6 +106,10 @@ function Home({ openHall, go }: { openHall: (key: HallKey) => void; go: (page: P
           </button>
         ))}
       </div>
+      <section className="charity-section">
+        <div><small>福宠公益基金</small><h2>让每一种生命，都被温柔接住</h2><p>平台每完成一笔交易，将按比例投入流浪动物救助、绝育、医疗和领养回访。</p><button>了解公益计划　›</button></div>
+        <div className="charity-stats"><span><b>2,386</b>累计救助</span><span><b>1,129</b>成功领养</span><span><b>86</b>合作机构</span></div>
+      </section>
     </>
   );
 }
@@ -641,6 +653,7 @@ function SubPage({ title, go }: { title: string; go: (p: Page) => void }) {
 }
 
 export default function App() {
+  useEffect(()=>{ensureVisitor()},[])
   const adminMode = location.hash.startsWith("#admin");
   const [page, setPage] = useState<Page>("home");
   const [user, setUser] = useState<User | null>(() => {

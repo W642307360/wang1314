@@ -113,6 +113,7 @@ createServer(async (req, res) => {
     }
     if (path === "/api/health")
       return json(res, 200, { ok: true, database: true });
+    if(path==="/api/visitors/session"&&method==="POST"){const d=await body(req),token=String(d.token||randomBytes(18).toString("hex"));let visitor=db.prepare("SELECT * FROM visitors WHERE token=?").get(token);if(visitor){db.prepare("UPDATE visitors SET last_seen=CURRENT_TIMESTAMP,visit_count=visit_count+1 WHERE id=?").run(visitor.id)}else{const u=db.prepare("INSERT INTO users(openid,nickname,status) VALUES(?,?,?)").run(`guest:${token}`,"访客用户","guest");const v=db.prepare("INSERT INTO visitors(token,user_id) VALUES(?,?)").run(token,u.lastInsertRowid);visitor={id:v.lastInsertRowid,token,user_id:u.lastInsertRowid}}return json(res,200,{token,userId:visitor.user_id,visitorId:visitor.id})}
     if (path === "/api/admin/login" && method === "POST") {
       const d = await body(req),
         a = db.prepare("SELECT * FROM admins WHERE username=?").get(d.username);
@@ -398,6 +399,10 @@ createServer(async (req, res) => {
     const userRoute=path.match(/^\/api\/admin\/users\/(\d+)$/);
     if(userRoute&&method==="GET"){const id=Number(userRoute[1]),user=db.prepare("SELECT id,nickname,avatar,phone,status,created_at FROM users WHERE id=?").get(id);return json(res,user?200:404,user?{...user,orders:rows("SELECT * FROM orders WHERE user_id=?",id),favorites:rows("SELECT * FROM favorites WHERE user_id=?",id),footprints:rows("SELECT * FROM footprints WHERE user_id=?",id),addresses:rows("SELECT * FROM addresses WHERE user_id=?",id)}:{message:"用户不存在"})}
     for(const resource of ["banners","categories"]){if(path===`/api/admin/${resource}`&&method==="GET")return json(res,200,rows(`SELECT * FROM ${resource} ORDER BY id DESC`));if(path===`/api/admin/${resource}`&&method==="POST"){const d=await body(req);if(resource==="banners"){const r=db.prepare("INSERT INTO banners(title,image,link,sort_order,status) VALUES(?,?,?,?,?)").run(d.title??null,d.image,d.link??null,d.sort_order||0,d.status||"active");return json(res,201,{id:r.lastInsertRowid})}const r=db.prepare("INSERT INTO categories(name,parent_id,image,sort_order,status) VALUES(?,?,?,?,?)").run(d.name,d.parent_id||null,d.image??null,d.sort_order||0,d.status||"active");return json(res,201,{id:r.lastInsertRowid})}}
+    if(path==="/api/admin/feishu/configs"&&method==="GET")return json(res,200,rows("SELECT * FROM feishu_sync_configs ORDER BY id DESC"));
+    if(path==="/api/admin/feishu/configs"&&method==="POST"){const d=await body(req);const r=db.prepare("INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status) VALUES(?,?,?,?,?,?)").run(d.name,d.document_url,d.app_token??null,d.table_id??null,JSON.stringify(d.field_mapping||{}),d.status||"active");return json(res,201,{id:r.lastInsertRowid})}
+    if(path==="/api/admin/feishu/sync"&&method==="POST"){const d=await body(req);const r=db.prepare("INSERT INTO feishu_sync_tasks(config_id,mode,status) VALUES(?,?,?)").run(d.config_id,d.mode||"incremental","pending");return json(res,202,{taskId:r.lastInsertRowid,status:"pending",message:"同步任务已进入队列"})}
+    if(path==="/api/admin/feishu/tasks"&&method==="GET")return json(res,200,rows("SELECT * FROM feishu_sync_tasks ORDER BY id DESC"));
     return json(res, 404, { message: "接口不存在" });
   } catch (e) {
     console.error(e);
