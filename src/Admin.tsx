@@ -149,7 +149,7 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
         </label>
         {error && <em>{error}</em>}
         <button>安全登录</button>
-        <small>初始账号：admin</small>
+        <small>初始账号：admin　初始密码：123123123</small>
       </form>
     </div>
   );

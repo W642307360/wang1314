@@ -4,6 +4,7 @@ import './Me.css'
 import './Catalog.css'
 import './DetailEnhance.css'
 import './Commerce.css'
+import './AdminEntry.css'
 import { RefreshHint } from './UIStates'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
@@ -85,6 +86,7 @@ function Me({go,user}:{go:(p:Page)=>void;user:User|null}) {
    <section className="me-stats"><button onClick={()=>go('favorites')}><b>12</b><span>收藏宠物</span></button><button onClick={()=>go('follows')}><b>5</b><span>关注商家</span></button><button onClick={()=>go('footprints')}><b>36</b><span>浏览足迹</span></button><button onClick={()=>go('coupons')}><b>3</b><span>优惠券</span></button></section>
    <section className="me-services"><h2>常用服务</h2>{services.map(([icon,title,desc,target])=><button key={title} onClick={()=>go(target)}><i>{icon}</i><div><b>{title}</b><small>{desc}</small></div><span>›</span></button>)}</section>
    <section className="me-links"><button onClick={()=>go('agreement')}>用户协议 <span>›</span></button><button onClick={()=>go('privacy')}>隐私政策 <span>›</span></button></section>
+   <section className="admin-entry"><button onClick={()=>{location.hash='admin';location.reload()}}><i>管</i><div><b>管理员登录</b><small>商品、订单、物流与运营管理</small></div><span>›</span></button></section>
    <p className="version">福宠 FUCHONG · v0.2.0</p>
   </div>
 }

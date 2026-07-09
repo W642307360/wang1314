@@ -9,7 +9,10 @@ const root=dirname(fileURLToPath(import.meta.url));mkdirSync(join(root,'data'),{
 const db=new DatabaseSync(process.env.DB_PATH||join(root,'data','fuchong.db'));db.exec(readFileSync(join(root,'schema.sql'),'utf8'))
 const SECRET=process.env.JWT_SECRET||'dev-only-change-in-production'
 const hash=(password,salt)=>scryptSync(password,salt,64).toString('hex')
-if(!db.prepare('SELECT id FROM admins WHERE username=?').get('admin')){const salt=randomBytes(16).toString('hex');db.prepare('INSERT INTO admins(username,password_hash,salt) VALUES(?,?,?)').run('admin',hash('123456789',salt),salt)}
+const initialAdminPassword=process.env.ADMIN_INITIAL_PASSWORD||'123123123'
+const existingAdmin=db.prepare('SELECT * FROM admins WHERE username=?').get('admin')
+if(!existingAdmin){const salt=randomBytes(16).toString('hex');db.prepare('INSERT INTO admins(username,password_hash,salt) VALUES(?,?,?)').run('admin',hash(initialAdminPassword,salt),salt)}
+else if(hash(initialAdminPassword,existingAdmin.salt)!==existingAdmin.password_hash){const salt=randomBytes(16).toString('hex');db.prepare('UPDATE admins SET password_hash=?,salt=? WHERE username=?').run(hash(initialAdminPassword,salt),salt,'admin')}
 if(!db.prepare('SELECT id FROM users LIMIT 1').get())db.prepare('INSERT INTO users(nickname,phone) VALUES(?,?)').run('福宠用户','13800000000')
 for(const name of ['猫猫馆','狗狗馆','鸟类馆','水族馆','奇宠馆','更多馆'])db.prepare('INSERT OR IGNORE INTO categories(id,name,sort_order) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM categories),?,0)').run(name)
 const b64=x=>Buffer.from(JSON.stringify(x)).toString('base64url');const sign=x=>createHmac('sha256',SECRET).update(x).digest('base64url')
