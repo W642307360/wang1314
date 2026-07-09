@@ -7,6 +7,7 @@ import './Commerce.css'
 import { RefreshHint } from './UIStates'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
+import AdminApp from './Admin'
 
 type Page = 'home' | 'hall' | 'breed' | 'detail' | 'family' | 'service' | 'me' | 'login' | 'orders' | 'favorites' | 'follows' | 'footprints' | 'addresses' | 'coupons' | 'settings' | 'about' | 'agreement' | 'privacy'
 const dogBreeds=hallByKey('dogs').breeds.slice(0,5)
@@ -92,10 +93,12 @@ function SubPage({title,go}:{title:string,go:(p:Page)=>void}) {
 }
 
 export default function App(){
+ const adminMode=location.hash.startsWith('#admin')
  const [page,setPage]=useState<Page>('home'); const [user,setUser]=useState<User|null>(()=>{try{return JSON.parse(localStorage.getItem('fuchong-user')||'null')}catch{return null}})
  const [hallKey,setHallKey]=useState<HallKey>('dogs');const [breed,setBreed]=useState<BreedItem>(dogBreeds[0])
  const go=(p:Page)=>{setPage(p);scrollTo(0,0)};const login=(u:User)=>{setUser(u);localStorage.setItem('fuchong-user',JSON.stringify(u))};const logout=()=>{setUser(null);localStorage.removeItem('fuchong-user')}
  const openHall=(key:HallKey)=>{setHallKey(key);go('hall')};const openBreed=(item:BreedItem)=>{setBreed(item);go('breed')}
+ if(adminMode)return <AdminApp/>
  return <main className="phone-shell">{page==='home'&&<Home openHall={openHall}/>} {page==='hall'&&<Hall go={go} hallKey={hallKey} openBreed={openBreed}/>} {page==='breed'&&<Breed go={go} breed={breed}/>} {page==='detail'&&<Detail go={go} breed={breed}/>}
  {page==='family'&&<CollectionPage mode="favorites" back={()=>go('home')}/>} {page==='service'&&<MessagesPage back={()=>go('home')}/>} {page==='me'&&<Me go={go} user={user}/>}
  {page==='login'&&<LoginPage back={()=>go('me')} user={user} onLogin={login} onLogout={logout}/>} {page==='orders'&&<OrdersPage back={()=>go('me')}/>}
