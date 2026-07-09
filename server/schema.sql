@@ -25,3 +25,5 @@ CREATE TABLE IF NOT EXISTS feishu_sync_tasks(id INTEGER PRIMARY KEY, config_id I
 CREATE INDEX IF NOT EXISTS idx_pets_search ON pets(status, category_id, breed, name);
 CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id,status,created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id,created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_images_unique ON pet_images(pet_id,url);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_videos_unique ON pet_videos(pet_id,url);

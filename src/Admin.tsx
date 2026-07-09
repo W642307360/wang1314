@@ -82,16 +82,6 @@ const seedProducts = [
     stock: 0,
   },
 ];
-const seedUsers = [
-  ["U1001", "福宠新朋友", "138****8866", "正常", "2"],
-  ["U1002", "小可爱", "186****3321", "正常", "1"],
-  ["U1003", "糖糖不甜", "159****1288", "已禁用", "0"],
-];
-const seedOrders = [
-  ["FC20260709001", "Coco · 布偶猫", "¥6,800", "待确认"],
-  ["FC20260708012", "小太阳 · 金毛", "¥7,300", "待收货"],
-  ["FC20260707008", "雪球 · 萨摩耶", "¥8,600", "已完成"],
-];
 
 export default function AdminApp() {
   const [token, setToken] = useState(
@@ -281,24 +271,12 @@ function AdminPanel({ token }: { token: string }) {
             }}
           />
         )}{" "}
-        {tab === "users" && (
-          <DataTable
-            title="用户列表"
-            heads={["用户ID", "昵称", "手机号", "状态", "订单数"]}
-            rows={seedUsers}
-          />
-        )}{" "}
-        {tab === "orders" && (
-          <DataTable
-            title="订单列表"
-            heads={["订单号", "宠物", "实付金额", "状态"]}
-            rows={seedOrders}
-          />
-        )}{" "}
+        {tab === "users" && <UsersManager token={token}/>}{" "}
+        {tab === "orders" && <OrdersManager token={token}/>}{" "}
         {tab === "transactions" && <Transactions />}
-        {tab === "logistics" && <Logistics />}
-        {tab === "afterSales" && <AfterSales />}
-        {tab === "content" && <ContentManager />}
+        {tab === "logistics" && <Logistics token={token}/>}
+        {tab === "afterSales" && <AfterSales token={token}/>}
+        {tab === "content" && <ContentManager token={token}/>}
         {tab === "feishu" && <FeishuManager token={token} />}
       </main>
       {showForm && (
@@ -614,14 +592,20 @@ function Transactions() {
   );
 }
 
-function Logistics() {
-  return <DataTable title="物流记录" heads={["订单号","物流公司","物流单号","运输状态"]} rows={[["FC20260708012","顺丰速运","SF123456789","运输中"]]}/>;
+function UsersManager({token}:{token:string}){const [users,setUsers]=useState<any[]>([]),[detail,setDetail]=useState<any>(null);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/users",{headers}).then(r=>r.json()).then(setUsers)},[]);const open=async(id:number)=>setDetail(await fetch(`http://127.0.0.1:3001/api/admin/users/${id}`,{headers}).then(r=>r.json()));return <section className="admin-table"><div><h3>用户管理</h3></div><table><thead><tr><th>用户</th><th>手机号</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody>{users.map(u=><tr key={u.id}><td>{u.nickname}</td><td>{u.phone||"未绑定"}</td><td>{u.status}</td><td>{u.created_at}</td><td><button onClick={()=>open(u.id)}>查看详情</button></td></tr>)}</tbody></table>{detail&&<div className="user-detail"><h3>{detail.nickname}</h3><p>订单 {detail.orders.length} · 收藏 {detail.favorites.length} · 足迹 {detail.footprints.length} · 地址 {detail.addresses.length}</p><button onClick={()=>setDetail(null)}>关闭</button></div>}</section>}
+function OrdersManager({token}:{token:string}){const [orders,setOrders]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/orders",{headers}).then(r=>r.json()).then(setOrders)},[]);return <section className="admin-table"><div><h3>订单管理</h3></div><table><thead><tr><th>订单号</th><th>买家</th><th>金额</th><th>支付</th><th>状态</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{o.order_no}</td><td>{o.nickname} {o.phone}</td><td>¥{o.total_amount}</td><td>{o.payment_status}</td><td>{o.status}</td></tr>)}</tbody></table></section>}
+function Logistics({token}:{token:string}) {
+  const [orders,setOrders]=useState<any[]>([]);const [company,setCompany]=useState("");const [tracking,setTracking]=useState("");const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/orders",{headers}).then(r=>r.json()).then(setOrders)},[])
+  const update=async(id:number)=>{await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}/logistics`,{method:"PUT",headers,body:JSON.stringify({company,tracking_no:tracking,status:"shipped",progress:[{time:new Date().toISOString(),text:"已发货"}]})});alert("物流已更新")}
+  return <section className="admin-table"><div><h3>物流管理</h3></div><div className="feishu-form"><input value={company} onChange={e=>setCompany(e.target.value)} placeholder="物流公司"/><input value={tracking} onChange={e=>setTracking(e.target.value)} placeholder="物流单号"/></div><table><thead><tr><th>订单号</th><th>买家</th><th>订单状态</th><th>操作</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{o.order_no}</td><td>{o.nickname} {o.phone}</td><td>{o.status}</td><td><button onClick={()=>update(o.id)}>更新并发货</button></td></tr>)}</tbody></table></section>;
 }
-function AfterSales() {
-  return <DataTable title="客诉与售后" heads={["售后单号","关联订单","申请类型","处理状态"]} rows={[["AS20260709001","FC20260707002","健康保障退款","待处理"]]}/>;
+function AfterSales({token}:{token:string}) {
+  const [items,setItems]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`,"content-type":"application/json"};const load=()=>Promise.all(["complaints","after-sales"].map(x=>fetch(`http://127.0.0.1:3001/api/admin/${x}`,{headers}).then(r=>r.json()))).then(([a,b])=>setItems([...a.map((x:any)=>({...x,kind:"投诉"})),...b.map((x:any)=>({...x,kind:"售后"}))]));useEffect(()=>{void load()},[])
+  return <section className="admin-table"><div><h3>客诉与售后</h3></div><table><thead><tr><th>类型</th><th>关联订单</th><th>原因/内容</th><th>状态</th></tr></thead><tbody>{items.map(x=><tr key={`${x.kind}-${x.id}`}><td>{x.kind}</td><td>{x.order_id}</td><td>{x.reason||x.content}</td><td>{x.status}</td></tr>)}</tbody></table></section>;
 }
-function ContentManager() {
-  return <DataTable title="首页内容管理" heads={["内容类型","标题","排序","状态"]} rows={[["Banner","安心遇见生命伙伴","1","已发布"]]}/>;
+function ContentManager({token}:{token:string}) {
+  const [banners,setBanners]=useState<any[]>([]),[categories,setCategories]=useState<any[]>([]);const headers={authorization:`Bearer ${token}`};useEffect(()=>{fetch("http://127.0.0.1:3001/api/admin/banners",{headers}).then(r=>r.json()).then(setBanners);fetch("http://127.0.0.1:3001/api/admin/categories",{headers}).then(r=>r.json()).then(setCategories)},[])
+  return <section className="admin-table"><div><h3>首页内容管理</h3></div><table><thead><tr><th>类型</th><th>标题</th><th>排序</th><th>状态</th></tr></thead><tbody>{banners.map(x=><tr key={`b-${x.id}`}><td>Banner</td><td>{x.title}</td><td>{x.sort_order}</td><td>{x.status}</td></tr>)}{categories.map(x=><tr key={`c-${x.id}`}><td>分类</td><td>{x.name}</td><td>{x.sort_order}</td><td>{x.status}</td></tr>)}</tbody></table></section>;
 }
 
 function FeishuManager({token}:{token:string}){

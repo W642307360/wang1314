@@ -74,20 +74,49 @@ function Nav({ go, page }: { go: (p: Page) => void; page: Page }) {
   );
 }
 
-function Home({ openHall, go }: { openHall: (key: HallKey) => void; go: (page: Page) => void }) {
+function Home({
+  openHall,
+  go,
+}: {
+  openHall: (key: HallKey) => void;
+  go: (page: Page) => void;
+}) {
   return (
     <>
       <header>
         <div className="brand">
           <h1>福宠</h1>
         </div>
-        <button className="search" onClick={() => go("search")}>⌕&nbsp; 搜索宠物名称、品种或分类</button>
+        <button className="search" onClick={() => go("search")}>
+          ⌕&nbsp; 搜索宠物名称、品种或分类
+        </button>
       </header>
       <section className="home-carousel">
         <div className="carousel-track">
-          <article><img src={halls[0].hero}/><div><small>生命伙伴计划</small><h2>遇见值得陪伴一生的它</h2><p>真实档案 · 健康保障 · 全程守护</p></div></article>
-          <article><img src={halls[1].hero}/><div><small>科学养宠</small><h2>认真了解，再做一生选择</h2><p>品种资料 · 成长记录 · 专业顾问</p></div></article>
-          <article><img src={halls[4].hero}/><div><small>尊重生命</small><h2>每一种特别，都值得被看见</h2><p>规范交易 · 公益救助 · 长期陪伴</p></div></article>
+          <article>
+            <img src={halls[0].hero} />
+            <div>
+              <small>生命伙伴计划</small>
+              <h2>遇见值得陪伴一生的它</h2>
+              <p>真实档案 · 健康保障 · 全程守护</p>
+            </div>
+          </article>
+          <article>
+            <img src={halls[1].hero} />
+            <div>
+              <small>科学养宠</small>
+              <h2>认真了解，再做一生选择</h2>
+              <p>品种资料 · 成长记录 · 专业顾问</p>
+            </div>
+          </article>
+          <article>
+            <img src={halls[4].hero} />
+            <div>
+              <small>尊重生命</small>
+              <h2>每一种特别，都值得被看见</h2>
+              <p>规范交易 · 公益救助 · 长期陪伴</p>
+            </div>
+          </article>
         </div>
       </section>
       <section className="home-title">
@@ -107,18 +136,117 @@ function Home({ openHall, go }: { openHall: (key: HallKey) => void; go: (page: P
         ))}
       </div>
       <section className="charity-section">
-        <div><small>福宠公益基金</small><h2>让每一种生命，都被温柔接住</h2><p>平台每完成一笔交易，将按比例投入流浪动物救助、绝育、医疗和领养回访。</p><button>了解公益计划　›</button></div>
-        <div className="charity-stats"><span><b>2,386</b>累计救助</span><span><b>1,129</b>成功领养</span><span><b>86</b>合作机构</span></div>
+        <div>
+          <small>福宠公益基金</small>
+          <h2>让每一种生命，都被温柔接住</h2>
+          <p>
+            平台每完成一笔交易，将按比例投入流浪动物救助、绝育、医疗和领养回访。
+          </p>
+          <button>了解公益计划　›</button>
+        </div>
+        <div className="charity-stats">
+          <span>
+            <b>2,386</b>累计救助
+          </span>
+          <span>
+            <b>1,129</b>成功领养
+          </span>
+          <span>
+            <b>86</b>合作机构
+          </span>
+        </div>
       </section>
     </>
   );
 }
 
-function SearchPage({ go, openBreed }: { go: (page: Page) => void; openBreed: (breed: BreedItem) => void }) {
-  const [query,setQuery]=useState("");const [loading,setLoading]=useState(false);const [apiPets,setApiPets]=useState<any[]>([])
-  const local=halls.flatMap(h=>h.breeds.map(b=>({...b,hallName:h.name}))).filter(b=>!query||b.name.includes(query)||b.en.toLowerCase().includes(query.toLowerCase()))
-  const search=async(value:string)=>{setQuery(value);setLoading(true);try{const r=await fetch(`http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(value)}`);setApiPets(await r.json())}catch{setApiPets([])}finally{setLoading(false)}}
-  return <div className="search-page"><div className="search-header"><Back onClick={()=>go("home")}/><input autoFocus value={query} onChange={e=>search(e.target.value)} placeholder="输入宠物名称、品种或分类"/><button onClick={()=>search("")}>清除</button></div>{loading?<div className="search-loading">正在搜索…</div>:<><p className="search-count">找到 {apiPets.length+local.length} 个结果</p><div className="search-result-list">{apiPets.map(p=><button key={`api-${p.id}`}><div className="search-placeholder">宠</div><div><h3>{p.name}</h3><p>{p.breed} · ¥{p.price}</p></div><b>›</b></button>)}{local.slice(0,60).map(b=><button key={b.id} onClick={()=>openBreed(b)}><img src={b.image}/><div><small>{b.hallName}</small><h3>{b.name}</h3><p>{b.desc}</p></div><b>›</b></button>)}</div>{!apiPets.length&&!local.length&&<div className="empty"><i>⌕</i><h3>没有找到相关宠物</h3><p>换个名称试试看</p></div>}</>}</div>
+function SearchPage({
+  go,
+  openBreed,
+}: {
+  go: (page: Page) => void;
+  openBreed: (breed: BreedItem) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [apiPets, setApiPets] = useState<any[]>([]);
+  const local = halls
+    .flatMap((h) => h.breeds.map((b) => ({ ...b, hallName: h.name })))
+    .filter(
+      (b) =>
+        !query ||
+        b.name.includes(query) ||
+        b.en.toLowerCase().includes(query.toLowerCase()),
+    );
+  const search = async (value: string) => {
+    setQuery(value);
+    setLoading(true);
+    try {
+      const r = await fetch(
+        `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(value)}`,
+      );
+      setApiPets(await r.json());
+    } catch {
+      setApiPets([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="search-page">
+      <div className="search-header">
+        <Back onClick={() => go("home")} />
+        <input
+          autoFocus
+          value={query}
+          onChange={(e) => search(e.target.value)}
+          placeholder="输入宠物名称、品种或分类"
+        />
+        <button onClick={() => search("")}>清除</button>
+      </div>
+      {loading ? (
+        <div className="search-loading">正在搜索…</div>
+      ) : (
+        <>
+          <p className="search-count">
+            找到 {apiPets.length + local.length} 个结果
+          </p>
+          <div className="search-result-list">
+            {apiPets.map((p) => (
+              <button key={`api-${p.id}`}>
+                <div className="search-placeholder">宠</div>
+                <div>
+                  <h3>{p.name}</h3>
+                  <p>
+                    {p.breed} · ¥{p.price}
+                  </p>
+                </div>
+                <b>›</b>
+              </button>
+            ))}
+            {local.slice(0, 60).map((b) => (
+              <button key={b.id} onClick={() => openBreed(b)}>
+                <img src={b.image} />
+                <div>
+                  <small>{b.hallName}</small>
+                  <h3>{b.name}</h3>
+                  <p>{b.desc}</p>
+                </div>
+                <b>›</b>
+              </button>
+            ))}
+          </div>
+          {!apiPets.length && !local.length && (
+            <div className="empty">
+              <i>⌕</i>
+              <h3>没有找到相关宠物</h3>
+              <p>换个名称试试看</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 function Hall({
@@ -271,12 +399,57 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
   const [featureTab, setFeatureTab] = useState("品种");
   const [playing, setPlaying] = useState(false);
   const [favorite, setFavorite] = useState(false);
+  const [following, setFollowing] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
-  const [petDbId,setPetDbId]=useState<number|null>(null);const userId=Number(localStorage.getItem("fuchong-user-id")||1)
-  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}`).then(r=>r.json()).then(d=>Array.isArray(d)&&d[0]&&setPetDbId(d[0].id)).catch(()=>{})},[breed.name])
-  const toggleFavorite=async()=>{if(petDbId){await fetch(favorite?`http://127.0.0.1:3001/api/favorites/${petDbId}?user_id=${userId}`:"http://127.0.0.1:3001/api/favorites",{method:favorite?"DELETE":"POST",headers:{"content-type":"application/json"},body:favorite?undefined:JSON.stringify({user_id:userId,pet_id:petDbId})}).catch(()=>{})}setFavorite(!favorite)}
-  const submitOrder=async()=>{if(!petDbId)return;const address={name:"待选择",phone:"",detail:"用户提交后补充"};const r=await fetch("http://127.0.0.1:3001/api/orders",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user_id:userId,pet_id:petDbId,address})});if(r.ok){setBuyOpen(false);go("orders")}}
+  const [petDbId, setPetDbId] = useState<number | null>(null);
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}`)
+      .then((r) => r.json())
+      .then(async (d) => {
+        if (Array.isArray(d) && d[0]) {
+          setPetDbId(d[0].id);
+          await fetch("http://127.0.0.1:3001/api/footprints", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ user_id: userId, pet_id: d[0].id }),
+          });
+        }
+      })
+      .catch(() => {});
+  }, [breed.name, userId]);
+  const toggleFavorite = async () => {
+    if (petDbId) {
+      await fetch(
+        favorite
+          ? `http://127.0.0.1:3001/api/favorites/${petDbId}?user_id=${userId}`
+          : "http://127.0.0.1:3001/api/favorites",
+        {
+          method: favorite ? "DELETE" : "POST",
+          headers: { "content-type": "application/json" },
+          body: favorite
+            ? undefined
+            : JSON.stringify({ user_id: userId, pet_id: petDbId }),
+        },
+      ).catch(() => {});
+    }
+    setFavorite(!favorite);
+  };
+  const submitOrder = async () => {
+    if (!petDbId) return;
+    const address = { name: "待选择", phone: "", detail: "用户提交后补充" };
+    const r = await fetch("http://127.0.0.1:3001/api/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: userId, pet_id: petDbId, address }),
+    });
+    if (r.ok) {
+      setBuyOpen(false);
+      go("orders");
+    }
+  };
+  const toggleFollow=async()=>{const seller="福宠认证宠物馆";await fetch(`http://127.0.0.1:3001/api/follows${following?`?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`:""}`,{method:following?"DELETE":"POST",headers:{"content-type":"application/json"},body:following?undefined:JSON.stringify({user_id:userId,seller_name:seller})}).catch(()=>{});setFollowing(!following)}
   return (
     <div className="detail">
       <section className="detail-hero">
@@ -420,7 +593,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
           <h3>所属商家</h3>
           <b>福宠认证宠物馆　★★★★★</b>
           <p>健康保障 · 售后无忧 · 已售3289+</p>
-          <button>进入店铺 ›</button>
+          <button onClick={toggleFollow}>{following?"已关注商家":"＋ 关注商家"}</button>
         </div>
       </section>
       <section className="reviews">
@@ -439,10 +612,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
         <button onClick={() => go("service")}>
           ♧<small>客服</small>
         </button>
-        <button
-          className={favorite ? "selected" : ""}
-          onClick={toggleFavorite}
-        >
+        <button className={favorite ? "selected" : ""} onClick={toggleFavorite}>
           {favorite ? "♥" : "♡"}
           <small>{favorite ? "已收藏" : "收藏"}</small>
         </button>
@@ -481,11 +651,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
               <span>应付合计</span>
               <strong>¥6800</strong>
             </div>
-            <button
-              onClick={submitOrder}
-            >
-              提交订单
-            </button>
+            <button onClick={submitOrder}>提交订单</button>
             <small>提交即代表同意《活体宠物购买保障协议》</small>
           </section>
         </div>
@@ -654,7 +820,9 @@ function SubPage({ title, go }: { title: string; go: (p: Page) => void }) {
 }
 
 export default function App() {
-  useEffect(()=>{ensureVisitor()},[])
+  useEffect(() => {
+    ensureVisitor();
+  }, []);
   const adminMode = location.hash.startsWith("#admin");
   const [page, setPage] = useState<Page>("home");
   const [user, setUser] = useState<User | null>(() => {

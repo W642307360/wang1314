@@ -121,10 +121,34 @@ export function CollectionPage({
 }) {
   const [tab, setTab] = useState(mode);
   const [favorites, setFavorites] = useState([1, 2, 3]);
-  const [follows, setFollows] = useState([1, 2]);
-  const userId=Number(localStorage.getItem("fuchong-user-id")||1)
-  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/favorites?user_id=${userId}`).then(r=>r.json()).then(d=>Array.isArray(d)&&d.length&&setFavorites(d.map(x=>x.pet_id))).catch(()=>{})},[userId])
-  const removeFavorite=async(petId:number)=>{await fetch(`http://127.0.0.1:3001/api/favorites/${petId}?user_id=${userId}`,{method:"DELETE"}).catch(()=>{});setFavorites(v=>v.filter(i=>i!==petId))}
+  const [follows, setFollows] = useState<string[]>([]);
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/favorites?user_id=${userId}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setFavorites(d.map((x) => x.pet_id)))
+      .catch(() => {});
+  }, [userId]);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/follows?user_id=${userId}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setFollows(d.map((x) => x.seller_name)))
+      .catch(() => {});
+  }, [userId]);
+  const removeFavorite = async (petId: number) => {
+    await fetch(
+      `http://127.0.0.1:3001/api/favorites/${petId}?user_id=${userId}`,
+      { method: "DELETE" },
+    ).catch(() => {});
+    setFavorites((v) => v.filter((i) => i !== petId));
+  };
+  const removeFollow = async (seller: string) => {
+    await fetch(
+      `http://127.0.0.1:3001/api/follows?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`,
+      { method: "DELETE" },
+    ).catch(() => {});
+    setFollows((v) => v.filter((x) => x !== seller));
+  };
   return (
     <div className="module-page">
       <Header title="宠物家" back={back} />
@@ -150,8 +174,7 @@ export function CollectionPage({
                 <img src={petImg} />
                 <button
                   onClick={() =>
-                    confirm("确定取消收藏吗？") &&
-                    removeFavorite(x)
+                    confirm("确定取消收藏吗？") && removeFavorite(x)
                   }
                 >
                   ♥
@@ -171,14 +194,11 @@ export function CollectionPage({
             <article key={x}>
               <div className="seller-logo">宠</div>
               <div>
-                <h3>汪星宠物馆 {x}</h3>
+                <h3>{x}</h3>
                 <p>实名认证 · 健康保障 · 评分 5.0</p>
               </div>
               <button
-                onClick={() =>
-                  confirm("确定取消关注吗？") &&
-                  setFollows((v) => v.filter((i) => i !== x))
-                }
+                onClick={() => confirm("确定取消关注吗？") && removeFollow(x)}
               >
                 已关注
               </button>
@@ -193,29 +213,47 @@ export function CollectionPage({
 }
 
 export function FootprintsPage({ back }: { back: () => void }) {
-  const [items, setItems] = useState([1, 2, 3, 4]);
+  const [items, setItems] = useState<any[]>([]);
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/footprints?user_id=${userId}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setItems(d))
+      .catch(() => {});
+  }, [userId]);
+  const clear = async () => {
+    await fetch(`http://127.0.0.1:3001/api/footprints?user_id=${userId}`, {
+      method: "DELETE",
+    });
+    setItems([]);
+  };
+  const remove = async (id: number) => {
+    await fetch(
+      `http://127.0.0.1:3001/api/footprints/${id}?user_id=${userId}`,
+      { method: "DELETE" },
+    );
+    setItems((v) => v.filter((x) => x.id !== id));
+  };
   return (
     <div className="module-page">
       <Header title="浏览足迹" back={back} />
       <div className="list-tools">
         <b>今天</b>
-        <button onClick={() => confirm("清空全部浏览记录？") && setItems([])}>
+        <button onClick={() => confirm("清空全部浏览记录？") && clear()}>
           清空
         </button>
       </div>
       {items.length ? (
         <div className="foot-grid">
           {items.map((x) => (
-            <article key={x}>
+            <article key={x.id}>
               <img src={petImg} />
               <div>
-                <h3>金毛小太阳 {x}号</h3>
-                <p>今天 {10 + x}:26 浏览</p>
-                <b>¥ {6800 + x * 300}</b>
+                <h3>{x.name}</h3>
+                <p>{new Date(x.viewed_at).toLocaleString()}</p>
+                <b>¥ {x.price}</b>
               </div>
-              <button onClick={() => setItems((v) => v.filter((i) => i !== x))}>
-                ×
-              </button>
+              <button onClick={() => remove(x.id)}>×</button>
             </article>
           ))}
         </div>
@@ -231,19 +269,70 @@ export function FootprintsPage({ back }: { back: () => void }) {
 }
 
 export function AddressesPage({ back }: { back: () => void }) {
-  const [items, setItems] = useState<Array<{id:number;name:string;phone:string;address:string;isDefault:boolean}>>([]);
+  const [items, setItems] = useState<
+    Array<{
+      id: number;
+      name: string;
+      phone: string;
+      address: string;
+      isDefault: boolean;
+    }>
+  >([]);
   const [editing, setEditing] = useState(false);
-  const userId=Number(localStorage.getItem("fuchong-user-id")||1)
-  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/addresses?user_id=${userId}`).then(r=>r.json()).then(d=>Array.isArray(d)&&setItems(d.map(a=>({id:a.id,name:a.name,phone:a.phone,address:[a.province,a.city,a.district,a.detail].filter(Boolean).join(" "),isDefault:Boolean(a.is_default)})))).catch(()=>{})},[userId])
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/addresses?user_id=${userId}`)
+      .then((r) => r.json())
+      .then(
+        (d) =>
+          Array.isArray(d) &&
+          setItems(
+            d.map((a) => ({
+              id: a.id,
+              name: a.name,
+              phone: a.phone,
+              address: [a.province, a.city, a.district, a.detail]
+                .filter(Boolean)
+                .join(" "),
+              isDefault: Boolean(a.is_default),
+            })),
+          ),
+      )
+      .catch(() => {});
+  }, [userId]);
   return (
     <div className="module-page">
       <Header title="收货地址" back={back} />
       {editing ? (
         <form
           className="address-form"
-          onSubmit={async(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
-            const f=new FormData(e.currentTarget);const payload={user_id:userId,name:String(f.get("name")||""),phone:String(f.get("phone")||""),province:String(f.get("region")||""),detail:String(f.get("detail")||""),is_default:Boolean(f.get("default"))};const r=await fetch("http://127.0.0.1:3001/api/addresses",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});const saved=await r.json();setItems(v=>[...v,{id:saved.id,name:payload.name,phone:payload.phone,address:`${payload.province} ${payload.detail}`,isDefault:payload.is_default}])
+            const f = new FormData(e.currentTarget);
+            const payload = {
+              user_id: userId,
+              name: String(f.get("name") || ""),
+              phone: String(f.get("phone") || ""),
+              province: String(f.get("region") || ""),
+              detail: String(f.get("detail") || ""),
+              is_default: Boolean(f.get("default")),
+            };
+            const r = await fetch("http://127.0.0.1:3001/api/addresses", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const saved = await r.json();
+            setItems((v) => [
+              ...v,
+              {
+                id: saved.id,
+                name: payload.name,
+                phone: payload.phone,
+                address: `${payload.province} ${payload.detail}`,
+                isDefault: payload.is_default,
+              },
+            ]);
             setEditing(false);
           }}
         >
@@ -357,7 +446,7 @@ export function OrdersPage({ back }: { back: () => void }) {
     "售后",
   ];
   const [tab, setTab] = useState("全部");
-  const [orders,setOrders] = useState<Order[]>([
+  const [orders, setOrders] = useState<Order[]>([
     {
       id: "FC20260709001",
       status: "待确认",
@@ -375,8 +464,32 @@ export function OrdersPage({ back }: { back: () => void }) {
       image: petImg,
     },
   ]);
-  const userId=Number(localStorage.getItem("fuchong-user-id")||1)
-  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/orders?user_id=${userId}`).then(r=>r.json()).then(d=>Array.isArray(d)&&setOrders(d.map(o=>{let pet:any={};try{pet=JSON.parse(o.pet_snapshot||"{}")}catch{}return{id:o.order_no,status:o.status,petName:pet.name||"宠物订单",breed:pet.breed||"宠物档案",price:o.total_amount,image:pet.images?.[0]?.url||petImg}}))).catch(()=>{})},[userId])
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`http://127.0.0.1:3001/api/orders?user_id=${userId}`)
+      .then((r) => r.json())
+      .then(
+        (d) =>
+          Array.isArray(d) &&
+          setOrders(
+            d.map((o) => {
+              let pet: any = {};
+              try {
+                pet = JSON.parse(o.pet_snapshot || "{}");
+              } catch {}
+              return {
+                id: o.order_no,
+                status: o.status,
+                petName: pet.name || "宠物订单",
+                breed: pet.breed || "宠物档案",
+                price: o.total_amount,
+                image: pet.images?.[0]?.url || petImg,
+              };
+            }),
+          ),
+      )
+      .catch(() => {});
+  }, [userId]);
   const visible =
     tab === "全部" ? orders : orders.filter((o) => o.status === tab);
   return (

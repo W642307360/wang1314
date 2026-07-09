@@ -113,7 +113,31 @@ createServer(async (req, res) => {
     }
     if (path === "/api/health")
       return json(res, 200, { ok: true, database: true });
-    if(path==="/api/visitors/session"&&method==="POST"){const d=await body(req),token=String(d.token||randomBytes(18).toString("hex"));let visitor=db.prepare("SELECT * FROM visitors WHERE token=?").get(token);if(visitor){db.prepare("UPDATE visitors SET last_seen=CURRENT_TIMESTAMP,visit_count=visit_count+1 WHERE id=?").run(visitor.id)}else{const u=db.prepare("INSERT INTO users(openid,nickname,status) VALUES(?,?,?)").run(`guest:${token}`,"访客用户","guest");const v=db.prepare("INSERT INTO visitors(token,user_id) VALUES(?,?)").run(token,u.lastInsertRowid);visitor={id:v.lastInsertRowid,token,user_id:u.lastInsertRowid}}return json(res,200,{token,userId:visitor.user_id,visitorId:visitor.id})}
+    if (path === "/api/visitors/session" && method === "POST") {
+      const d = await body(req),
+        token = String(d.token || randomBytes(18).toString("hex"));
+      let visitor = db
+        .prepare("SELECT * FROM visitors WHERE token=?")
+        .get(token);
+      if (visitor) {
+        db.prepare(
+          "UPDATE visitors SET last_seen=CURRENT_TIMESTAMP,visit_count=visit_count+1 WHERE id=?",
+        ).run(visitor.id);
+      } else {
+        const u = db
+          .prepare("INSERT INTO users(openid,nickname,status) VALUES(?,?,?)")
+          .run(`guest:${token}`, "访客用户", "guest");
+        const v = db
+          .prepare("INSERT INTO visitors(token,user_id) VALUES(?,?)")
+          .run(token, u.lastInsertRowid);
+        visitor = { id: v.lastInsertRowid, token, user_id: u.lastInsertRowid };
+      }
+      return json(res, 200, {
+        token,
+        userId: visitor.user_id,
+        visitorId: visitor.id,
+      });
+    }
     if (path === "/api/admin/login" && method === "POST") {
       const d = await body(req),
         a = db.prepare("SELECT * FROM admins WHERE username=?").get(d.username);
@@ -153,18 +177,18 @@ createServer(async (req, res) => {
           d.name,
           d.category_id,
           d.breed,
-          d.gender??null,
-          d.age_months??null,
-          d.color??null,
-          d.body_type??null,
-          d.personality??null,
-          d.health_status??null,
-          d.vaccine_record??null,
-          d.father_info??null,
-          d.mother_info??null,
-          d.description??null,
+          d.gender ?? null,
+          d.age_months ?? null,
+          d.color ?? null,
+          d.body_type ?? null,
+          d.personality ?? null,
+          d.health_status ?? null,
+          d.vaccine_record ?? null,
+          d.father_info ?? null,
+          d.mother_info ?? null,
+          d.description ?? null,
           d.price,
-          d.seller_name??null,
+          d.seller_name ?? null,
           d.status || "draft",
         );
       return json(res, 201, petDetail(r.lastInsertRowid));
@@ -272,7 +296,17 @@ createServer(async (req, res) => {
         throw e;
       }
     }
-    if(path==="/api/orders"&&method==="GET"){const userId=Number(url.searchParams.get("user_id")||1);return json(res,200,rows("SELECT o.*,oi.pet_snapshot,oi.price FROM orders o LEFT JOIN order_items oi ON oi.order_id=o.id WHERE o.user_id=? ORDER BY o.id DESC",userId))}
+    if (path === "/api/orders" && method === "GET") {
+      const userId = Number(url.searchParams.get("user_id") || 1);
+      return json(
+        res,
+        200,
+        rows(
+          "SELECT o.*,oi.pet_snapshot,oi.price FROM orders o LEFT JOIN order_items oi ON oi.order_id=o.id WHERE o.user_id=? ORDER BY o.id DESC",
+          userId,
+        ),
+      );
+    }
     if (path === "/api/messages" && method === "GET")
       return json(
         res,
@@ -336,6 +370,15 @@ createServer(async (req, res) => {
       ).run(d.user_id || 1, d.seller_name);
       return json(res, 201, { ok: true });
     }
+    if (path === "/api/follows" && method === "DELETE") {
+      const userId = Number(url.searchParams.get("user_id") || 1),
+        seller = url.searchParams.get("seller_name") || "";
+      db.prepare("DELETE FROM follows WHERE user_id=? AND seller_name=?").run(
+        userId,
+        seller,
+      );
+      return json(res, 200, { ok: true });
+    }
     if (path === "/api/footprints" && method === "GET")
       return json(
         res,
@@ -352,6 +395,20 @@ createServer(async (req, res) => {
         d.pet_id,
       );
       return json(res, 201, { ok: true });
+    }
+    const footprintItem = path.match(/^\/api\/footprints\/(\d+)$/);
+    if (footprintItem && method === "DELETE") {
+      db.prepare("DELETE FROM footprints WHERE id=? AND user_id=?").run(
+        Number(footprintItem[1]),
+        Number(url.searchParams.get("user_id") || 1),
+      );
+      return json(res, 200, { ok: true });
+    }
+    if (path === "/api/footprints" && method === "DELETE") {
+      db.prepare("DELETE FROM footprints WHERE user_id=?").run(
+        Number(url.searchParams.get("user_id") || 1),
+      );
+      return json(res, 200, { ok: true });
     }
     if (path === "/api/addresses" && method === "GET")
       return json(
@@ -372,9 +429,9 @@ createServer(async (req, res) => {
           d.user_id || 1,
           d.name,
           d.phone,
-          d.province,
-          d.city,
-          d.district,
+          d.province??null,
+          d.city??null,
+          d.district??null,
           d.detail,
           d.is_default ? 1 : 0,
         );
@@ -386,24 +443,194 @@ createServer(async (req, res) => {
         200,
         rows("SELECT * FROM coupons WHERE status=?", "active"),
       );
-    const skuRoute=path.match(/^\/api\/admin\/pets\/(\d+)\/skus$/);
-    if(skuRoute&&method==="GET")return json(res,200,rows("SELECT * FROM pet_skus WHERE pet_id=?",Number(skuRoute[1])));
-    if(skuRoute&&method==="POST"){const d=await body(req);const r=db.prepare("INSERT INTO pet_skus(pet_id,sku_name,price,stock,status) VALUES(?,?,?,?,?)").run(Number(skuRoute[1]),d.sku_name,d.price,d.stock,d.status||"active");return json(res,201,{id:r.lastInsertRowid})}
-    const skuItem=path.match(/^\/api\/admin\/skus\/(\d+)$/);
-    if(skuItem&&method==="PATCH"){const d=await body(req);db.prepare("UPDATE pet_skus SET sku_name=?,price=?,stock=?,status=? WHERE id=?").run(d.sku_name,d.price,d.stock,d.status,Number(skuItem[1]));return json(res,200,{ok:true})}
-    if(skuItem&&method==="DELETE"){db.prepare("DELETE FROM pet_skus WHERE id=?").run(Number(skuItem[1]));return json(res,200,{ok:true})}
-    const mediaRoute=path.match(/^\/api\/admin\/pets\/(\d+)\/(images|videos)$/);
-    if(mediaRoute&&method==="POST"){const d=await body(req),petId=Number(mediaRoute[1]);if(mediaRoute[2]==="images"){const r=db.prepare("INSERT INTO pet_images(pet_id,url,type,sort_order) VALUES(?,?,?,?)").run(petId,d.url,d.type||"gallery",d.sort_order||0);return json(res,201,{id:r.lastInsertRowid})}const r=db.prepare("INSERT INTO pet_videos(pet_id,url,cover_url,duration) VALUES(?,?,?,?)").run(petId,d.url,d.cover_url,d.duration||0);return json(res,201,{id:r.lastInsertRowid})}
-    const orderRoute=path.match(/^\/api\/admin\/orders\/(\d+)$/);
-    if(orderRoute&&method==="GET"){const order=db.prepare("SELECT o.*,u.nickname,u.phone FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?").get(Number(orderRoute[1]));return json(res,order?200:404,order?{...order,items:rows("SELECT * FROM order_items WHERE order_id=?",Number(orderRoute[1])),logistics:db.prepare("SELECT * FROM logistics WHERE order_id=?").get(Number(orderRoute[1]))}:{message:"订单不存在"})}
-    if(orderRoute&&method==="PATCH"){const d=await body(req);db.prepare("UPDATE orders SET status=COALESCE(?,status),payment_status=COALESCE(?,payment_status),updated_at=CURRENT_TIMESTAMP WHERE id=?").run(d.status,d.payment_status,Number(orderRoute[1]));return json(res,200,{ok:true})}
-    const userRoute=path.match(/^\/api\/admin\/users\/(\d+)$/);
-    if(userRoute&&method==="GET"){const id=Number(userRoute[1]),user=db.prepare("SELECT id,nickname,avatar,phone,status,created_at FROM users WHERE id=?").get(id);return json(res,user?200:404,user?{...user,orders:rows("SELECT * FROM orders WHERE user_id=?",id),favorites:rows("SELECT * FROM favorites WHERE user_id=?",id),footprints:rows("SELECT * FROM footprints WHERE user_id=?",id),addresses:rows("SELECT * FROM addresses WHERE user_id=?",id)}:{message:"用户不存在"})}
-    for(const resource of ["banners","categories"]){if(path===`/api/admin/${resource}`&&method==="GET")return json(res,200,rows(`SELECT * FROM ${resource} ORDER BY id DESC`));if(path===`/api/admin/${resource}`&&method==="POST"){const d=await body(req);if(resource==="banners"){const r=db.prepare("INSERT INTO banners(title,image,link,sort_order,status) VALUES(?,?,?,?,?)").run(d.title??null,d.image,d.link??null,d.sort_order||0,d.status||"active");return json(res,201,{id:r.lastInsertRowid})}const r=db.prepare("INSERT INTO categories(name,parent_id,image,sort_order,status) VALUES(?,?,?,?,?)").run(d.name,d.parent_id||null,d.image??null,d.sort_order||0,d.status||"active");return json(res,201,{id:r.lastInsertRowid})}}
-    if(path==="/api/admin/feishu/configs"&&method==="GET")return json(res,200,rows("SELECT * FROM feishu_sync_configs ORDER BY id DESC"));
-    if(path==="/api/admin/feishu/configs"&&method==="POST"){const d=await body(req);const r=db.prepare("INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status) VALUES(?,?,?,?,?,?)").run(d.name,d.document_url,d.app_token??null,d.table_id??null,JSON.stringify(d.field_mapping||{}),d.status||"active");return json(res,201,{id:r.lastInsertRowid})}
-    if(path==="/api/admin/feishu/sync"&&method==="POST"){const d=await body(req);const r=db.prepare("INSERT INTO feishu_sync_tasks(config_id,mode,status) VALUES(?,?,?)").run(d.config_id,d.mode||"incremental","pending");return json(res,202,{taskId:r.lastInsertRowid,status:"pending",message:"同步任务已进入队列"})}
-    if(path==="/api/admin/feishu/tasks"&&method==="GET")return json(res,200,rows("SELECT * FROM feishu_sync_tasks ORDER BY id DESC"));
+    const skuRoute = path.match(/^\/api\/admin\/pets\/(\d+)\/skus$/);
+    if (skuRoute && method === "GET")
+      return json(
+        res,
+        200,
+        rows("SELECT * FROM pet_skus WHERE pet_id=?", Number(skuRoute[1])),
+      );
+    if (skuRoute && method === "POST") {
+      const d = await body(req);
+      const r = db
+        .prepare(
+          "INSERT INTO pet_skus(pet_id,sku_name,price,stock,status) VALUES(?,?,?,?,?)",
+        )
+        .run(
+          Number(skuRoute[1]),
+          d.sku_name,
+          d.price,
+          d.stock,
+          d.status || "active",
+        );
+      return json(res, 201, { id: r.lastInsertRowid });
+    }
+    const skuItem = path.match(/^\/api\/admin\/skus\/(\d+)$/);
+    if (skuItem && method === "PATCH") {
+      const d = await body(req);
+      db.prepare(
+        "UPDATE pet_skus SET sku_name=?,price=?,stock=?,status=? WHERE id=?",
+      ).run(d.sku_name, d.price, d.stock, d.status, Number(skuItem[1]));
+      return json(res, 200, { ok: true });
+    }
+    if (skuItem && method === "DELETE") {
+      db.prepare("DELETE FROM pet_skus WHERE id=?").run(Number(skuItem[1]));
+      return json(res, 200, { ok: true });
+    }
+    const mediaRoute = path.match(
+      /^\/api\/admin\/pets\/(\d+)\/(images|videos)$/,
+    );
+    if (mediaRoute && method === "POST") {
+      const d = await body(req),
+        petId = Number(mediaRoute[1]);
+      if(!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))return json(res,404,{message:"宠物不存在，不能关联媒体"});
+      if(!d.url)return json(res,400,{message:"媒体地址不能为空"});
+      if (mediaRoute[2] === "images") {
+        const r = db
+          .prepare(
+            "INSERT INTO pet_images(pet_id,url,type,sort_order) VALUES(?,?,?,?)",
+          )
+          .run(petId, d.url, d.type || "gallery", d.sort_order || 0);
+        return json(res, 201, { id: r.lastInsertRowid });
+      }
+      const r = db
+        .prepare(
+          "INSERT INTO pet_videos(pet_id,url,cover_url,duration) VALUES(?,?,?,?)",
+        )
+        .run(petId, d.url, d.cover_url, d.duration || 0);
+      return json(res, 201, { id: r.lastInsertRowid });
+    }
+    const orderRoute = path.match(/^\/api\/admin\/orders\/(\d+)$/);
+    if (orderRoute && method === "GET") {
+      const order = db
+        .prepare(
+          "SELECT o.*,u.nickname,u.phone FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?",
+        )
+        .get(Number(orderRoute[1]));
+      return json(
+        res,
+        order ? 200 : 404,
+        order
+          ? {
+              ...order,
+              items: rows(
+                "SELECT * FROM order_items WHERE order_id=?",
+                Number(orderRoute[1]),
+              ),
+              logistics: db
+                .prepare("SELECT * FROM logistics WHERE order_id=?")
+                .get(Number(orderRoute[1])),
+            }
+          : { message: "订单不存在" },
+      );
+    }
+    if (orderRoute && method === "PATCH") {
+      const d = await body(req);
+      db.prepare(
+        "UPDATE orders SET status=COALESCE(?,status),payment_status=COALESCE(?,payment_status),updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(d.status, d.payment_status, Number(orderRoute[1]));
+      return json(res, 200, { ok: true });
+    }
+    const userRoute = path.match(/^\/api\/admin\/users\/(\d+)$/);
+    if (userRoute && method === "GET") {
+      const id = Number(userRoute[1]),
+        user = db
+          .prepare(
+            "SELECT id,nickname,avatar,phone,status,created_at FROM users WHERE id=?",
+          )
+          .get(id);
+      return json(
+        res,
+        user ? 200 : 404,
+        user
+          ? {
+              ...user,
+              orders: rows("SELECT * FROM orders WHERE user_id=?", id),
+              favorites: rows("SELECT * FROM favorites WHERE user_id=?", id),
+              footprints: rows("SELECT * FROM footprints WHERE user_id=?", id),
+              addresses: rows("SELECT * FROM addresses WHERE user_id=?", id),
+            }
+          : { message: "用户不存在" },
+      );
+    }
+    for (const resource of ["banners", "categories"]) {
+      if (path === `/api/admin/${resource}` && method === "GET")
+        return json(
+          res,
+          200,
+          rows(`SELECT * FROM ${resource} ORDER BY id DESC`),
+        );
+      if (path === `/api/admin/${resource}` && method === "POST") {
+        const d = await body(req);
+        if (resource === "banners") {
+          const r = db
+            .prepare(
+              "INSERT INTO banners(title,image,link,sort_order,status) VALUES(?,?,?,?,?)",
+            )
+            .run(
+              d.title ?? null,
+              d.image,
+              d.link ?? null,
+              d.sort_order || 0,
+              d.status || "active",
+            );
+          return json(res, 201, { id: r.lastInsertRowid });
+        }
+        const r = db
+          .prepare(
+            "INSERT INTO categories(name,parent_id,image,sort_order,status) VALUES(?,?,?,?,?)",
+          )
+          .run(
+            d.name,
+            d.parent_id || null,
+            d.image ?? null,
+            d.sort_order || 0,
+            d.status || "active",
+          );
+        return json(res, 201, { id: r.lastInsertRowid });
+      }
+    }
+    if (path === "/api/admin/feishu/configs" && method === "GET")
+      return json(
+        res,
+        200,
+        rows("SELECT * FROM feishu_sync_configs ORDER BY id DESC"),
+      );
+    if (path === "/api/admin/feishu/configs" && method === "POST") {
+      const d = await body(req);
+      const r = db
+        .prepare(
+          "INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status) VALUES(?,?,?,?,?,?)",
+        )
+        .run(
+          d.name,
+          d.document_url,
+          d.app_token ?? null,
+          d.table_id ?? null,
+          JSON.stringify(d.field_mapping || {}),
+          d.status || "active",
+        );
+      return json(res, 201, { id: r.lastInsertRowid });
+    }
+    if (path === "/api/admin/feishu/sync" && method === "POST") {
+      const d = await body(req);
+      const r = db
+        .prepare(
+          "INSERT INTO feishu_sync_tasks(config_id,mode,status) VALUES(?,?,?)",
+        )
+        .run(d.config_id, d.mode || "incremental", "pending");
+      return json(res, 202, {
+        taskId: r.lastInsertRowid,
+        status: "pending",
+        message: "同步任务已进入队列",
+      });
+    }
+    if (path === "/api/admin/feishu/tasks" && method === "GET")
+      return json(
+        res,
+        200,
+        rows("SELECT * FROM feishu_sync_tasks ORDER BY id DESC"),
+      );
     return json(res, 404, { message: "接口不存在" });
   } catch (e) {
     console.error(e);
