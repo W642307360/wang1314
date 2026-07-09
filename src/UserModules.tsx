@@ -497,7 +497,11 @@ export function OrdersPage({ back }: { back: () => void }) {
       <Header title="我的订单" back={back} />
       <div className="order-tabs">
         {tabs.map((t) => (
-          <button className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
+          <button
+            key={t}
+            className={tab === t ? "on" : ""}
+            onClick={() => setTab(t)}
+          >
             {t}
           </button>
         ))}

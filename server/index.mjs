@@ -1,6 +1,12 @@
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import {
+  readFileSync,
+  mkdirSync,
+  existsSync,
+  writeFileSync,
+  readdirSync,
+} from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,9 +23,33 @@ const db = new DatabaseSync(
   process.env.DB_PATH || join(root, "data", "fuchong.db"),
 );
 db.exec(readFileSync(join(root, "schema.sql"), "utf8"));
+const migrate = () => {
+  const dir = join(root, "migrations");
+  if (!existsSync(dir)) return;
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS schema_migrations(id INTEGER PRIMARY KEY,name TEXT UNIQUE NOT NULL,applied_at TEXT DEFAULT CURRENT_TIMESTAMP)",
+  );
+  for (const file of readdirSync(dir)
+    .filter((x) => x.endsWith(".sql"))
+    .sort()) {
+    if (db.prepare("SELECT id FROM schema_migrations WHERE name=?").get(file))
+      continue;
+    db.exec("BEGIN");
+    try {
+      db.exec(readFileSync(join(dir, file), "utf8"));
+      db.prepare("INSERT INTO schema_migrations(name) VALUES(?)").run(file);
+      db.exec("COMMIT");
+      console.log(`数据库迁移完成: ${file}`);
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  }
+};
+migrate();
 const SECRET = process.env.JWT_SECRET || "dev-only-change-in-production";
 const hash = (password, salt) => scryptSync(password, salt, 64).toString("hex");
-const initialAdminPassword = process.env.ADMIN_INITIAL_PASSWORD || "123123123";
+const initialAdminPassword = process.env.ADMIN_INITIAL_PASSWORD || "123456789";
 const existingAdmin = db
   .prepare("SELECT * FROM admins WHERE username=?")
   .get("admin");
@@ -82,6 +112,14 @@ const body = async (req) => {
   return raw ? JSON.parse(raw) : {};
 };
 const rows = (sql, ...args) => db.prepare(sql).all(...args);
+const pageParams = (url, defaults = { pageSize: 12, max: 100 }) => {
+  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+  const pageSize = Math.min(
+    defaults.max,
+    Math.max(1, Number(url.searchParams.get("pageSize") || defaults.pageSize)),
+  );
+  return { page, pageSize, offset: (page - 1) * pageSize };
+};
 const petDetail = (id) => {
   const pet = db.prepare("SELECT * FROM pets WHERE id=?").get(id);
   if (!pet) return null;
@@ -93,7 +131,127 @@ const petDetail = (id) => {
       id,
     ),
     videos: rows("SELECT * FROM pet_videos WHERE pet_id=?", id),
+    inventory: rows("SELECT * FROM inventory WHERE pet_id=?", id),
   };
+};
+const logAdmin = (admin, req, action, resource, resourceId, detail = {}) => {
+  if (!admin || !admin.sub) return;
+  db.prepare(
+    "INSERT INTO admin_operation_logs(admin_id,action,resource,resource_id,detail,ip) VALUES(?,?,?,?,?,?)",
+  ).run(
+    admin.sub,
+    action,
+    resource,
+    String(resourceId ?? ""),
+    JSON.stringify(detail),
+    req.socket.remoteAddress || "",
+  );
+};
+const syncQueues = new Map();
+const generateSyncItems = (total = 500) =>
+  Array.from({ length: total }, (_, i) => ({
+    name: `同步宠物 ${i + 1}`,
+    category_id: (i % 6) + 1,
+    breed: ["布偶猫", "金毛", "虎皮鹦鹉", "锦鲤", "垂耳兔", "公益领养"][i % 6],
+    gender: i % 2 ? "男" : "女",
+    age_months: (i % 12) + 1,
+    color: ["海豹双色", "金色", "蓝白", "锦色"][i % 4],
+    body_type: ["小型", "中型", "大型"][i % 3],
+    personality: "亲人稳定",
+    health_status: "健康",
+    vaccine_record: "同步档案待复核",
+    description: "外部商品库同步数据",
+    price: 2999 + (i % 50) * 100,
+    seller_name: "福宠同步商家",
+    status: "published",
+    source: "feishu",
+    external_id: `mock-${i + 1}`,
+    stock: 1,
+  }));
+const processSyncTask = (taskId, items) => {
+  const state = syncQueues.get(taskId);
+  if (!state || state.paused) return;
+  const task = db
+    .prepare("SELECT * FROM feishu_sync_tasks WHERE id=?")
+    .get(taskId);
+  if (!task || ["completed", "paused"].includes(task.status)) return;
+  const batchSize = Number(task.batch_size || 500);
+  const start = Number(task.processed || 0);
+  const batch = items.slice(start, start + batchSize);
+  if (!batch.length) {
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='completed',finished_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(taskId);
+    syncQueues.delete(taskId);
+    return;
+  }
+  db.exec("BEGIN");
+  let success = 0;
+  let failed = 0;
+  try {
+    const insertPet = db.prepare(
+      `INSERT INTO pets(name,category_id,breed,gender,age_months,color,body_type,personality,health_status,vaccine_record,description,price,seller_name,status,source,external_id)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(source,external_id) DO UPDATE SET
+       name=excluded.name,category_id=excluded.category_id,breed=excluded.breed,price=excluded.price,status=excluded.status,updated_at=CURRENT_TIMESTAMP`,
+    );
+    for (const [i, item] of batch.entries()) {
+      try {
+        if (!item.name || !item.breed || !item.price)
+          throw new Error("缺少名称、品种或价格");
+        insertPet.run(
+          item.name,
+          item.category_id || 1,
+          item.breed,
+          item.gender ?? null,
+          item.age_months ?? null,
+          item.color ?? null,
+          item.body_type ?? null,
+          item.personality ?? null,
+          item.health_status ?? null,
+          item.vaccine_record ?? null,
+          item.description ?? null,
+          item.price,
+          item.seller_name ?? null,
+          item.status || "draft",
+          item.source || "feishu",
+          item.external_id || `task-${taskId}-${start + i + 1}`,
+        );
+        const petId = db
+          .prepare("SELECT id FROM pets WHERE source=? AND external_id=?")
+          .get(
+            item.source || "feishu",
+            item.external_id || `task-${taskId}-${start + i + 1}`,
+          )?.id;
+        if (petId)
+          db.prepare(
+            "INSERT INTO inventory(pet_id,total_stock,available_stock) SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM inventory WHERE pet_id=? AND sku_id IS NULL)",
+          ).run(petId, Number(item.stock || 1), Number(item.stock || 1), petId);
+        if (petId)
+          db.prepare(
+            "UPDATE inventory SET total_stock=?,available_stock=MAX(available_stock,?),updated_at=CURRENT_TIMESTAMP WHERE pet_id=? AND sku_id IS NULL",
+          ).run(Number(item.stock || 1), Number(item.stock || 1), petId);
+        success++;
+      } catch (e) {
+        failed++;
+        db.prepare(
+          "INSERT INTO sync_task_errors(task_id,row_no,payload,error) VALUES(?,?,?,?)",
+        ).run(taskId, start + i + 1, JSON.stringify(item), e.message);
+      }
+    }
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='running',processed=processed+?,success=success+?,failed=failed+? WHERE id=?",
+    ).run(batch.length, success, failed, taskId);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='failed',error=?,retry_count=retry_count+1,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(e.message, taskId);
+    syncQueues.delete(taskId);
+    return;
+  }
+  setTimeout(() => processSyncTask(taskId, items), 0);
 };
 
 createServer(async (req, res) => {
@@ -150,9 +308,29 @@ createServer(async (req, res) => {
     }
     const admin = path.startsWith("/api/admin/") ? auth(req) : true;
     if (!admin) return json(res, 401, { message: "请先登录" });
+    if (path === "/api/admin/db/status" && method === "GET") {
+      const tables = rows(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      );
+      return json(res, 200, {
+        tables: tables.map((x) => {
+          try {
+            return {
+              name: x.name,
+              count: db.prepare(`SELECT COUNT(*) AS count FROM ${x.name}`).get()
+                .count,
+            };
+          } catch {
+            return { name: x.name, count: null };
+          }
+        }),
+        migrations: rows("SELECT * FROM schema_migrations ORDER BY id"),
+      });
+    }
     if (path === "/api/pets" && method === "GET") {
       const q = `%${url.searchParams.get("q") || ""}%`,
         status = url.searchParams.get("status") || "published";
+      const { pageSize, offset } = pageParams(url, { pageSize: 12, max: 50 });
       return json(
         res,
         200,
@@ -163,17 +341,42 @@ createServer(async (req, res) => {
            WHERE p.status=?
              AND (p.name LIKE ? OR p.breed LIKE ? OR p.description LIKE ? OR c.name LIKE ?)
            ORDER BY p.id DESC
-           LIMIT 100`,
+           LIMIT ? OFFSET ?`,
           status,
           q,
           q,
           q,
           q,
+          pageSize,
+          offset,
         ),
       );
     }
+    const publicPet = path.match(/^\/api\/pets\/(\d+)$/);
+    if (publicPet && method === "GET") {
+      const pet = petDetail(Number(publicPet[1]));
+      if (!pet || pet.status !== "published")
+        return json(res, 404, { message: "商品不存在或未上架" });
+      return json(res, 200, pet);
+    }
+    if (path === "/api/categories" && method === "GET")
+      return json(
+        res,
+        200,
+        rows(
+          "SELECT * FROM categories WHERE status='active' ORDER BY sort_order,id",
+        ),
+      );
     if (path === "/api/admin/pets" && method === "GET")
-      return json(res, 200, rows("SELECT * FROM pets ORDER BY id DESC"));
+      return json(
+        res,
+        200,
+        rows(
+          "SELECT * FROM pets ORDER BY id DESC LIMIT ? OFFSET ?",
+          pageParams(url, { pageSize: 50, max: 500 }).pageSize,
+          pageParams(url, { pageSize: 50, max: 500 }).offset,
+        ),
+      );
     if (path === "/api/admin/pets" && method === "POST") {
       const d = await body(req);
       const r = db
@@ -198,13 +401,23 @@ createServer(async (req, res) => {
           d.seller_name ?? null,
           d.status || "draft",
         );
+      db.prepare(
+        "INSERT OR IGNORE INTO inventory(pet_id,total_stock,available_stock) VALUES(?,?,?)",
+      ).run(r.lastInsertRowid, Number(d.stock || 1), Number(d.stock || 1));
+      logAdmin(admin, req, "create", "pets", r.lastInsertRowid, {
+        name: d.name,
+        breed: d.breed,
+      });
       return json(res, 201, petDetail(r.lastInsertRowid));
     }
     const petMatch = path.match(/^\/api\/admin\/pets\/(\d+)$/);
     if (petMatch && method === "GET")
       return json(res, 200, petDetail(Number(petMatch[1])));
     if (petMatch && method === "DELETE") {
-      db.prepare("DELETE FROM pets WHERE id=?").run(Number(petMatch[1]));
+      db.prepare(
+        "UPDATE pets SET status='deleted',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(Number(petMatch[1]));
+      logAdmin(admin, req, "soft_delete", "pets", Number(petMatch[1]));
       return json(res, 200, { ok: true });
     }
     if (petMatch && method === "PATCH") {
@@ -232,6 +445,7 @@ createServer(async (req, res) => {
         db.prepare(
           `UPDATE pets SET ${sets.map((k) => `${k}=?`).join(",")},updated_at=CURRENT_TIMESTAMP WHERE id=?`,
         ).run(...sets.map((k) => d[k]), Number(petMatch[1]));
+      logAdmin(admin, req, "update", "pets", Number(petMatch[1]), d);
       return json(res, 200, petDetail(Number(petMatch[1])));
     }
     if (path === "/api/admin/orders")
@@ -302,6 +516,13 @@ createServer(async (req, res) => {
       const d = await body(req),
         pet = petDetail(d.pet_id);
       if (!pet) return json(res, 404, { message: "商品不存在" });
+      const stock = db
+        .prepare(
+          "SELECT COALESCE(SUM(available_stock),0) AS available FROM inventory WHERE pet_id=?",
+        )
+        .get(pet.id);
+      if (stock && stock.available <= 0)
+        return json(res, 409, { message: "库存不足" });
       const no = `FC${Date.now()}`;
       db.exec("BEGIN");
       try {
@@ -313,8 +534,43 @@ createServer(async (req, res) => {
         db.prepare(
           "INSERT INTO order_items(order_id,pet_id,pet_snapshot,price) VALUES(?,?,?,?)",
         ).run(o.lastInsertRowid, pet.id, JSON.stringify(pet), pet.price);
+        db.prepare(
+          "UPDATE inventory SET available_stock=MAX(available_stock-1,0),locked_stock=locked_stock+1,updated_at=CURRENT_TIMESTAMP WHERE id=(SELECT id FROM inventory WHERE pet_id=? ORDER BY sku_id IS NULL,id LIMIT 1)",
+        ).run(pet.id);
         db.exec("COMMIT");
         return json(res, 201, { id: o.lastInsertRowid, order_no: no });
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    }
+    if (path === "/api/payments/mock" && method === "POST") {
+      const d = await body(req);
+      const order = db
+        .prepare("SELECT * FROM orders WHERE id=?")
+        .get(Number(d.order_id));
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      const paymentNo = `PAY${Date.now()}`;
+      db.exec("BEGIN");
+      try {
+        const r = db
+          .prepare(
+            "INSERT INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload) VALUES(?,?,?,?,?,?,?)",
+          )
+          .run(
+            order.id,
+            paymentNo,
+            d.channel || "mock",
+            order.total_amount,
+            "paid",
+            new Date().toISOString(),
+            JSON.stringify(d),
+          );
+        db.prepare(
+          "UPDATE orders SET payment_status='paid',status='pending_ship',paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(order.id);
+        db.exec("COMMIT");
+        return json(res, 201, { id: r.lastInsertRowid, payment_no: paymentNo });
       } catch (e) {
         db.exec("ROLLBACK");
         throw e;
@@ -487,6 +743,15 @@ createServer(async (req, res) => {
           d.stock,
           d.status || "active",
         );
+      db.prepare(
+        "INSERT OR REPLACE INTO inventory(pet_id,sku_id,total_stock,available_stock,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+      ).run(
+        Number(skuRoute[1]),
+        r.lastInsertRowid,
+        Number(d.stock || 0),
+        Number(d.stock || 0),
+      );
+      logAdmin(admin, req, "create", "pet_skus", r.lastInsertRowid, d);
       return json(res, 201, { id: r.lastInsertRowid });
     }
     const skuItem = path.match(/^\/api\/admin\/skus\/(\d+)$/);
@@ -495,10 +760,15 @@ createServer(async (req, res) => {
       db.prepare(
         "UPDATE pet_skus SET sku_name=?,price=?,stock=?,status=? WHERE id=?",
       ).run(d.sku_name, d.price, d.stock, d.status, Number(skuItem[1]));
+      db.prepare(
+        "UPDATE inventory SET total_stock=?,available_stock=?,updated_at=CURRENT_TIMESTAMP WHERE sku_id=?",
+      ).run(Number(d.stock || 0), Number(d.stock || 0), Number(skuItem[1]));
+      logAdmin(admin, req, "update", "pet_skus", Number(skuItem[1]), d);
       return json(res, 200, { ok: true });
     }
     if (skuItem && method === "DELETE") {
       db.prepare("DELETE FROM pet_skus WHERE id=?").run(Number(skuItem[1]));
+      logAdmin(admin, req, "delete", "pet_skus", Number(skuItem[1]));
       return json(res, 200, { ok: true });
     }
     const mediaRoute = path.match(
@@ -639,11 +909,32 @@ createServer(async (req, res) => {
     }
     if (path === "/api/admin/feishu/sync" && method === "POST") {
       const d = await body(req);
+      const items = Array.isArray(d.items)
+        ? d.items
+        : generateSyncItems(Number(d.total || 500));
       const r = db
         .prepare(
-          "INSERT INTO feishu_sync_tasks(config_id,mode,status) VALUES(?,?,?)",
+          "INSERT INTO feishu_sync_tasks(config_id,mode,status,total,batch_size) VALUES(?,?,?,?,?)",
         )
-        .run(d.config_id, d.mode || "incremental", "pending");
+        .run(
+          d.config_id,
+          d.mode || "incremental",
+          "pending",
+          items.length,
+          Math.min(500, Math.max(1, Number(d.batch_size || 500))),
+        );
+      syncQueues.set(r.lastInsertRowid, { items, paused: false });
+      setTimeout(() => processSyncTask(r.lastInsertRowid, items), 0);
+      logAdmin(
+        admin,
+        req,
+        "start_sync",
+        "feishu_sync_tasks",
+        r.lastInsertRowid,
+        {
+          total: items.length,
+        },
+      );
       return json(res, 202, {
         taskId: r.lastInsertRowid,
         status: "pending",
@@ -655,6 +946,50 @@ createServer(async (req, res) => {
         res,
         200,
         rows("SELECT * FROM feishu_sync_tasks ORDER BY id DESC"),
+      );
+    const syncAction = path.match(
+      /^\/api\/admin\/feishu\/tasks\/(\d+)\/(pause|resume|retry|errors)$/,
+    );
+    if (syncAction && method === "GET" && syncAction[2] === "errors")
+      return json(
+        res,
+        200,
+        rows(
+          "SELECT * FROM sync_task_errors WHERE task_id=? ORDER BY id DESC",
+          Number(syncAction[1]),
+        ),
+      );
+    if (syncAction && method === "POST") {
+      const taskId = Number(syncAction[1]);
+      const action = syncAction[2];
+      if (action === "pause") {
+        const state = syncQueues.get(taskId);
+        if (state) state.paused = true;
+        db.prepare(
+          "UPDATE feishu_sync_tasks SET status='paused',paused_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(taskId);
+      }
+      if (action === "resume" || action === "retry") {
+        const task = db
+          .prepare("SELECT * FROM feishu_sync_tasks WHERE id=?")
+          .get(taskId);
+        const items =
+          syncQueues.get(taskId)?.items ||
+          generateSyncItems(task?.total || 500);
+        syncQueues.set(taskId, { items, paused: false });
+        db.prepare(
+          "UPDATE feishu_sync_tasks SET status='running',paused_at=NULL,retry_count=retry_count+? WHERE id=?",
+        ).run(action === "retry" ? 1 : 0, taskId);
+        setTimeout(() => processSyncTask(taskId, items), 0);
+      }
+      logAdmin(admin, req, action, "feishu_sync_tasks", taskId);
+      return json(res, 200, { ok: true, action });
+    }
+    if (path === "/api/admin/logs" && method === "GET")
+      return json(
+        res,
+        200,
+        rows("SELECT * FROM admin_operation_logs ORDER BY id DESC LIMIT 200"),
       );
     return json(res, 404, { message: "接口不存在" });
   } catch (e) {

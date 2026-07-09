@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { halls } from "./catalog";
 import "./Admin.css";
 import "./AdminLogin.css";
@@ -141,7 +141,7 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
         </label>
         {error && <em>{error}</em>}
         <button>安全登录</button>
-        <small>初始账号：admin　初始密码：123123123</small>
+        <small>初始账号：admin　初始密码：123456789</small>
       </form>
     </div>
   );
@@ -310,7 +310,9 @@ function AdminPanel({ token }: { token: string }) {
                   onChange={(e) => update("hall", e.target.value)}
                 >
                   {halls.map((h) => (
-                    <option value={h.key}>{h.name}</option>
+                    <option key={h.key} value={h.key}>
+                      {h.name}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -323,7 +325,7 @@ function AdminPanel({ token }: { token: string }) {
                 >
                   <option value="">请选择</option>
                   {breeds.map((b) => (
-                    <option>{b.name}</option>
+                    <option key={b.name}>{b.name}</option>
                   ))}
                 </select>
               </label>
@@ -456,7 +458,7 @@ function Dashboard() {
           ["成交金额", "¥126,800", "+18.6%"],
           ["注册用户", "8,629", "+6.4%"],
         ].map((x) => (
-          <article>
+          <article key={x[0]}>
             <small>{x[0]}</small>
             <h2>{x[1]}</h2>
             <span>{x[2]} 较昨日</span>
@@ -480,7 +482,7 @@ function Dashboard() {
             ["售后申请", "6"],
             ["异常同步", "2"],
           ].map((x) => (
-            <button>
+            <button key={x[0]}>
               {x[0]}
               <b>{x[1]}</b>
             </button>
@@ -580,7 +582,7 @@ function Products({
           <tr>
             {["选择", "商品ID", "宠物名称", "品种", "售价", "状态", "操作"].map(
               (x) => (
-                <th>{x}</th>
+                <th key={x}>{x}</th>
               ),
             )}
           </tr>
@@ -657,7 +659,7 @@ function DataTable({
         <thead>
           <tr>
             {heads.map((x) => (
-              <th>{x}</th>
+              <th key={x}>{x}</th>
             ))}
           </tr>
         </thead>
@@ -709,12 +711,15 @@ function Transactions() {
 function UsersManager({ token }: { token: string }) {
   const [users, setUsers] = useState<any[]>([]),
     [detail, setDetail] = useState<any>(null);
-  const headers = { authorization: `Bearer ${token}` };
+  const headers = useMemo(
+    () => ({ authorization: `Bearer ${token}` }),
+    [token],
+  );
   useEffect(() => {
     fetch("http://127.0.0.1:3001/api/admin/users", { headers })
       .then((r) => r.json())
       .then(setUsers);
-  }, []);
+  }, [headers]);
   const open = async (id: number) =>
     setDetail(
       await fetch(`http://127.0.0.1:3001/api/admin/users/${id}`, {
@@ -766,12 +771,15 @@ function UsersManager({ token }: { token: string }) {
 function OrdersManager({ token }: { token: string }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [detail, setDetail] = useState<any>(null);
-  const headers = { authorization: `Bearer ${token}` };
+  const headers = useMemo(
+    () => ({ authorization: `Bearer ${token}` }),
+    [token],
+  );
   useEffect(() => {
     fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
       .then((r) => r.json())
       .then(setOrders);
-  }, []);
+  }, [headers]);
   const update = async (id: number, status: string) => {
     await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
       method: "PATCH",
@@ -851,15 +859,18 @@ function Logistics({ token }: { token: string }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [company, setCompany] = useState("");
   const [tracking, setTracking] = useState("");
-  const headers = {
-    authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
+  const headers = useMemo(
+    () => ({
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    }),
+    [token],
+  );
   useEffect(() => {
     fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
       .then((r) => r.json())
       .then(setOrders);
-  }, []);
+  }, [headers]);
   const update = async (id: number) => {
     await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}/logistics`, {
       method: "PUT",
@@ -919,26 +930,32 @@ function Logistics({ token }: { token: string }) {
 }
 function AfterSales({ token }: { token: string }) {
   const [items, setItems] = useState<any[]>([]);
-  const headers = {
-    authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
-  const load = () =>
-    Promise.all(
-      ["complaints", "after-sales"].map((x) =>
-        fetch(`http://127.0.0.1:3001/api/admin/${x}`, { headers }).then((r) =>
-          r.json(),
+  const headers = useMemo(
+    () => ({
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    }),
+    [token],
+  );
+  const load = useCallback(
+    () =>
+      Promise.all(
+        ["complaints", "after-sales"].map((x) =>
+          fetch(`http://127.0.0.1:3001/api/admin/${x}`, { headers }).then((r) =>
+            r.json(),
+          ),
         ),
+      ).then(([a, b]) =>
+        setItems([
+          ...a.map((x: any) => ({ ...x, kind: "投诉" })),
+          ...b.map((x: any) => ({ ...x, kind: "售后" })),
+        ]),
       ),
-    ).then(([a, b]) =>
-      setItems([
-        ...a.map((x: any) => ({ ...x, kind: "投诉" })),
-        ...b.map((x: any) => ({ ...x, kind: "售后" })),
-      ]),
-    );
+    [headers],
+  );
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
   const resolve = async (x: any) => {
     const result = prompt(
       x.kind === "投诉" ? "回复客户" : "填写处理结果",
@@ -996,21 +1013,24 @@ function ContentManager({ token }: { token: string }) {
   const [bannerImage, setBannerImage] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [categoryImage, setCategoryImage] = useState("");
-  const headers = {
-    authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
-  const load = () => {
+  const headers = useMemo(
+    () => ({
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    }),
+    [token],
+  );
+  const load = useCallback(() => {
     fetch("http://127.0.0.1:3001/api/admin/banners", { headers })
       .then((r) => r.json())
       .then(setBanners);
     fetch("http://127.0.0.1:3001/api/admin/categories", { headers })
       .then((r) => r.json())
       .then(setCategories);
-  };
+  }, [headers]);
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
   const addBanner = async () => {
     if (!bannerTitle || !bannerImage) return alert("请填写 Banner 标题和图片");
     await fetch("http://127.0.0.1:3001/api/admin/banners", {
@@ -1109,19 +1129,27 @@ function ContentManager({ token }: { token: string }) {
 
 function FeishuManager({ token }: { token: string }) {
   const [configs, setConfigs] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const headers = {
-    authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
-  const load = () =>
+  const headers = useMemo(
+    () => ({
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    }),
+    [token],
+  );
+  const load = useCallback(() => {
     fetch("http://127.0.0.1:3001/api/admin/feishu/configs", { headers })
       .then((r) => r.json())
       .then(setConfigs);
+    fetch("http://127.0.0.1:3001/api/admin/feishu/tasks", { headers })
+      .then((r) => r.json())
+      .then(setTasks);
+  }, [headers]);
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
   const save = async () => {
     await fetch("http://127.0.0.1:3001/api/admin/feishu/configs", {
       method: "POST",
@@ -1146,9 +1174,28 @@ function FeishuManager({ token }: { token: string }) {
     await fetch("http://127.0.0.1:3001/api/admin/feishu/sync", {
       method: "POST",
       headers,
-      body: JSON.stringify({ config_id: id, mode: "incremental" }),
+      body: JSON.stringify({
+        config_id: id,
+        mode: "incremental",
+        total: 500,
+        batch_size: 500,
+      }),
     });
+    load();
     alert("同步任务已进入队列");
+  };
+  const taskAction = async (
+    id: number,
+    action: "pause" | "resume" | "retry",
+  ) => {
+    await fetch(
+      `http://127.0.0.1:3001/api/admin/feishu/tasks/${id}/${action}`,
+      {
+        method: "POST",
+        headers,
+      },
+    );
+    load();
   };
   return (
     <section className="admin-table">
@@ -1185,6 +1232,42 @@ function FeishuManager({ token }: { token: string }) {
               <td>名称、品种、价格、媒体</td>
               <td>
                 <button onClick={() => sync(c.id)}>增量同步</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div>
+        <h3>同步任务队列</h3>
+        <button onClick={load}>刷新任务</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>任务</th>
+            <th>状态</th>
+            <th>进度</th>
+            <th>成功/失败</th>
+            <th>批量</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {tasks.map((t) => (
+            <tr key={t.id}>
+              <td>#{t.id}</td>
+              <td>{t.status}</td>
+              <td>
+                {t.processed || 0}/{t.total || 0}
+              </td>
+              <td>
+                {t.success || 0}/{t.failed || 0}
+              </td>
+              <td>{t.batch_size || 500}</td>
+              <td>
+                <button onClick={() => taskAction(t.id, "pause")}>暂停</button>
+                <button onClick={() => taskAction(t.id, "resume")}>继续</button>
+                <button onClick={() => taskAction(t.id, "retry")}>重试</button>
               </td>
             </tr>
           ))}
