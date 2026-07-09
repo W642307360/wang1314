@@ -3,6 +3,7 @@ import './App.css'
 import './Me.css'
 import './Catalog.css'
 import './DetailEnhance.css'
+import { RefreshHint } from './UIStates'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
 
@@ -27,7 +28,7 @@ function Hall({go,hallKey,openBreed}:{go:(p:Page)=>void;hallKey:HallKey;openBree
  return <><div className="subhead"><Back onClick={()=>go('home')}/><div><small>PET PAVILION</small><h2>{hall.name}</h2></div><button>⌕</button></div>
    <section className="hall-hero" style={{backgroundImage:`linear-gradient(90deg,#392a1edb,#392a1e20),url(${hall.hero})`}}><div><small>{hall.subtitle}</small><h2>{hall.name}<br/>先了解，再选择</h2><p>收录 {hall.breeds.length} 个品种 · 持续更新</p></div></section>
    <div className="hall-search"><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={`搜索${hall.name}品种`}/><span>{visible.length} 个结果</span></div>
-   <section className="breed-grid">{visible.map((b,i)=><button key={b.id} onClick={()=>openBreed(b)}><div className="headshot"><img src={b.image}/><span>{i%7+3}只在售</span></div><h3>{b.name}</h3><small>{b.en}</small><p>{b.desc}</p></button>)}</section></>
+   <section className="breed-grid">{visible.map((b,i)=><button key={b.id} onClick={()=>openBreed(b)}><div className="headshot"><img src={b.image}/><span>{i%7+3}只在售</span></div><h3>{b.name}</h3><small>{b.en}</small><p>{b.desc}</p></button>)}</section><RefreshHint refreshing={false} hasMore={false}/></>
 }
 
 function Breed({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {

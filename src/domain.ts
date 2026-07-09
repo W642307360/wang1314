@@ -1,0 +1,13 @@
+export type ID=string
+export type LoadState='idle'|'loading'|'success'|'empty'|'error'|'offline'
+export interface UserModel{id:ID;nickname:string;avatar:string;phone?:string;isLoggedIn:boolean}
+export interface SellerModel{id:ID;name:string;logo:string;rating:number;followed:boolean;certified:boolean}
+export interface PetModel{id:ID;name:string;breedId:ID;hallId:ID;price:number;gender:'male'|'female';ageMonths:number;color:string;bodyType:string;personality:string[];healthStatus:string;vaccineStatus:string;images:string[];videos:string[];sellerId:ID;favorite:boolean}
+export interface FavoriteModel{id:ID;userId:ID;petId:ID;createdAt:string}
+export interface FollowModel{id:ID;userId:ID;sellerId:ID;createdAt:string}
+export interface FootprintModel{id:ID;userId:ID;petId:ID;viewedAt:string}
+export interface AddressModel{id:ID;userId:ID;name:string;phone:string;province:string;city:string;district:string;detail:string;isDefault:boolean}
+export interface CouponModel{id:ID;title:string;amount:number;threshold:number;status:'available'|'used'|'expired';expiresAt:string}
+export interface MessageModel{id:ID;type:'system'|'order'|'seller'|'service';title:string;content:string;read:boolean;createdAt:string}
+export interface OrderModel{id:ID;orderNo:string;userId:ID;sellerId:ID;petId:ID;amount:number;status:'pending_payment'|'pending_confirm'|'pending_ship'|'pending_receive'|'completed'|'cancelled'|'after_sale';createdAt:string}
+export interface PageResult<T>{items:T[];nextCursor:string|null;hasMore:boolean}
