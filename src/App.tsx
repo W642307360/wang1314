@@ -67,6 +67,7 @@ function Parent({title,sex}:{title:string,sex:string}) {return <div className="p
 function Me({go,user}:{go:(p:Page)=>void;user:User|null}) {
  const orders=[['待付款','0'],['待确认','1'],['待发货','0'],['待收货','2'],['售后/退款','0']]
  const services=[
+  ['♙','登录与账号','登录、手机号与账号安全','login'],
   ['♡','我的收藏','收藏的宠物与心愿清单','favorites'],['☆','我的关注','关注的商家与动态','follows'],
   ['◷','浏览足迹','最近看过的宠物','footprints'],['⌖','收货地址','管理配送地址','addresses'],
   ['⌑','优惠券','3 张可用优惠券','coupons'],['♧','专属客服','售前咨询与售后服务','service'],

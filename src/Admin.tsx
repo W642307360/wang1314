@@ -1,31 +1,617 @@
-import { useEffect, useMemo, useState } from 'react'
-import { halls } from './catalog'
-import './Admin.css'
-import './AdminLogin.css'
+import { useEffect, useMemo, useState } from "react";
+import { halls } from "./catalog";
+import "./Admin.css";
+import "./AdminLogin.css";
 
-type AdminTab='dashboard'|'products'|'users'|'orders'|'transactions'
-type ProductForm={name:string;hall:string;breed:string;price:string;gender:string;age:string;color:string;bodyType:string;personality:string;health:string;vaccine:string;father:string;mother:string;growth:string;images:string;videos:string;seller:string;stock:string;status:string}
-const emptyProduct:ProductForm={name:'',hall:'cats',breed:'',price:'',gender:'female',age:'',color:'',bodyType:'',personality:'',health:'健康',vaccine:'已完成基础疫苗',father:'',mother:'',growth:'1个月,2个月,3个月,6个月,1岁,2岁',images:'',videos:'',seller:'',stock:'1',status:'draft'}
-const seedProducts=[{id:'P001',name:'Coco',breed:'布偶猫',price:6800,status:'在售',stock:1},{id:'P002',name:'小太阳',breed:'金毛',price:7300,status:'待审核',stock:1},{id:'P003',name:'雪球',breed:'萨摩耶',price:8600,status:'已下架',stock:0}]
-const seedUsers=[['U1001','福宠新朋友','138****8866','正常','2'],['U1002','小可爱','186****3321','正常','1'],['U1003','糖糖不甜','159****1288','已禁用','0']]
-const seedOrders=[['FC20260709001','Coco · 布偶猫','¥6,800','待确认'],['FC20260708012','小太阳 · 金毛','¥7,300','待收货'],['FC20260707008','雪球 · 萨摩耶','¥8,600','已完成']]
+type AdminTab =
+  | "dashboard"
+  | "products"
+  | "users"
+  | "orders"
+  | "transactions"
+  | "logistics"
+  | "afterSales"
+  | "content";
+type ProductForm = {
+  name: string;
+  hall: string;
+  breed: string;
+  price: string;
+  gender: string;
+  age: string;
+  color: string;
+  bodyType: string;
+  personality: string;
+  health: string;
+  vaccine: string;
+  father: string;
+  mother: string;
+  growth: string;
+  images: string;
+  videos: string;
+  seller: string;
+  stock: string;
+  status: string;
+};
+const emptyProduct: ProductForm = {
+  name: "",
+  hall: "cats",
+  breed: "",
+  price: "",
+  gender: "female",
+  age: "",
+  color: "",
+  bodyType: "",
+  personality: "",
+  health: "健康",
+  vaccine: "已完成基础疫苗",
+  father: "",
+  mother: "",
+  growth: "1个月,2个月,3个月,6个月,1岁,2岁",
+  images: "",
+  videos: "",
+  seller: "",
+  stock: "1",
+  status: "draft",
+};
+const seedProducts = [
+  {
+    id: "P001",
+    name: "Coco",
+    breed: "布偶猫",
+    price: 6800,
+    status: "在售",
+    stock: 1,
+  },
+  {
+    id: "P002",
+    name: "小太阳",
+    breed: "金毛",
+    price: 7300,
+    status: "待审核",
+    stock: 1,
+  },
+  {
+    id: "P003",
+    name: "雪球",
+    breed: "萨摩耶",
+    price: 8600,
+    status: "已下架",
+    stock: 0,
+  },
+];
+const seedUsers = [
+  ["U1001", "福宠新朋友", "138****8866", "正常", "2"],
+  ["U1002", "小可爱", "186****3321", "正常", "1"],
+  ["U1003", "糖糖不甜", "159****1288", "已禁用", "0"],
+];
+const seedOrders = [
+  ["FC20260709001", "Coco · 布偶猫", "¥6,800", "待确认"],
+  ["FC20260708012", "小太阳 · 金毛", "¥7,300", "待收货"],
+  ["FC20260707008", "雪球 · 萨摩耶", "¥8,600", "已完成"],
+];
 
-export default function AdminApp(){const [token,setToken]=useState(()=>localStorage.getItem('fuchong-admin-token')||'');if(!token)return <AdminLogin success={t=>{localStorage.setItem('fuchong-admin-token',t);setToken(t)}}/>;return <AdminPanel token={token}/>}
-function AdminLogin({success}:{success:(token:string)=>void}){const [username,setUsername]=useState('admin'),[password,setPassword]=useState(''),[error,setError]=useState('');const submit=async(e:React.FormEvent)=>{e.preventDefault();setError('');try{const r=await fetch('http://127.0.0.1:3001/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password})});const d=await r.json();if(!r.ok)throw new Error(d.message);success(d.token)}catch(e){setError(e instanceof Error?e.message:'登录失败')}};return <div className="admin-login"><form onSubmit={submit}><b>福</b><h1>福宠管理后台</h1><p>使用管理员账号登录运营系统</p><label>管理员账号<input value={username} onChange={e=>setUsername(e.target.value)}/></label><label>登录密码<input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label>{error&&<em>{error}</em>}<button>安全登录</button><small>初始账号：admin</small></form></div>}
-function AdminPanel({token}:{token:string}){
- const [tab,setTab]=useState<AdminTab>('dashboard');const [showForm,setShowForm]=useState(false);const [form,setForm]=useState<ProductForm>(emptyProduct)
- const [products,setProducts]=useState<any[]>(seedProducts)
- useEffect(()=>{fetch('http://127.0.0.1:3001/api/admin/pets',{headers:{authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>Array.isArray(d)&&setProducts(d)).catch(()=>{})},[token])
- const breeds=useMemo(()=>halls.find(h=>h.key===form.hall)?.breeds||[],[form.hall])
- const update=(key:keyof ProductForm,value:string)=>setForm(v=>({...v,[key]:value}))
- const save=async(e:React.FormEvent)=>{e.preventDefault();const payload={name:form.name,category_id:halls.findIndex(h=>h.key===form.hall)+1,breed:form.breed,price:Number(form.price),gender:form.gender,age_months:Number(form.age),color:form.color,body_type:form.bodyType,personality:form.personality,health_status:form.health,vaccine_record:form.vaccine,father_info:form.father,mother_info:form.mother,description:'管理员后台同步商品',seller_name:form.seller,status:form.status};const r=await fetch('http://127.0.0.1:3001/api/admin/pets',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${token}`},body:JSON.stringify(payload)});if(r.ok){const saved=await r.json();setProducts(v=>[saved,...v]);setShowForm(false);setForm(emptyProduct)}}
- return <div className="admin-shell"><aside><div className="admin-brand"><b>福</b><span>福宠运营后台<small>FUCHONG ADMIN</small></span></div>{([['dashboard','⌂','经营概览'],['products','◇','宠物商品'],['users','♙','用户管理'],['orders','▣','订单管理'],['transactions','¥','交易中心']] as const).map(([id,icon,name])=><button className={tab===id?'on':''} onClick={()=>setTab(id)} key={id}><i>{icon}</i>{name}</button>)}<a href="#">返回用户端</a></aside>
- <main><header><div><small>2026年7月9日 · 星期四</small><h1>{{dashboard:'经营概览',products:'宠物商品',users:'用户管理',orders:'订单管理',transactions:'交易中心'}[tab]}</h1></div><div className="admin-user">运营管理员 <b>管</b></div></header>
- {tab==='dashboard'&&<Dashboard/>}{tab==='products'&&<Products products={products} open={()=>setShowForm(true)}/>} {tab==='users'&&<DataTable title="用户列表" heads={['用户ID','昵称','手机号','状态','订单数']} rows={seedUsers}/>} {tab==='orders'&&<DataTable title="订单列表" heads={['订单号','宠物','实付金额','状态']} rows={seedOrders}/>} {tab==='transactions'&&<Transactions/>}
- </main>{showForm&&<div className="admin-modal"><form onSubmit={save}><header><div><small>PRODUCT PROFILE</small><h2>新增宠物商品</h2></div><button type="button" onClick={()=>setShowForm(false)}>×</button></header><div className="form-grid"><Field label="宠物名称*" value={form.name} set={v=>update('name',v)}/><label>所属场馆<select value={form.hall} onChange={e=>update('hall',e.target.value)}>{halls.map(h=><option value={h.key}>{h.name}</option>)}</select></label><label>标准品种*<select value={form.breed} onChange={e=>update('breed',e.target.value)} required><option value="">请选择</option>{breeds.map(b=><option>{b.name}</option>)}</select></label><Field label="售价（元）*" value={form.price} set={v=>update('price',v)}/><label>性别<select value={form.gender} onChange={e=>update('gender',e.target.value)}><option value="female">母</option><option value="male">公</option></select></label><Field label="年龄（月）" value={form.age} set={v=>update('age',v)}/><Field label="毛色" value={form.color} set={v=>update('color',v)}/><Field label="体型" value={form.bodyType} set={v=>update('bodyType',v)}/><Field label="性格标签" value={form.personality} set={v=>update('personality',v)}/><Field label="健康状态" value={form.health} set={v=>update('health',v)}/><Field label="疫苗记录" value={form.vaccine} set={v=>update('vaccine',v)}/><Field label="父亲信息" value={form.father} set={v=>update('father',v)}/><Field label="母亲信息" value={form.mother} set={v=>update('mother',v)}/><Field label="成长节点" value={form.growth} set={v=>update('growth',v)}/><Field label="图片地址（逗号分隔）" value={form.images} set={v=>update('images',v)}/><Field label="视频地址（逗号分隔）" value={form.videos} set={v=>update('videos',v)}/><Field label="所属商家" value={form.seller} set={v=>update('seller',v)}/><Field label="库存" value={form.stock} set={v=>update('stock',v)}/><label>发布状态<select value={form.status} onChange={e=>update('status',e.target.value)}><option value="draft">保存草稿</option><option value="published">立即上架</option></select></label></div><footer><button type="button" onClick={()=>setShowForm(false)}>取消</button><button className="primary">保存商品</button></footer></form></div>}</div>
+export default function AdminApp() {
+  const [token, setToken] = useState(
+    () => localStorage.getItem("fuchong-admin-token") || "",
+  );
+  if (!token)
+    return (
+      <AdminLogin
+        success={(t) => {
+          localStorage.setItem("fuchong-admin-token", t);
+          setToken(t);
+        }}
+      />
+    );
+  return <AdminPanel token={token} />;
 }
-function Field({label,value,set}:{label:string;value:string;set:(v:string)=>void}){return <label>{label}<input value={value} onChange={e=>set(e.target.value)}/></label>}
-function Dashboard(){return <><section className="admin-stats">{[['在售宠物','128','+12.5%'],['今日订单','36','+8.2%'],['成交金额','¥126,800','+18.6%'],['注册用户','8,629','+6.4%']].map(x=><article><small>{x[0]}</small><h2>{x[1]}</h2><span>{x[2]} 较昨日</span></article>)}</section><section className="admin-panels"><article><h3>订单趋势</h3><div className="chart">{[35,52,42,68,62,85,76,92,70,95,88,100].map((x,i)=><i style={{height:`${x}%`}} key={i}/>)}</div></article><article><h3>待处理事项</h3>{[['待审核商品','18'],['待确认订单','12'],['售后申请','6'],['异常同步','2']].map(x=><button>{x[0]}<b>{x[1]}</b></button>)}</article></section></>}
-function Products({products,open}:{products:any[];open:()=>void}){return <section className="admin-table"><div><h3>宠物商品列表</h3><button onClick={open}>＋ 新增宠物</button></div><table><thead><tr>{['商品ID','宠物名称','品种','售价','库存','状态','操作'].map(x=><th>{x}</th>)}</tr></thead><tbody>{products.map(p=><tr><td>{p.id}</td><td><b>{p.name}</b></td><td>{p.breed}</td><td>¥{p.price}</td><td>{p.stock}</td><td><span>{p.status}</span></td><td><button>编辑</button> <button>更多</button></td></tr>)}</tbody></table></section>}
-function DataTable({title,heads,rows}:{title:string;heads:string[];rows:string[][]}){return <section className="admin-table"><div><h3>{title}</h3><button>导出数据</button></div><table><thead><tr>{heads.map(x=><th>{x}</th>)}</tr></thead><tbody>{rows.map((r,i)=><tr key={i}>{r.map((x,j)=><td key={j}>{x}</td>)}</tr>)}</tbody></table></section>}
-function Transactions(){return <><section className="admin-stats"><article><small>今日入账</small><h2>¥126,800</h2><span>36 笔交易</span></article><article><small>待结算</small><h2>¥42,600</h2><span>预计 T+1</span></article><article><small>退款金额</small><h2>¥6,800</h2><span>1 笔退款</span></article></section><DataTable title="交易流水" heads={['流水号','类型','关联订单','金额','状态']} rows={[['TX260709001','支付','FC20260709001','+¥6,800','成功'],['TX260709002','退款','FC20260707002','-¥6,800','处理中']]}/></>}
+function AdminLogin({ success }: { success: (token: string) => void }) {
+  const [username, setUsername] = useState("admin"),
+    [password, setPassword] = useState(""),
+    [error, setError] = useState("");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    try {
+      const r = await fetch("http://127.0.0.1:3001/api/admin/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message);
+      success(d.token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "登录失败");
+    }
+  };
+  return (
+    <div className="admin-login">
+      <form onSubmit={submit}>
+        <b>福</b>
+        <h1>福宠管理后台</h1>
+        <p>使用管理员账号登录运营系统</p>
+        <label>
+          管理员账号
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </label>
+        <label>
+          登录密码
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        {error && <em>{error}</em>}
+        <button>安全登录</button>
+        <small>初始账号：admin</small>
+      </form>
+    </div>
+  );
+}
+function AdminPanel({ token }: { token: string }) {
+  const [tab, setTab] = useState<AdminTab>("dashboard");
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState<ProductForm>(emptyProduct);
+  const [products, setProducts] = useState<any[]>(seedProducts);
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/pets", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setProducts(d))
+      .catch(() => {});
+  }, [token]);
+  const breeds = useMemo(
+    () => halls.find((h) => h.key === form.hall)?.breeds || [],
+    [form.hall],
+  );
+  const update = (key: keyof ProductForm, value: string) =>
+    setForm((v) => ({ ...v, [key]: value }));
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payload = {
+      name: form.name,
+      category_id: halls.findIndex((h) => h.key === form.hall) + 1,
+      breed: form.breed,
+      price: Number(form.price),
+      gender: form.gender,
+      age_months: Number(form.age),
+      color: form.color,
+      body_type: form.bodyType,
+      personality: form.personality,
+      health_status: form.health,
+      vaccine_record: form.vaccine,
+      father_info: form.father,
+      mother_info: form.mother,
+      description: "管理员后台同步商品",
+      seller_name: form.seller,
+      status: form.status,
+    };
+    const r = await fetch("http://127.0.0.1:3001/api/admin/pets", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (r.ok) {
+      const saved = await r.json();
+      setProducts((v) => [saved, ...v]);
+      setShowForm(false);
+      setForm(emptyProduct);
+    }
+  };
+  return (
+    <div className="admin-shell">
+      <aside>
+        <div className="admin-brand">
+          <b>福</b>
+          <span>
+            福宠运营后台<small>FUCHONG ADMIN</small>
+          </span>
+        </div>
+        {(
+          [
+            ["dashboard", "⌂", "经营概览"],
+            ["products", "◇", "宠物商品"],
+            ["users", "♙", "用户管理"],
+            ["orders", "▣", "订单管理"],
+            ["transactions", "¥", "交易中心"],
+          ] as const
+        ).map(([id, icon, name]) => (
+          <button
+            className={tab === id ? "on" : ""}
+            onClick={() => setTab(id)}
+            key={id}
+          >
+            <i>{icon}</i>
+            {name}
+          </button>
+        ))}
+        <a href="#">返回用户端</a>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <small>2026年7月9日 · 星期四</small>
+            <h1>
+              {
+                {
+                  dashboard: "经营概览",
+                  products: "宠物商品",
+                  users: "用户管理",
+                  orders: "订单管理",
+                  transactions: "交易中心",
+                  logistics: "物流管理",
+                  afterSales: "客诉与售后",
+                  content: "首页内容",
+                }[tab]
+              }
+            </h1>
+          </div>
+          <div className="admin-user">
+            运营管理员 <b>管</b>
+          </div>
+        </header>
+        {tab === "dashboard" && <Dashboard />}
+        {tab === "products" && (
+          <Products
+            products={products}
+            open={() => setShowForm(true)}
+            remove={async (id) => {
+              await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
+                method: "DELETE",
+                headers: { authorization: `Bearer ${token}` },
+              });
+              setProducts((v) => v.filter((p) => p.id !== id));
+            }}
+          />
+        )}{" "}
+        {tab === "users" && (
+          <DataTable
+            title="用户列表"
+            heads={["用户ID", "昵称", "手机号", "状态", "订单数"]}
+            rows={seedUsers}
+          />
+        )}{" "}
+        {tab === "orders" && (
+          <DataTable
+            title="订单列表"
+            heads={["订单号", "宠物", "实付金额", "状态"]}
+            rows={seedOrders}
+          />
+        )}{" "}
+        {tab === "transactions" && <Transactions />}
+        {tab === "logistics" && <Logistics />}
+        {tab === "afterSales" && <AfterSales />}
+        {tab === "content" && <ContentManager />}
+      </main>
+      {showForm && (
+        <div className="admin-modal">
+          <form onSubmit={save}>
+            <header>
+              <div>
+                <small>PRODUCT PROFILE</small>
+                <h2>新增宠物商品</h2>
+              </div>
+              <button type="button" onClick={() => setShowForm(false)}>
+                ×
+              </button>
+            </header>
+            <div className="form-grid">
+              <Field
+                label="宠物名称*"
+                value={form.name}
+                set={(v) => update("name", v)}
+              />
+              <label>
+                所属场馆
+                <select
+                  value={form.hall}
+                  onChange={(e) => update("hall", e.target.value)}
+                >
+                  {halls.map((h) => (
+                    <option value={h.key}>{h.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                标准品种*
+                <select
+                  value={form.breed}
+                  onChange={(e) => update("breed", e.target.value)}
+                  required
+                >
+                  <option value="">请选择</option>
+                  {breeds.map((b) => (
+                    <option>{b.name}</option>
+                  ))}
+                </select>
+              </label>
+              <Field
+                label="售价（元）*"
+                value={form.price}
+                set={(v) => update("price", v)}
+              />
+              <label>
+                性别
+                <select
+                  value={form.gender}
+                  onChange={(e) => update("gender", e.target.value)}
+                >
+                  <option value="female">母</option>
+                  <option value="male">公</option>
+                </select>
+              </label>
+              <Field
+                label="年龄（月）"
+                value={form.age}
+                set={(v) => update("age", v)}
+              />
+              <Field
+                label="毛色"
+                value={form.color}
+                set={(v) => update("color", v)}
+              />
+              <Field
+                label="体型"
+                value={form.bodyType}
+                set={(v) => update("bodyType", v)}
+              />
+              <Field
+                label="性格标签"
+                value={form.personality}
+                set={(v) => update("personality", v)}
+              />
+              <Field
+                label="健康状态"
+                value={form.health}
+                set={(v) => update("health", v)}
+              />
+              <Field
+                label="疫苗记录"
+                value={form.vaccine}
+                set={(v) => update("vaccine", v)}
+              />
+              <Field
+                label="父亲信息"
+                value={form.father}
+                set={(v) => update("father", v)}
+              />
+              <Field
+                label="母亲信息"
+                value={form.mother}
+                set={(v) => update("mother", v)}
+              />
+              <Field
+                label="成长节点"
+                value={form.growth}
+                set={(v) => update("growth", v)}
+              />
+              <Field
+                label="图片地址（逗号分隔）"
+                value={form.images}
+                set={(v) => update("images", v)}
+              />
+              <Field
+                label="视频地址（逗号分隔）"
+                value={form.videos}
+                set={(v) => update("videos", v)}
+              />
+              <Field
+                label="所属商家"
+                value={form.seller}
+                set={(v) => update("seller", v)}
+              />
+              <Field
+                label="库存"
+                value={form.stock}
+                set={(v) => update("stock", v)}
+              />
+              <label>
+                发布状态
+                <select
+                  value={form.status}
+                  onChange={(e) => update("status", e.target.value)}
+                >
+                  <option value="draft">保存草稿</option>
+                  <option value="published">立即上架</option>
+                </select>
+              </label>
+            </div>
+            <footer>
+              <button type="button" onClick={() => setShowForm(false)}>
+                取消
+              </button>
+              <button className="primary">保存商品</button>
+            </footer>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+function Field({
+  label,
+  value,
+  set,
+}: {
+  label: string;
+  value: string;
+  set: (v: string) => void;
+}) {
+  return (
+    <label>
+      {label}
+      <input value={value} onChange={(e) => set(e.target.value)} />
+    </label>
+  );
+}
+function Dashboard() {
+  return (
+    <>
+      <section className="admin-stats">
+        {[
+          ["在售宠物", "128", "+12.5%"],
+          ["今日订单", "36", "+8.2%"],
+          ["成交金额", "¥126,800", "+18.6%"],
+          ["注册用户", "8,629", "+6.4%"],
+        ].map((x) => (
+          <article>
+            <small>{x[0]}</small>
+            <h2>{x[1]}</h2>
+            <span>{x[2]} 较昨日</span>
+          </article>
+        ))}
+      </section>
+      <section className="admin-panels">
+        <article>
+          <h3>订单趋势</h3>
+          <div className="chart">
+            {[35, 52, 42, 68, 62, 85, 76, 92, 70, 95, 88, 100].map((x, i) => (
+              <i style={{ height: `${x}%` }} key={i} />
+            ))}
+          </div>
+        </article>
+        <article>
+          <h3>待处理事项</h3>
+          {[
+            ["待审核商品", "18"],
+            ["待确认订单", "12"],
+            ["售后申请", "6"],
+            ["异常同步", "2"],
+          ].map((x) => (
+            <button>
+              {x[0]}
+              <b>{x[1]}</b>
+            </button>
+          ))}
+        </article>
+      </section>
+    </>
+  );
+}
+function Products({ products, open, remove }: { products: any[]; open: () => void; remove: (id: number) => void }) {
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>宠物商品列表</h3>
+        <button onClick={open}>＋ 新增宠物</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            {["商品ID", "宠物名称", "品种", "售价", "库存", "状态", "操作"].map(
+              (x) => (
+                <th>{x}</th>
+              ),
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {products.map((p) => (
+            <tr onDoubleClick={() => confirm("确定删除该商品吗？") && remove(p.id)}>
+              <td>{p.id}</td>
+              <td>
+                <b>{p.name}</b>
+              </td>
+              <td>{p.breed}</td>
+              <td>¥{p.price}</td>
+              <td>{p.stock}</td>
+              <td>
+                <span>{p.status}</span>
+              </td>
+              <td>
+                <button>编辑</button> <button>更多</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+function DataTable({
+  title,
+  heads,
+  rows,
+}: {
+  title: string;
+  heads: string[];
+  rows: string[][];
+}) {
+  return (
+    <section className="admin-table">
+      <div>
+        <h3>{title}</h3>
+        <button>导出数据</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            {heads.map((x) => (
+              <th>{x}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>
+              {r.map((x, j) => (
+                <td key={j}>{x}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+function Transactions() {
+  return (
+    <>
+      <section className="admin-stats">
+        <article>
+          <small>今日入账</small>
+          <h2>¥126,800</h2>
+          <span>36 笔交易</span>
+        </article>
+        <article>
+          <small>待结算</small>
+          <h2>¥42,600</h2>
+          <span>预计 T+1</span>
+        </article>
+        <article>
+          <small>退款金额</small>
+          <h2>¥6,800</h2>
+          <span>1 笔退款</span>
+        </article>
+      </section>
+      <DataTable
+        title="交易流水"
+        heads={["流水号", "类型", "关联订单", "金额", "状态"]}
+        rows={[
+          ["TX260709001", "支付", "FC20260709001", "+¥6,800", "成功"],
+          ["TX260709002", "退款", "FC20260707002", "-¥6,800", "处理中"],
+        ]}
+      />
+    </>
+  );
+}
+
+function Logistics() {
+  return <DataTable title="物流记录" heads={["订单号","物流公司","物流单号","运输状态"]} rows={[["FC20260708012","顺丰速运","SF123456789","运输中"]]}/>;
+}
+function AfterSales() {
+  return <DataTable title="客诉与售后" heads={["售后单号","关联订单","申请类型","处理状态"]} rows={[["AS20260709001","FC20260707002","健康保障退款","待处理"]]}/>;
+}
+function ContentManager() {
+  return <DataTable title="首页内容管理" heads={["内容类型","标题","排序","状态"]} rows={[["Banner","安心遇见生命伙伴","1","已发布"]]}/>;
+}
