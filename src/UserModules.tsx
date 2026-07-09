@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import './UserModules.css'
+import './Chat.css'
 
 export type User = { id:string; nickname:string; phone:string; avatar:string }
 export type Order = { id:string; status:string; petName:string; breed:string; price:number; image:string }
@@ -38,6 +39,6 @@ export function OrdersPage({back}:{back:()=>void}){
 }
 
 export function MessagesPage({back}:{back:()=>void}){
- const messages=[['✦','系统消息','欢迎加入福宠安心养宠计划','2'],['▣','订单消息','订单 FC20260709001 已提交','1'],['宠','汪星宠物馆','您好，Coco 的健康档案已更新','3'],['♧','福宠专属客服','需要帮助可以随时联系我们','']]
- return <div className="module-page"><Header title="消息中心" back={back}/><div className="message-types"><button><i>✦</i>系统消息<b>2</b></button><button><i>▣</i>订单消息<b>1</b></button><button><i>宠</i>商家消息<b>3</b></button><button><i>♧</i>客服消息</button></div><div className="message-list">{messages.map(([icon,title,text,count])=><button key={title}><i>{icon}</i><div><b>{title}</b><p>{text}</p></div><small>10:26</small>{count&&<em>{count}</em>}</button>)}</div></div>
+ const [chat,setChat]=useState([{id:1,sender:'service',content:'您好，我是福宠专属客服，请问有什么可以帮助您？'}]);const [text,setText]=useState('');const send=async()=>{const value=text.trim();if(!value)return;setChat(v=>[...v,{id:Date.now(),sender:'user',content:value}]);setText('');try{await fetch('http://127.0.0.1:3001/api/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user_id:1,sender:'user',content:value})});setTimeout(()=>setChat(v=>[...v,{id:Date.now()+1,sender:'service',content:'已收到您的消息，客服正在为您查询。'}]),500)}catch{setChat(v=>[...v,{id:Date.now()+2,sender:'service',content:'网络暂时不可用，请稍后重试。'}])}}
+ return <div className="module-page"><Header title="专属客服" back={back}/><div className="chat-status"><i/>福宠客服在线 <span>通常 1 分钟内回复</span></div><div className="chat-window">{chat.map(m=><div key={m.id} className={`chat-bubble ${m.sender}`}><i>{m.sender==='service'?'福':'我'}</i><p>{m.content}</p></div>)}</div><div className="chat-input"><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="输入咨询内容…"/><button onClick={send}>发送</button></div></div>
 }
