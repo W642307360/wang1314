@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { halls } from './catalog'
 import './Admin.css'
+import './AdminLogin.css'
 
 type AdminTab='dashboard'|'products'|'users'|'orders'|'transactions'
 type ProductForm={name:string;hall:string;breed:string;price:string;gender:string;age:string;color:string;bodyType:string;personality:string;health:string;vaccine:string;father:string;mother:string;growth:string;images:string;videos:string;seller:string;stock:string;status:string}
@@ -9,12 +10,15 @@ const seedProducts=[{id:'P001',name:'Coco',breed:'布偶猫',price:6800,status:'
 const seedUsers=[['U1001','福宠新朋友','138****8866','正常','2'],['U1002','小可爱','186****3321','正常','1'],['U1003','糖糖不甜','159****1288','已禁用','0']]
 const seedOrders=[['FC20260709001','Coco · 布偶猫','¥6,800','待确认'],['FC20260708012','小太阳 · 金毛','¥7,300','待收货'],['FC20260707008','雪球 · 萨摩耶','¥8,600','已完成']]
 
-export default function AdminApp(){
+export default function AdminApp(){const [token,setToken]=useState(()=>localStorage.getItem('fuchong-admin-token')||'');if(!token)return <AdminLogin success={t=>{localStorage.setItem('fuchong-admin-token',t);setToken(t)}}/>;return <AdminPanel token={token}/>}
+function AdminLogin({success}:{success:(token:string)=>void}){const [username,setUsername]=useState('admin'),[password,setPassword]=useState(''),[error,setError]=useState('');const submit=async(e:React.FormEvent)=>{e.preventDefault();setError('');try{const r=await fetch('http://127.0.0.1:3001/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password})});const d=await r.json();if(!r.ok)throw new Error(d.message);success(d.token)}catch(e){setError(e instanceof Error?e.message:'登录失败')}};return <div className="admin-login"><form onSubmit={submit}><b>福</b><h1>福宠管理后台</h1><p>使用管理员账号登录运营系统</p><label>管理员账号<input value={username} onChange={e=>setUsername(e.target.value)}/></label><label>登录密码<input type="password" value={password} onChange={e=>setPassword(e.target.value)}/></label>{error&&<em>{error}</em>}<button>安全登录</button><small>初始账号：admin</small></form></div>}
+function AdminPanel({token}:{token:string}){
  const [tab,setTab]=useState<AdminTab>('dashboard');const [showForm,setShowForm]=useState(false);const [form,setForm]=useState<ProductForm>(emptyProduct)
- const [products,setProducts]=useState(()=>{try{return JSON.parse(localStorage.getItem('fuchong-products')||'null')||seedProducts}catch{return seedProducts}})
+ const [products,setProducts]=useState<any[]>(seedProducts)
+ useEffect(()=>{fetch('http://127.0.0.1:3001/api/admin/pets',{headers:{authorization:`Bearer ${token}`}}).then(r=>r.json()).then(d=>Array.isArray(d)&&setProducts(d)).catch(()=>{})},[token])
  const breeds=useMemo(()=>halls.find(h=>h.key===form.hall)?.breeds||[],[form.hall])
  const update=(key:keyof ProductForm,value:string)=>setForm(v=>({...v,[key]:value}))
- const save=(e:React.FormEvent)=>{e.preventDefault();const next=[...products,{id:`P${Date.now()}`,name:form.name,breed:form.breed,price:Number(form.price),status:form.status==='published'?'在售':'草稿',stock:Number(form.stock)}];setProducts(next);localStorage.setItem('fuchong-products',JSON.stringify(next));setShowForm(false);setForm(emptyProduct)}
+ const save=async(e:React.FormEvent)=>{e.preventDefault();const payload={name:form.name,category_id:halls.findIndex(h=>h.key===form.hall)+1,breed:form.breed,price:Number(form.price),gender:form.gender,age_months:Number(form.age),color:form.color,body_type:form.bodyType,personality:form.personality,health_status:form.health,vaccine_record:form.vaccine,father_info:form.father,mother_info:form.mother,description:'管理员后台同步商品',seller_name:form.seller,status:form.status};const r=await fetch('http://127.0.0.1:3001/api/admin/pets',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${token}`},body:JSON.stringify(payload)});if(r.ok){const saved=await r.json();setProducts(v=>[saved,...v]);setShowForm(false);setForm(emptyProduct)}}
  return <div className="admin-shell"><aside><div className="admin-brand"><b>福</b><span>福宠运营后台<small>FUCHONG ADMIN</small></span></div>{([['dashboard','⌂','经营概览'],['products','◇','宠物商品'],['users','♙','用户管理'],['orders','▣','订单管理'],['transactions','¥','交易中心']] as const).map(([id,icon,name])=><button className={tab===id?'on':''} onClick={()=>setTab(id)} key={id}><i>{icon}</i>{name}</button>)}<a href="#">返回用户端</a></aside>
  <main><header><div><small>2026年7月9日 · 星期四</small><h1>{{dashboard:'经营概览',products:'宠物商品',users:'用户管理',orders:'订单管理',transactions:'交易中心'}[tab]}</h1></div><div className="admin-user">运营管理员 <b>管</b></div></header>
  {tab==='dashboard'&&<Dashboard/>}{tab==='products'&&<Products products={products} open={()=>setShowForm(true)}/>} {tab==='users'&&<DataTable title="用户列表" heads={['用户ID','昵称','手机号','状态','订单数']} rows={seedUsers}/>} {tab==='orders'&&<DataTable title="订单列表" heads={['订单号','宠物','实付金额','状态']} rows={seedOrders}/>} {tab==='transactions'&&<Transactions/>}
