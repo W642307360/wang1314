@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import './App.css'
+import './Me.css'
 
-type Page = 'home' | 'hall' | 'breed' | 'detail' | 'family' | 'service' | 'me'
+type Page = 'home' | 'hall' | 'breed' | 'detail' | 'family' | 'service' | 'me' | 'login' | 'orders' | 'favorites' | 'follows' | 'footprints' | 'addresses' | 'coupons' | 'settings' | 'about' | 'agreement' | 'privacy'
 const dogBreeds = [
   { name:'金毛寻回犬', en:'Golden Retriever', desc:'温顺友善 · 聪明忠诚', img:'https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=90' },
   { name:'柴犬', en:'Shiba Inu', desc:'独立勇敢 · 干净安静', img:'https://images.unsplash.com/photo-1561037404-61cd46aa615b?auto=format&fit=crop&w=600&q=90' },
@@ -59,9 +60,38 @@ function Detail({go}:{go:(p:Page)=>void}) {
 function Parent({title,sex}:{title:string,sex:string}) {return <div className="parent"><img src={petPhoto}/><div><h3>{title} <i>{sex}</i></h3><p>品种：金毛寻回犬<br/>毛色：金黄色<br/>血统：纯种<br/>年龄：3岁　体重：32kg</p></div></div>}
 function Simple({title,text}:{title:string,text:string}) {return <section className="simple"><h1>{title}</h1><p>{text}</p><div className="simple-card">功能内容正在按正式业务数据结构接入</div></section>}
 
+function Me({go}:{go:(p:Page)=>void}) {
+ const orders=[['待付款','0'],['待确认','1'],['待发货','0'],['待收货','2'],['售后/退款','0']]
+ const services=[
+  ['♡','我的收藏','收藏的宠物与心愿清单','favorites'],['☆','我的关注','关注的商家与动态','follows'],
+  ['◷','浏览足迹','最近看过的宠物','footprints'],['⌖','收货地址','管理配送地址','addresses'],
+  ['⌑','优惠券','3 张可用优惠券','coupons'],['♧','专属客服','售前咨询与售后服务','service'],
+  ['⚙','设置','账号、安全与通知','settings'],['ⓘ','关于福宠','品牌、协议与隐私','about']
+ ] as const
+ return <div className="me-page">
+   <section className="me-hero">
+    <div className="me-top"><span>个人中心</span><button onClick={()=>go('settings')}>⚙</button></div>
+    <button className="profile" onClick={()=>go('login')}><div className="avatar">福</div><div><h1>登录 / 注册</h1><p>登录后同步订单、收藏和宠物档案</p></div><b>›</b></button>
+    <div className="member-card"><div><small>FUCHONG MEMBER</small><h3>福宠安心会员</h3><p>专属顾问 · 健康档案 · 成长陪伴</p></div><button>了解权益</button></div>
+   </section>
+   <section className="me-orders"><div className="card-head"><h2>我的订单</h2><button onClick={()=>go('orders')}>全部订单 ›</button></div>
+    <div className="order-shortcuts">{orders.map(([name,count],i)=><button key={name} onClick={()=>go('orders')}><i>{['⌁','✓','▣','⌂','↻'][i]}</i><span>{name}</span>{count!=='0'&&<b>{count}</b>}</button>)}</div>
+   </section>
+   <section className="me-stats"><button onClick={()=>go('favorites')}><b>12</b><span>收藏宠物</span></button><button onClick={()=>go('follows')}><b>5</b><span>关注商家</span></button><button onClick={()=>go('footprints')}><b>36</b><span>浏览足迹</span></button><button onClick={()=>go('coupons')}><b>3</b><span>优惠券</span></button></section>
+   <section className="me-services"><h2>常用服务</h2>{services.map(([icon,title,desc,target])=><button key={title} onClick={()=>go(target)}><i>{icon}</i><div><b>{title}</b><small>{desc}</small></div><span>›</span></button>)}</section>
+   <section className="me-links"><button onClick={()=>go('agreement')}>用户协议 <span>›</span></button><button onClick={()=>go('privacy')}>隐私政策 <span>›</span></button></section>
+   <p className="version">福宠 FUCHONG · v0.2.0</p>
+  </div>
+}
+
+function SubPage({title,go}:{title:string,go:(p:Page)=>void}) {
+ return <div className="subpage"><div className="subhead"><Back onClick={()=>go('me')}/><div><small>FUCHONG</small><h2>{title}</h2></div><span/></div><div className="simple-card">该入口已建立，将在对应模块阶段补齐完整交互。</div></div>
+}
+
 export default function App(){
  const [page,setPage]=useState<Page>('home'); const go=(p:Page)=>{setPage(p);scrollTo(0,0)}
  return <main className="phone-shell">{page==='home'&&<Home go={go}/>} {page==='hall'&&<Hall go={go}/>} {page==='breed'&&<Breed go={go}/>} {page==='detail'&&<Detail go={go}/>}
- {page==='family'&&<Simple title="宠物家" text="收藏、关注、到家档案与成长记录"/>}{page==='service'&&<Simple title="专属客服" text="售前咨询、订单服务与售后保障"/>}{page==='me'&&<Simple title="我的" text="订单、足迹、地址、优惠、设置与平台保障"/>}
+ {page==='family'&&<Simple title="宠物家" text="收藏、关注、到家档案与成长记录"/>}{page==='service'&&<Simple title="专属客服" text="售前咨询、订单服务与售后保障"/>}{page==='me'&&<Me go={go}/>}
+ {!['home','hall','breed','detail','family','service','me'].includes(page)&&<SubPage title={({login:'登录 / 注册',orders:'我的订单',favorites:'我的收藏',follows:'我的关注',footprints:'浏览足迹',addresses:'收货地址',coupons:'优惠券',settings:'设置',about:'关于福宠',agreement:'用户协议',privacy:'隐私政策'} as Record<string,string>)[page]} go={go}/>}
  {!['hall','breed','detail'].includes(page)&&<Nav go={go} page={page}/>}</main>
 }
