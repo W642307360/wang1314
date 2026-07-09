@@ -1,0 +1,1 @@
+.feishu-form{display:grid!important;grid-template-columns:180px 1fr 100px;gap:10px;margin-bottom:18px}.feishu-form input{border:1px solid #e6dfd7;border-radius:11px;padding:10px}.feishu-form button{border:0;border-radius:11px;background:#4b4740;color:#fff}@media(max-width:760px){.feishu-form{grid-template-columns:1fr!important}}

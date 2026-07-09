@@ -272,6 +272,7 @@ createServer(async (req, res) => {
         throw e;
       }
     }
+    if(path==="/api/orders"&&method==="GET"){const userId=Number(url.searchParams.get("user_id")||1);return json(res,200,rows("SELECT o.*,oi.pet_snapshot,oi.price FROM orders o LEFT JOIN order_items oi ON oi.order_id=o.id WHERE o.user_id=? ORDER BY o.id DESC",userId))}
     if (path === "/api/messages" && method === "GET")
       return json(
         res,

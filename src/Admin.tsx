@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { halls } from "./catalog";
 import "./Admin.css";
 import "./AdminLogin.css";
+import "./Feishu.css";
 
 type AdminTab =
   | "dashboard"
@@ -11,7 +12,8 @@ type AdminTab =
   | "transactions"
   | "logistics"
   | "afterSales"
-  | "content";
+  | "content"
+  | "feishu";
 type ProductForm = {
   name: string;
   hall: string;
@@ -224,6 +226,10 @@ function AdminPanel({ token }: { token: string }) {
             ["users", "♙", "用户管理"],
             ["orders", "▣", "订单管理"],
             ["transactions", "¥", "交易中心"],
+            ["logistics", "⌖", "物流管理"],
+            ["afterSales", "↻", "客诉售后"],
+            ["content", "▤", "首页内容"],
+            ["feishu", "云", "飞书同步"],
           ] as const
         ).map(([id, icon, name]) => (
           <button
@@ -252,6 +258,7 @@ function AdminPanel({ token }: { token: string }) {
                   logistics: "物流管理",
                   afterSales: "客诉与售后",
                   content: "首页内容",
+                  feishu: "飞书同步",
                 }[tab]
               }
             </h1>
@@ -292,6 +299,7 @@ function AdminPanel({ token }: { token: string }) {
         {tab === "logistics" && <Logistics />}
         {tab === "afterSales" && <AfterSales />}
         {tab === "content" && <ContentManager />}
+        {tab === "feishu" && <FeishuManager token={token} />}
       </main>
       {showForm && (
         <div className="admin-modal">
@@ -614,4 +622,13 @@ function AfterSales() {
 }
 function ContentManager() {
   return <DataTable title="首页内容管理" heads={["内容类型","标题","排序","状态"]} rows={[["Banner","安心遇见生命伙伴","1","已发布"]]}/>;
+}
+
+function FeishuManager({token}:{token:string}){
+  const [configs,setConfigs]=useState<any[]>([]);const [name,setName]=useState("");const [url,setUrl]=useState("");const headers={authorization:`Bearer ${token}`,"content-type":"application/json"}
+  const load=()=>fetch("http://127.0.0.1:3001/api/admin/feishu/configs",{headers}).then(r=>r.json()).then(setConfigs)
+  useEffect(()=>{void load()},[])
+  const save=async()=>{await fetch("http://127.0.0.1:3001/api/admin/feishu/configs",{method:"POST",headers,body:JSON.stringify({name,document_url:url,field_mapping:{name:"宠物名称",breed:"品种",price:"价格",images:"图片",videos:"视频"}})});setName("");setUrl("");load()}
+  const sync=async(id:number)=>{await fetch("http://127.0.0.1:3001/api/admin/feishu/sync",{method:"POST",headers,body:JSON.stringify({config_id:id,mode:"incremental"})});alert("同步任务已进入队列")}
+  return <section className="admin-table"><div><h3>飞书数据源</h3></div><div className="feishu-form"><input value={name} onChange={e=>setName(e.target.value)} placeholder="数据源名称"/><input value={url} onChange={e=>setUrl(e.target.value)} placeholder="飞书多维表格链接"/><button onClick={save}>保存连接</button></div><table><thead><tr><th>名称</th><th>文档链接</th><th>字段映射</th><th>操作</th></tr></thead><tbody>{configs.map(c=><tr key={c.id}><td>{c.name}</td><td>{c.document_url}</td><td>名称、品种、价格、媒体</td><td><button onClick={()=>sync(c.id)}>增量同步</button></td></tr>)}</tbody></table></section>
 }

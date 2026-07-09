@@ -231,43 +231,28 @@ export function FootprintsPage({ back }: { back: () => void }) {
 }
 
 export function AddressesPage({ back }: { back: () => void }) {
-  const [items, setItems] = useState([
-    {
-      id: 1,
-      name: "王先生",
-      phone: "138****8866",
-      address: "四川省成都市高新区 天府大道 888 号",
-      isDefault: true,
-    },
-  ]);
+  const [items, setItems] = useState<Array<{id:number;name:string;phone:string;address:string;isDefault:boolean}>>([]);
   const [editing, setEditing] = useState(false);
+  const userId=Number(localStorage.getItem("fuchong-user-id")||1)
+  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/addresses?user_id=${userId}`).then(r=>r.json()).then(d=>Array.isArray(d)&&setItems(d.map(a=>({id:a.id,name:a.name,phone:a.phone,address:[a.province,a.city,a.district,a.detail].filter(Boolean).join(" "),isDefault:Boolean(a.is_default)})))).catch(()=>{})},[userId])
   return (
     <div className="module-page">
       <Header title="收货地址" back={back} />
       {editing ? (
         <form
           className="address-form"
-          onSubmit={(e) => {
+          onSubmit={async(e) => {
             e.preventDefault();
-            setItems((v) => [
-              ...v,
-              {
-                id: Date.now(),
-                name: "新联系人",
-                phone: "139****0000",
-                address: "新添加的示例地址",
-                isDefault: false,
-              },
-            ]);
+            const f=new FormData(e.currentTarget);const payload={user_id:userId,name:String(f.get("name")||""),phone:String(f.get("phone")||""),province:String(f.get("region")||""),detail:String(f.get("detail")||""),is_default:Boolean(f.get("default"))};const r=await fetch("http://127.0.0.1:3001/api/addresses",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});const saved=await r.json();setItems(v=>[...v,{id:saved.id,name:payload.name,phone:payload.phone,address:`${payload.province} ${payload.detail}`,isDefault:payload.is_default}])
             setEditing(false);
           }}
         >
-          <input placeholder="收货人" />
-          <input placeholder="手机号" />
-          <input placeholder="省 / 市 / 区" />
-          <textarea placeholder="详细地址" />
+          <input name="name" required placeholder="收货人" />
+          <input name="phone" required placeholder="手机号" />
+          <input name="region" required placeholder="省 / 市 / 区" />
+          <textarea name="detail" required placeholder="详细地址" />
           <label>
-            <input type="checkbox" /> 设为默认地址
+            <input name="default" type="checkbox" /> 设为默认地址
           </label>
           <button>保存地址</button>
         </form>
@@ -372,7 +357,7 @@ export function OrdersPage({ back }: { back: () => void }) {
     "售后",
   ];
   const [tab, setTab] = useState("全部");
-  const orders: Order[] = [
+  const [orders,setOrders] = useState<Order[]>([
     {
       id: "FC20260709001",
       status: "待确认",
@@ -389,7 +374,9 @@ export function OrdersPage({ back }: { back: () => void }) {
       price: 7600,
       image: petImg,
     },
-  ];
+  ]);
+  const userId=Number(localStorage.getItem("fuchong-user-id")||1)
+  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/orders?user_id=${userId}`).then(r=>r.json()).then(d=>Array.isArray(d)&&setOrders(d.map(o=>{let pet:any={};try{pet=JSON.parse(o.pet_snapshot||"{}")}catch{}return{id:o.order_no,status:o.status,petName:pet.name||"宠物订单",breed:pet.breed||"宠物档案",price:o.total_amount,image:pet.images?.[0]?.url||petImg}}))).catch(()=>{})},[userId])
   const visible =
     tab === "全部" ? orders : orders.filter((o) => o.status === tab);
   return (

@@ -273,6 +273,10 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
   const [favorite, setFavorite] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
+  const [petDbId,setPetDbId]=useState<number|null>(null);const userId=Number(localStorage.getItem("fuchong-user-id")||1)
+  useEffect(()=>{fetch(`http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}`).then(r=>r.json()).then(d=>Array.isArray(d)&&d[0]&&setPetDbId(d[0].id)).catch(()=>{})},[breed.name])
+  const toggleFavorite=async()=>{if(petDbId){await fetch(favorite?`http://127.0.0.1:3001/api/favorites/${petDbId}?user_id=${userId}`:"http://127.0.0.1:3001/api/favorites",{method:favorite?"DELETE":"POST",headers:{"content-type":"application/json"},body:favorite?undefined:JSON.stringify({user_id:userId,pet_id:petDbId})}).catch(()=>{})}setFavorite(!favorite)}
+  const submitOrder=async()=>{if(!petDbId)return;const address={name:"待选择",phone:"",detail:"用户提交后补充"};const r=await fetch("http://127.0.0.1:3001/api/orders",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({user_id:userId,pet_id:petDbId,address})});if(r.ok){setBuyOpen(false);go("orders")}}
   return (
     <div className="detail">
       <section className="detail-hero">
@@ -437,7 +441,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
         </button>
         <button
           className={favorite ? "selected" : ""}
-          onClick={() => setFavorite(!favorite)}
+          onClick={toggleFavorite}
         >
           {favorite ? "♥" : "♡"}
           <small>{favorite ? "已收藏" : "收藏"}</small>
@@ -478,10 +482,7 @@ function Detail({ go, breed }: { go: (p: Page) => void; breed: BreedItem }) {
               <strong>¥6800</strong>
             </div>
             <button
-              onClick={() => {
-                setBuyOpen(false);
-                go("orders");
-              }}
+              onClick={submitOrder}
             >
               提交订单
             </button>
