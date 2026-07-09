@@ -8,6 +8,122 @@
   box-shadow: 0 8px 24px #5d46310f;
 }
 
+.smart-image {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #f8f4ee, #ebe3d8);
+}
+
+.smart-image > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transform: scale(1.015);
+  transition:
+    opacity 0.32s ease,
+    transform 0.45s ease;
+}
+
+.smart-image.loaded > img {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.smart-image > i {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, #fff5 10%, #ffffffb8 38%, #fff4 65%);
+  background-size: 220% 100%;
+  animation: skeletonMove 1.05s ease-in-out infinite;
+  z-index: 1;
+}
+
+.smart-image.error {
+  display: grid;
+  place-items: center;
+  color: #a8907a;
+  font-size: 10px;
+}
+
+.smart-image.error em {
+  font-style: normal;
+}
+
+.carousel-track .smart-image,
+.hall-list .smart-image,
+.detail-hero > .smart-image {
+  width: 100%;
+  height: 100%;
+}
+
+.headshot .smart-image,
+.breed-cover .smart-image,
+.available .smart-image {
+  width: 100%;
+  height: 100%;
+}
+
+.search-result-list .smart-image,
+.search-placeholder {
+  width: 70px;
+  height: 70px;
+  border-radius: 13px;
+}
+
+.available .smart-image {
+  height: 180px;
+}
+
+.growth .smart-image {
+  width: 50px;
+  height: 50px;
+  border-radius: 7px;
+}
+
+.buy-pet .smart-image {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+}
+
+.virtual-grid {
+  display: block !important;
+  position: relative;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.virtual-grid-inner,
+.grid-pass {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.virtual-grid-inner {
+  will-change: transform;
+}
+
+.detail-progressive {
+  margin: 12px;
+  background: white;
+  border-radius: 17px;
+  padding: 14px;
+}
+
+.detail-progressive .pet-skeleton {
+  min-height: 150px;
+}
+
+.detail-progressive p {
+  margin: 12px 4px 2px;
+  color: #9b8f83;
+  font-size: 10px;
+}
+
 @keyframes skeletonMove {
   to {
     background-position: -220% 0;

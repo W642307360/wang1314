@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import "./App.css";
 import "./Me.css";
 import "./Catalog.css";
@@ -62,6 +69,136 @@ const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
 const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
   pet?.thumbnail_url || pet?.image || pet?.highres_url || fallback;
+const API_BASE = "http://127.0.0.1:3001";
+const jsonCache = new Map<string, { at: number; ttl: number; data: unknown }>();
+const imageMemoryCache = new Set<string>();
+const optimizeImage = (url = petPhoto, width = 360, quality = 72) => {
+  if (!url.startsWith("http")) return url;
+  const joiner = url.includes("?") ? "&" : "?";
+  if (url.includes("images.unsplash.com")) {
+    return `${url}${url.includes("auto=format") ? "" : `${joiner}auto=format`}&fit=crop&w=${width}&q=${quality}&fm=webp`;
+  }
+  if (url.includes("Special:FilePath") && !url.includes("width=")) {
+    return `${url}${joiner}width=${width}`;
+  }
+  return url;
+};
+const thumbImage = (url?: string, fallback = petPhoto) =>
+  optimizeImage(url || fallback, 360, 72);
+const coverImage = (url?: string, fallback = petPhoto) =>
+  optimizeImage(url || fallback, 960, 86);
+async function cachedJson<T>(url: string, ttl = 45_000): Promise<T> {
+  const cached = jsonCache.get(url);
+  if (cached && Date.now() - cached.at < cached.ttl) return cached.data as T;
+  const r = await fetch(url);
+  const data = (await r.json()) as T;
+  jsonCache.set(url, { at: Date.now(), ttl, data });
+  return data;
+}
+function SmartImage({
+  src,
+  alt = "",
+  className,
+  eager = false,
+  highres,
+  style,
+}: {
+  src?: string;
+  alt?: string;
+  className?: string;
+  eager?: boolean;
+  highres?: string;
+  style?: CSSProperties;
+}) {
+  const small = thumbImage(src);
+  const large = highres ? coverImage(highres, src) : undefined;
+  const initialLoaded = imageMemoryCache.has(small);
+  const [loaded, setLoaded] = useState(initialLoaded);
+  const [error, setError] = useState(false);
+  const [current, setCurrent] = useState(small);
+  useEffect(() => {
+    const next = thumbImage(src);
+    setCurrent(next);
+    setLoaded(imageMemoryCache.has(next));
+    setError(false);
+  }, [src]);
+  useEffect(() => {
+    if (!large || current === large || !loaded) return;
+    let cancelled = false;
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => {
+      if (!cancelled) {
+        imageMemoryCache.add(large);
+        setCurrent(large);
+      }
+    };
+    img.src = large;
+    return () => {
+      cancelled = true;
+    };
+  }, [large, current, loaded]);
+  return (
+    <span
+      className={`smart-image ${loaded ? "loaded" : ""} ${error ? "error" : ""} ${className || ""}`}
+      style={style}
+    >
+      {!loaded && <i />}
+      {error ? (
+        <em>图片加载中</em>
+      ) : (
+        <img
+          src={current}
+          alt={alt}
+          loading={eager ? "eager" : "lazy"}
+          decoding="async"
+          fetchPriority={eager ? "high" : "auto"}
+          onLoad={() => {
+            imageMemoryCache.add(current);
+            setLoaded(true);
+          }}
+          onError={() => setError(true)}
+        />
+      )}
+    </span>
+  );
+}
+function useVirtualGrid<T>(items: T[], enabled: boolean, rowHeight = 260, columns = 2) {
+  const [range, setRange] = useState({ start: 0, end: enabled ? Math.min(items.length, 20) : items.length });
+  useEffect(() => {
+    if (!enabled) {
+      setRange({ start: 0, end: items.length });
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const viewport = window.innerHeight || 720;
+        const top = window.scrollY || 0;
+        const startRow = Math.max(0, Math.floor((top - 520) / rowHeight) - 3);
+        const visibleRows = Math.ceil(viewport / rowHeight) + 8;
+        const start = startRow * columns;
+        const end = Math.min(items.length, (startRow + visibleRows) * columns);
+        setRange({ start, end });
+      });
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [columns, enabled, items.length, rowHeight]);
+  return {
+    enabled,
+    items: enabled ? items.slice(range.start, range.end) : items,
+    top: enabled ? Math.floor(range.start / columns) * rowHeight : 0,
+    height: enabled ? Math.ceil(items.length / columns) * rowHeight : undefined,
+  };
+}
 
 function Back({ onClick }: { onClick: () => void }) {
   return (
@@ -112,7 +249,7 @@ function Home({
       <section className="home-carousel">
         <div className="carousel-track">
           <article>
-            <img src={halls[0].hero} />
+            <SmartImage src={halls[0].hero} eager />
             <div>
               <small>生命伙伴计划</small>
               <h2>遇见值得陪伴一生的它</h2>
@@ -120,7 +257,7 @@ function Home({
             </div>
           </article>
           <article>
-            <img src={halls[1].hero} />
+            <SmartImage src={halls[1].hero} />
             <div>
               <small>科学养宠</small>
               <h2>认真了解，再做一生选择</h2>
@@ -128,7 +265,7 @@ function Home({
             </div>
           </article>
           <article>
-            <img src={halls[4].hero} />
+            <SmartImage src={halls[4].hero} />
             <div>
               <small>尊重生命</small>
               <h2>每一种特别，都值得被看见</h2>
@@ -144,7 +281,7 @@ function Home({
       <div className="hall-list">
         {halls.map((h) => (
           <button key={h.key} onClick={() => openHall(h.key)}>
-            <img src={h.hero} />
+            <SmartImage src={h.hero} />
             <div>
               <h3>{h.name}</h3>
               <p>{h.subtitle}</p>
@@ -190,22 +327,27 @@ function SearchPage({
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [apiPets, setApiPets] = useState<any[]>([]);
-  const local = halls
-    .flatMap((h) => h.breeds.map((b) => ({ ...b, hallName: h.name })))
-    .filter(
-      (b) =>
-        !query ||
-        b.name.includes(query) ||
-        b.en.toLowerCase().includes(query.toLowerCase()),
-    );
+  const local = useMemo(
+    () =>
+      halls
+        .flatMap((h) => h.breeds.map((b) => ({ ...b, hallName: h.name })))
+        .filter(
+          (b) =>
+            !query ||
+            b.name.includes(query) ||
+            b.en.toLowerCase().includes(query.toLowerCase()),
+        ),
+    [query],
+  );
   const search = async (value: string) => {
     setQuery(value);
     setLoading(true);
     try {
-      const r = await fetch(
-        `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(value)}`,
+      const list = await cachedJson<ApiPet[]>(
+        `${API_BASE}/api/pets?q=${encodeURIComponent(value)}&page=1&pageSize=12`,
+        20_000,
       );
-      setApiPets(await r.json());
+      setApiPets(Array.isArray(list) ? list : []);
     } catch {
       setApiPets([]);
     } finally {
@@ -235,7 +377,7 @@ function SearchPage({
             {apiPets.map((p) => (
               <button key={`api-${p.id}`} onClick={() => openPet(p)}>
                 {petImage(p) ? (
-                  <img src={petImage(p)} loading="lazy" decoding="async" />
+                  <SmartImage src={petImage(p)} alt={p.name} />
                 ) : (
                   <div className="search-placeholder">宠</div>
                 )}
@@ -250,7 +392,7 @@ function SearchPage({
             ))}
             {local.slice(0, 60).map((b) => (
               <button key={b.id} onClick={() => openBreed(b)}>
-                <img src={b.image} />
+                <SmartImage src={b.image} alt={b.name} />
                 <div>
                   <small>{b.hallName}</small>
                   <h3>{b.name}</h3>
@@ -284,11 +426,16 @@ function Hall({
 }) {
   const hall = hallByKey(hallKey);
   const [query, setQuery] = useState("");
-  const visible = hall.breeds.filter(
-    (b) =>
-      b.name.includes(query) ||
-      b.en.toLowerCase().includes(query.toLowerCase()),
+  const visible = useMemo(
+    () =>
+      hall.breeds.filter(
+        (b) =>
+          b.name.includes(query) ||
+          b.en.toLowerCase().includes(query.toLowerCase()),
+      ),
+    [hall.breeds, query],
   );
+  const virtualBreeds = useVirtualGrid(visible, visible.length > 50, 250, 2);
   return (
     <>
       <div className="subhead">
@@ -323,11 +470,24 @@ function Hall({
         />
         <span>{visible.length} 个结果</span>
       </div>
-      <section className="breed-grid">
-        {visible.map((b, i) => (
+      <section
+        className={`breed-grid ${virtualBreeds.enabled ? "virtual-grid" : ""}`}
+        style={
+          virtualBreeds.enabled ? { height: virtualBreeds.height } : undefined
+        }
+      >
+        <div
+          className={virtualBreeds.enabled ? "virtual-grid-inner" : "grid-pass"}
+          style={
+            virtualBreeds.enabled
+              ? { transform: `translateY(${virtualBreeds.top}px)` }
+              : undefined
+          }
+        >
+        {virtualBreeds.items.map((b, i) => (
           <button key={b.id} onClick={() => openBreed(b)}>
             <div className="headshot">
-              <img src={b.image} />
+              <SmartImage src={b.image} alt={b.name} />
               <span>{(i % 7) + 3}只在售</span>
             </div>
             <h3>{b.name}</h3>
@@ -335,6 +495,7 @@ function Hall({
             <p>{b.desc}</p>
           </button>
         ))}
+        </div>
       </section>
       <RefreshHint refreshing={false} hasMore={false} />
     </>
@@ -359,10 +520,10 @@ function Breed({
   const load = useCallback(async (nextPage: number, reset = false) => {
     setLoading(true);
     try {
-      const r = await fetch(
-        `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(b.name)}&page=${nextPage}&pageSize=12`,
+      const list = await cachedJson<ApiPet[]>(
+        `${API_BASE}/api/pets?q=${encodeURIComponent(b.name)}&page=${nextPage}&pageSize=12`,
+        35_000,
       );
-      const list = await r.json();
       const safe = Array.isArray(list) ? list : [];
       setPets((v) => (reset ? safe : [...v, ...safe]));
       setHasMore(safe.length === 12);
@@ -402,7 +563,7 @@ function Breed({
         <button>♡</button>
       </div>
       <section className="breed-cover">
-        <img src={b.image} />
+        <SmartImage src={b.image} alt={b.name} eager />
         <span>标准品种档案</span>
       </section>
       <section className="breed-copy">
@@ -461,11 +622,7 @@ function Breed({
             ))
           : pets.map((pet) => (
               <button key={pet.id} onClick={() => openPet(pet, b)}>
-                <img
-                  src={petImage(pet, b.image)}
-                  loading="lazy"
-                  decoding="async"
-                />
+                <SmartImage src={petImage(pet, b.image)} alt={pet.name} />
                 <span>{pet.health_status || "健康认证"}</span>
                 <h3>{pet.name}</h3>
                 <p>
@@ -481,7 +638,7 @@ function Breed({
               openPet({ id: 0, name: b.name, breed: b.name, price: 6800 }, b)
             }
           >
-            <img src={b.image} loading="lazy" decoding="async" />
+            <SmartImage src={b.image} alt={b.name} />
             <span>健康认证</span>
             <h3>{b.name}档案</h3>
             <p>暂无在售商品 · 可咨询客服</p>
@@ -514,20 +671,24 @@ function Detail({
   const [buyOpen, setBuyOpen] = useState(false);
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
   const [detailPet, setDetailPet] = useState<any>(pet);
+  const [detailReady, setDetailReady] = useState(false);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
+    setDetailPet(pet);
+    setPetDbId(pet?.id || null);
+    setDetailReady(false);
+    const readyTimer = window.setTimeout(() => setDetailReady(true), 160);
     const url =
       pet?.id && pet.id > 0
-        ? `http://127.0.0.1:3001/api/pets/${pet.id}`
-        : `http://127.0.0.1:3001/api/pets?q=${encodeURIComponent(breed.name)}&page=1&pageSize=1`;
-    fetch(url)
-      .then((r) => r.json())
+        ? `${API_BASE}/api/pets/${pet.id}`
+        : `${API_BASE}/api/pets?q=${encodeURIComponent(breed.name)}&page=1&pageSize=1`;
+    cachedJson<any>(url, 30_000)
       .then(async (d) => {
         const item = Array.isArray(d) ? d[0] : d;
         if (item?.id) {
           setPetDbId(item.id);
-          setDetailPet(item);
-          await fetch("http://127.0.0.1:3001/api/footprints", {
+          setDetailPet((old: any) => ({ ...(old || {}), ...item }));
+          await fetch(`${API_BASE}/api/footprints`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ user_id: userId, pet_id: item.id }),
@@ -535,7 +696,8 @@ function Detail({
         }
       })
       .catch(() => {});
-  }, [breed.name, pet?.id, userId]);
+    return () => window.clearTimeout(readyTimer);
+  }, [breed.name, pet, pet?.id, userId]);
   const displayName = detailPet?.name || "Coco";
   const displayPrice = detailPet?.price || 6800;
   const displaySeller = detailPet?.seller_name || "福宠认证宠物馆";
@@ -543,8 +705,8 @@ function Detail({
     if (petDbId) {
       await fetch(
         favorite
-          ? `http://127.0.0.1:3001/api/favorites/${petDbId}?user_id=${userId}`
-          : "http://127.0.0.1:3001/api/favorites",
+          ? `${API_BASE}/api/favorites/${petDbId}?user_id=${userId}`
+          : `${API_BASE}/api/favorites`,
         {
           method: favorite ? "DELETE" : "POST",
           headers: { "content-type": "application/json" },
@@ -559,7 +721,7 @@ function Detail({
   const submitOrder = async () => {
     if (!petDbId) return;
     const address = { name: "待选择", phone: "", detail: "用户提交后补充" };
-    const r = await fetch("http://127.0.0.1:3001/api/orders", {
+    const r = await fetch(`${API_BASE}/api/orders`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ user_id: userId, pet_id: petDbId, address }),
@@ -572,7 +734,7 @@ function Detail({
   const toggleFollow = async () => {
     const seller = "福宠认证宠物馆";
     await fetch(
-      `http://127.0.0.1:3001/api/follows${following ? `?user_id=${userId}&seller_name=${encodeURIComponent(seller)}` : ""}`,
+      `${API_BASE}/api/follows${following ? `?user_id=${userId}&seller_name=${encodeURIComponent(seller)}` : ""}`,
       {
         method: following ? "DELETE" : "POST",
         headers: { "content-type": "application/json" },
@@ -586,7 +748,12 @@ function Detail({
   return (
     <div className="detail">
       <section className="detail-hero">
-        <img src={petImage(detailPet, breed.image)} loading="eager" />
+        <SmartImage
+          src={petImage(detailPet, breed.image)}
+          highres={detailPet?.highres_url || detailPet?.image || breed.image}
+          alt={displayName}
+          eager
+        />
         <Back onClick={() => go("breed")} />
         <span className="life">♢ 可查看3日常生活照</span>
         <div className="pet-name">
@@ -600,6 +767,8 @@ function Detail({
         </strong>
         <span className="count">1/6</span>
       </section>
+      {detailReady ? (
+      <>
       <section className="parents">
         <Parent title="爸爸　阿布 (Abu)" sex="♂" />
         <div className="heart">♡</div>
@@ -697,8 +866,9 @@ function Detail({
               <article key={x}>
                 <b>{x}</b>
                 <small>{i < 3 ? "体型初长" : "健康成长"}</small>
-                <img
+                <SmartImage
                   src={breed.image}
+                  alt={`${breed.name}-${x}`}
                   style={{
                     transform: `scale(${0.72 + i * 0.045})`,
                     filter: `saturate(${0.72 + i * 0.06}) brightness(${1.08 - i * 0.025})`,
@@ -742,6 +912,13 @@ function Detail({
           </article>
         ))}
       </section>
+      </>
+      ) : (
+        <section className="detail-progressive">
+          <div className="pet-skeleton" />
+          <p>正在加载健康档案、成长记录与商家资料…</p>
+        </section>
+      )}
       {cart && <div className="toast">已加入购物车，可在订单确认时查看</div>}
       <div className="buybar">
         <button
@@ -776,7 +953,7 @@ function Detail({
             <i />
             <h2>确认迎接 {displayName} 回家</h2>
             <div className="buy-pet">
-              <img src={petImage(detailPet, breed.image)} />
+              <SmartImage src={petImage(detailPet, breed.image)} alt={displayName} />
               <p>
                 <b>
                   {displayName} · {detailPet?.breed || breed.name}
