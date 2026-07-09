@@ -27,9 +27,19 @@ const meta:Record<HallKey,[string,string,string,string]>={
  more:['更多馆','领养、用品与新品种','发现更多可能','#77736c']
 }
 const english:Record<string,string>={'布偶猫':'Ragdoll','缅因猫':'Maine Coon','金渐层':'Golden Shaded','金毛':'Golden Retriever','拉布拉多':'Labrador','柴犬':'Shiba Inu','萨摩耶':'Samoyed','柯基':'Welsh Corgi','边牧':'Border Collie','虎皮鹦鹉':'Budgerigar','锦鲤':'Koi','金鱼':'Goldfish','垂耳兔':'Lop Rabbit','龙猫':'Chinchilla'}
+const verifiedPortraits:Record<string,string>={
+ '布偶猫':'Ragdoll from Gatil Ragbelas.jpg',
+ '缅因猫':'Maine Coon Fallen male Angel of Canadian Summer 01.jpg',
+ '英短蓝猫':'A British Shorthair cat.jpg',
+ '暹罗猫':'Siamese cat 1960.jpg',
+ '波斯猫':'Persian Cat.jpg',
+ '无毛猫':'20170604 Sphynx cat 7984.jpg',
+ '斯芬克斯':'Cat Sphynx. img 040.jpg'
+}
+const commonsPortrait=(file:string)=>`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=720`
 
 export const halls:Hall[]=(Object.keys(names) as HallKey[]).map(key=>{
  const [name,subtitle,tagline,accent]=meta[key]
- return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:photos[key][i%photos[key].length]}))}
+ return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:verifiedPortraits[name]?commonsPortrait(verifiedPortraits[name]):photos[key][i%photos[key].length]}))}
 })
 export const hallByKey=(key:HallKey)=>halls.find(x=>x.key===key)||halls[0]

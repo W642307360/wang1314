@@ -3,6 +3,7 @@ import './App.css'
 import './Me.css'
 import './Catalog.css'
 import './DetailEnhance.css'
+import './Commerce.css'
 import { RefreshHint } from './UIStates'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
@@ -44,7 +45,7 @@ function Breed({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
 }
 
 function Detail({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
- const [featureTab,setFeatureTab]=useState('品种');const [playing,setPlaying]=useState(false)
+ const [featureTab,setFeatureTab]=useState('品种');const [playing,setPlaying]=useState(false);const [favorite,setFavorite]=useState(false);const [cart,setCart]=useState(false);const [buyOpen,setBuyOpen]=useState(false)
  return <div className="detail"><section className="detail-hero"><img src={breed.image}/><Back onClick={()=>go('breed')}/><span className="life">♢ 可查看3日常生活照</span><div className="pet-name"><em>Coco</em><i>♀</i><b>纯种{breed.name}</b><p>温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养</p></div><strong className="price">¥6800 <small>已售 128</small></strong><span className="count">1/6</span></section>
    <section className="parents"><Parent title="爸爸　阿布 (Abu)" sex="♂"/><div className="heart">♡</div><Parent title="妈妈　拉拉 (Lala)" sex="♀"/></section>
    <section className="feature"><div className="feature-tabs">{['品种','毛色','体型','毛发长度','性格','声音','健康状况','是否纯种'].map((x,i)=><button key={x} onClick={()=>setFeatureTab(x)} className={featureTab===x?'active':''}><i>{['♧','◉','♙','〽','✦','◖','♢','♢'][i]}</i>{x}</button>)}</div>
@@ -53,10 +54,12 @@ function Detail({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
     {['毛色　自然金棕色','体型　标准体型 · 成体对比','毛发长度　柔软长毛','性格　温顺亲人　粘人可爱　安静乖巧'].map(x=><div className="row" key={x}>{x}<b>⌄</b></div>)}
     <button className={`sound-player ${playing?'playing':''}`} onClick={()=>setPlaying(!playing)}><i>{playing?'❚❚':'▶'}</i><span>{playing?'正在播放真实声音':'点击试听宠物声音'}</span><em>▂▃▅▂▆▃▇▂▅▃▆</em></button>
    </section>
-   <section className="growth"><h3>{breed.name} · 专属成长记录</h3><div>{['1个月','2个月','3个月','6个月','1岁','2岁'].map((x,i)=><article key={x}><b>{x}</b><small>{i<3?'体型初长':'健康成长'}</small><img src={breed.image}/></article>)}</div></section>
+   <section className="growth"><h3>{breed.name} · 专属成长记录</h3><div>{['1个月','2个月','3个月','6个月','1岁','2岁','3岁','5岁'].map((x,i)=><article key={x}><b>{x}</b><small>{i<3?'体型初长':'健康成长'}</small><img src={breed.image} style={{transform:`scale(${.72+i*.045})`,filter:`saturate(${.72+i*.06}) brightness(${1.08-i*.025})`}}/></article>)}</div></section>
    <section className="origin"><div><h3>品种起源</h3><div className="origin-map"><i>●</i><span>{breed.name}<br/>ORIGIN</span></div><p>{breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。</p></div><div><h3>所属商家</h3><b>福宠认证宠物馆　★★★★★</b><p>健康保障 · 售后无忧 · 已售3289+</p><button>进入店铺 ›</button></div></section>
    <section className="reviews"><h3>用户评价（128）</h3>{['小可爱','糖糖不甜','爱好者'].map(n=><article key={n}><b>●　{n}　<span>★★★★★</span></b><p>Coco太可爱了，到家很健康，性格温顺，非常亲人。</p></article>)}</section>
-   <div className="buybar"><button>♧<small>客服</small></button><button>♡<small>收藏</small></button><button>🛒<small>加入购物车</small></button><button className="buy">立即购买 <small>¥6800</small></button></div>
+   {cart&&<div className="toast">已加入购物车，可在订单确认时查看</div>}
+   <div className="buybar"><button onClick={()=>go('service')}>♧<small>客服</small></button><button className={favorite?'selected':''} onClick={()=>setFavorite(!favorite)}>{favorite?'♥':'♡'}<small>{favorite?'已收藏':'收藏'}</small></button><button className={cart?'selected':''} onClick={()=>setCart(true)}>🛒<small>{cart?'已加入':'加入购物车'}</small></button><button className="buy" onClick={()=>setBuyOpen(true)}>立即购买 <small>¥6800</small></button></div>
+   {buyOpen&&<div className="modal-mask" onClick={()=>setBuyOpen(false)}><section className="buy-modal" onClick={e=>e.stopPropagation()}><i/><h2>确认迎接 Coco 回家</h2><div className="buy-pet"><img src={breed.image}/><p><b>Coco · {breed.name}</b><span>健康认证 · 疫苗齐全 · 纯种保障</span></p><strong>¥6800</strong></div><div className="buy-line"><span>配送地址</span><b>请选择收货地址 ›</b></div><div className="buy-line"><span>平台保障</span><b>30天健康保障</b></div><div className="buy-total"><span>应付合计</span><strong>¥6800</strong></div><button onClick={()=>{setBuyOpen(false);go('orders')}}>提交订单</button><small>提交即代表同意《活体宠物购买保障协议》</small></section></div>}
   </div>
 }
 function Parent({title,sex}:{title:string,sex:string}) {return <div className="parent"><img src={petPhoto}/><div><h3>{title} <i>{sex}</i></h3><p>品种：金毛寻回犬<br/>毛色：金黄色<br/>血统：纯种<br/>年龄：3岁　体重：32kg</p></div></div>}
