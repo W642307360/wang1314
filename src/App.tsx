@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './App.css'
 import './Me.css'
 import './Catalog.css'
+import './DetailEnhance.css'
 import { AddressesPage, CollectionPage, CouponsPage, FootprintsPage, LoginPage, MessagesPage, OrdersPage, type User } from './UserModules'
 import { hallByKey, halls, type BreedItem, type HallKey } from './catalog'
 
@@ -41,15 +42,18 @@ function Breed({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
   <div className="available">{[1,2,3,4].map((x)=><button key={x} onClick={()=>go('detail')}><img src={petPhoto}/><span>健康认证</span><h3>小太阳 {x}号</h3><p>金毛寻回犬 · {x+2}个月 · ♂</p><b>¥ {6800+x*500}</b></button>)}</div></>
 }
 
-function Detail({go}:{go:(p:Page)=>void}) {
- return <div className="detail"><section className="detail-hero"><img src={petPhoto}/><Back onClick={()=>go('breed')}/><span className="life">♢ 可查看3日常生活照</span><div className="pet-name"><em>Coco</em><i>♀</i><b>纯种金毛寻回犬</b><p>温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养</p></div><strong className="price">¥6800 <small>已售 128</small></strong><span className="count">1/6</span></section>
+function Detail({go,breed}:{go:(p:Page)=>void;breed:BreedItem}) {
+ const [featureTab,setFeatureTab]=useState('品种');const [playing,setPlaying]=useState(false)
+ return <div className="detail"><section className="detail-hero"><img src={breed.image}/><Back onClick={()=>go('breed')}/><span className="life">♢ 可查看3日常生活照</span><div className="pet-name"><em>Coco</em><i>♀</i><b>纯种{breed.name}</b><p>温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养</p></div><strong className="price">¥6800 <small>已售 128</small></strong><span className="count">1/6</span></section>
    <section className="parents"><Parent title="爸爸　阿布 (Abu)" sex="♂"/><div className="heart">♡</div><Parent title="妈妈　拉拉 (Lala)" sex="♀"/></section>
-   <section className="feature"><div className="feature-tabs">{['品种','毛色','体型','毛发长度','性格','声音','健康状况','是否纯种'].map((x,i)=><button key={x} className={i===0?'active':''}><i>{['♧','♡','♙','⌁','♙','◖','♢','♢'][i]}</i>{x}</button>)}</div>
-    <div className="breed-detail"><div><h3>金毛寻回犬 (Golden Retriever)</h3><p>金毛犬原产于英国，是一种大型、温顺的长毛犬，性格温和、友善且聪明，被誉为最适合家庭陪伴的犬种之一。</p></div><dl><dt>原产地</dt><dd>英国</dd><dt>寿命</dt><dd>10–12年</dd><dt>体重</dt><dd>25–34kg</dd><dt>体型</dt><dd>大型犬</dd></dl></div>
-    {['毛色　金黄色','体型　大型犬','毛发长度　长毛','性格　温顺亲人　粘人可爱　安静乖巧','声音　▶ 点击试听'].map(x=><div className="row" key={x}>{x}<b>⌄</b></div>)}
+   <section className="feature"><div className="feature-tabs">{['品种','毛色','体型','毛发长度','性格','声音','健康状况','是否纯种'].map((x,i)=><button key={x} onClick={()=>setFeatureTab(x)} className={featureTab===x?'active':''}><i>{['♧','◉','♙','〽','✦','◖','♢','♢'][i]}</i>{x}</button>)}</div>
+    <div className="breed-detail"><div><h3>{breed.name} ({breed.en})</h3><p>{breed.desc}。每只宠物均建立独立健康、疫苗、父母血统与成长影像档案。</p></div><dl><dt>原产地</dt><dd>品种档案</dd><dt>寿命</dt><dd>10–16年</dd><dt>体重</dt><dd>4–34kg</dd><dt>体型</dt><dd>标准体型</dd></dl></div>
+    <div className="visual-traits"><article><span>真实毛色</span><div className="fur-swatch"/><b>自然金棕</b></article><article><span>体型对比</span><div className="body-scale"><i/><i/><i className="on"/></div><b>标准体型</b></article><article><span>毛发长度</span><div className="fur-length">﹏﹏﹏</div><b>柔软长毛</b></article></div>
+    {['毛色　自然金棕色','体型　标准体型 · 成体对比','毛发长度　柔软长毛','性格　温顺亲人　粘人可爱　安静乖巧'].map(x=><div className="row" key={x}>{x}<b>⌄</b></div>)}
+    <button className={`sound-player ${playing?'playing':''}`} onClick={()=>setPlaying(!playing)}><i>{playing?'❚❚':'▶'}</i><span>{playing?'正在播放真实声音':'点击试听宠物声音'}</span><em>▂▃▅▂▆▃▇▂▅▃▆</em></button>
    </section>
-   <section className="growth"><h3>成长记录</h3><div>{['1个月','2个月','3个月','6个月','1岁','2岁'].map((x,i)=><article key={x}><b>{x}</b><small>{i<3?'好奇探索':'快乐成长'}</small><img src={petPhoto}/></article>)}</div></section>
-   <section className="origin"><div><h3>品种起源</h3><p>金毛寻回犬起源于19世纪的英国，因其温顺、喜爱与人相处，被称为“阳光般的狗狗”。</p></div><div><h3>所属商家</h3><b>汪星宠物馆　★★★★★</b><p>健康保障 · 售后无忧 · 已售3289+</p><button>进入店铺 ›</button></div></section>
+   <section className="growth"><h3>{breed.name} · 专属成长记录</h3><div>{['1个月','2个月','3个月','6个月','1岁','2岁'].map((x,i)=><article key={x}><b>{x}</b><small>{i<3?'体型初长':'健康成长'}</small><img src={breed.image}/></article>)}</div></section>
+   <section className="origin"><div><h3>品种起源</h3><div className="origin-map"><i>●</i><span>{breed.name}<br/>ORIGIN</span></div><p>{breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。</p></div><div><h3>所属商家</h3><b>福宠认证宠物馆　★★★★★</b><p>健康保障 · 售后无忧 · 已售3289+</p><button>进入店铺 ›</button></div></section>
    <section className="reviews"><h3>用户评价（128）</h3>{['小可爱','糖糖不甜','爱好者'].map(n=><article key={n}><b>●　{n}　<span>★★★★★</span></b><p>Coco太可爱了，到家很健康，性格温顺，非常亲人。</p></article>)}</section>
    <div className="buybar"><button>♧<small>客服</small></button><button>♡<small>收藏</small></button><button>🛒<small>加入购物车</small></button><button className="buy">立即购买 <small>¥6800</small></button></div>
   </div>
@@ -88,7 +92,7 @@ export default function App(){
  const [hallKey,setHallKey]=useState<HallKey>('dogs');const [breed,setBreed]=useState<BreedItem>(dogBreeds[0])
  const go=(p:Page)=>{setPage(p);scrollTo(0,0)};const login=(u:User)=>{setUser(u);localStorage.setItem('fuchong-user',JSON.stringify(u))};const logout=()=>{setUser(null);localStorage.removeItem('fuchong-user')}
  const openHall=(key:HallKey)=>{setHallKey(key);go('hall')};const openBreed=(item:BreedItem)=>{setBreed(item);go('breed')}
- return <main className="phone-shell">{page==='home'&&<Home openHall={openHall}/>} {page==='hall'&&<Hall go={go} hallKey={hallKey} openBreed={openBreed}/>} {page==='breed'&&<Breed go={go} breed={breed}/>} {page==='detail'&&<Detail go={go}/>}
+ return <main className="phone-shell">{page==='home'&&<Home openHall={openHall}/>} {page==='hall'&&<Hall go={go} hallKey={hallKey} openBreed={openBreed}/>} {page==='breed'&&<Breed go={go} breed={breed}/>} {page==='detail'&&<Detail go={go} breed={breed}/>}
  {page==='family'&&<CollectionPage mode="favorites" back={()=>go('home')}/>} {page==='service'&&<MessagesPage back={()=>go('home')}/>} {page==='me'&&<Me go={go} user={user}/>}
  {page==='login'&&<LoginPage back={()=>go('me')} user={user} onLogin={login} onLogout={logout}/>} {page==='orders'&&<OrdersPage back={()=>go('me')}/>}
  {page==='favorites'&&<CollectionPage mode="favorites" back={()=>go('me')}/>} {page==='follows'&&<CollectionPage mode="follows" back={()=>go('me')}/>}
