@@ -259,7 +259,10 @@ function Home({
     <>
       <header>
         <div className="brand">
-          <img className="brand-logo" src="/assets/fuchong-logo-source.jpg" alt="福宠 logo" />
+          <span className="brand-logo" aria-hidden="true">
+            <i />
+            <b />
+          </span>
           <h1>福宠</h1>
         </div>
         <button className="search" onClick={() => go("search")}>
@@ -340,10 +343,10 @@ function Home({
           <b>养</b>
         </div>
         <div className="care-copy">
-          <small>FUCHONG CARE ATLAS</small>
-          <h2>养宠宝典</h2>
+          <small>照护星图</small>
+          <h2>生命照护地图</h2>
           <p>从猫狗到水族、鸟类、奇宠，把喂养、清洁、训练、健康和到家适应做成一张可查的生命手册。</p>
-          <button onClick={() => go("care")}>打开养宠手册　›</button>
+          <button onClick={() => go("care")}>进入照护地图　›</button>
         </div>
       </section>
     </>
@@ -1414,8 +1417,8 @@ function CareManual({ go }: { go: (p: Page) => void }) {
       <div className="subhead">
         <Back onClick={() => go("home")} />
         <div>
-          <small>CARE MANUAL</small>
-          <h2>养宠宝典</h2>
+          <small>照护地图</small>
+          <h2>生命照护地图</h2>
         </div>
         <button>⌕</button>
       </div>
