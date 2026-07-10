@@ -44,6 +44,7 @@ type Page =
   | "family"
   | "service"
   | "me"
+  | "care"
   | "login"
   | "orders"
   | "favorites"
@@ -328,6 +329,21 @@ function Home({
           <span>
             <b>86</b>合作机构
           </span>
+        </div>
+      </section>
+      <section className="care-gateway">
+        <div className="care-orbit">
+          <i>食</i>
+          <i>洁</i>
+          <i>训</i>
+          <i>医</i>
+          <b>养</b>
+        </div>
+        <div className="care-copy">
+          <small>FUCHONG CARE ATLAS</small>
+          <h2>养宠宝典</h2>
+          <p>从猫狗到水族、鸟类、奇宠，把喂养、清洁、训练、健康和到家适应做成一张可查的生命手册。</p>
+          <button onClick={() => go("care")}>打开养宠手册　›</button>
         </div>
       </section>
     </>
@@ -1332,6 +1348,116 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
   );
 }
 
+const careGuides = [
+  {
+    id: "cat-first-week",
+    group: "猫猫",
+    title: "幼猫到家 7 日适应表",
+    desc: "隔离、猫砂、饮水、睡眠和第一次体检的顺序清单。",
+    image: hallByKey("cats").breeds[0].image,
+    tone: "奶油安抚",
+    minutes: 8,
+  },
+  {
+    id: "dog-social",
+    group: "狗狗",
+    title: "狗狗社会化训练地图",
+    desc: "声音、牵引、陌生人、同类接触，按阶段慢慢打开世界。",
+    image: hallByKey("dogs").breeds[5].image,
+    tone: "阳光训练",
+    minutes: 12,
+  },
+  {
+    id: "bird-home",
+    group: "鸟类",
+    title: "鸟类笼舍与鸣唱养护",
+    desc: "站杆、日照、换羽、互动和安静休息区设计。",
+    image: hallByKey("birds").breeds[0].image,
+    tone: "羽色日记",
+    minutes: 6,
+  },
+  {
+    id: "aqua-water",
+    group: "水族",
+    title: "水族开缸水质手册",
+    desc: "过滤、硝化、温度、换水频率和混养避坑。",
+    image: hallByKey("aquatic").breeds[1].image,
+    tone: "蓝色水境",
+    minutes: 10,
+  },
+  {
+    id: "exotic-safe",
+    group: "奇宠",
+    title: "奇宠安全温控清单",
+    desc: "温湿度、躲避屋、垫材、喂食和观察异常状态。",
+    image: hallByKey("exotic").breeds[1].image,
+    tone: "特别生命",
+    minutes: 9,
+  },
+  {
+    id: "health-archive",
+    group: "通用",
+    title: "健康档案怎么建",
+    desc: "疫苗、驱虫、体重、饮食、声音和成长照片统一记录。",
+    image: halls[4].hero,
+    tone: "家庭档案",
+    minutes: 7,
+  },
+];
+
+function CareManual({ go }: { go: (p: Page) => void }) {
+  const [active, setActive] = useState("全部");
+  const groups = ["全部", ...Array.from(new Set(careGuides.map((item) => item.group)))];
+  const list = active === "全部" ? careGuides : careGuides.filter((item) => item.group === active);
+  return (
+    <div className="care-page">
+      <div className="subhead">
+        <Back onClick={() => go("home")} />
+        <div>
+          <small>CARE MANUAL</small>
+          <h2>养宠宝典</h2>
+        </div>
+        <button>⌕</button>
+      </div>
+      <section className="care-hero">
+        <div>
+          <small>生命照护手册</small>
+          <h1>把“怎么养”做成一张可以翻阅的地图</h1>
+          <p>后续接入飞书或后台数据后，每个品种都能拥有自己的喂养、训练、健康和成长图片手册。</p>
+        </div>
+        <span>
+          <b>{careGuides.length}</b>
+          篇手册
+        </span>
+      </section>
+      <div className="care-tabs">
+        {groups.map((group) => (
+          <button key={group} className={active === group ? "on" : ""} onClick={() => setActive(group)}>
+            {group}
+          </button>
+        ))}
+      </div>
+      <section className="care-mosaic">
+        {list.map((guide, index) => (
+          <button key={guide.id} className={index % 3 === 0 ? "wide" : ""}>
+            <SmartImage src={guide.image} alt={guide.title} />
+            <div>
+              <small>{guide.group} · {guide.minutes} 分钟</small>
+              <h3>{guide.title}</h3>
+              <p>{guide.desc}</p>
+              <em>{guide.tone}</em>
+            </div>
+          </button>
+        ))}
+      </section>
+      <section className="care-upload-hint">
+        <b>后续数据位</b>
+        <p>可接飞书云文档字段：品种、阶段、图片、视频、喂养步骤、禁忌、健康提醒、适用年龄。</p>
+      </section>
+    </div>
+  );
+}
+
 function SubPage({ title, go }: { title: string; go: (p: Page) => void }) {
   return (
     <div className="subpage">
@@ -1463,6 +1589,7 @@ export default function App() {
           }
         />
       )}{" "}
+      {page === "care" && <CareManual go={go} />}{" "}
       {page === "me" && <Me go={go} user={user} />}
       {page === "login" && (
         <P0LoginPage

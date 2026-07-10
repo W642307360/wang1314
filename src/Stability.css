@@ -398,3 +398,259 @@
     0 16px 34px #5d463114,
     inset 0 0 0 1px #ffffff9c !important;
 }
+
+.care-gateway {
+  margin: 14px 15px 92px;
+  padding: 18px;
+  border-radius: 28px;
+  display: grid;
+  grid-template-columns: 118px 1fr;
+  gap: 15px;
+  align-items: center;
+  background:
+    radial-gradient(circle at 18% 24%, #ffd6a655 0 18%, transparent 34%),
+    linear-gradient(145deg, #fffaf4 0%, #ffffff 46%, #f0e6d9 100%);
+  box-shadow: 0 18px 44px #5d463118;
+  overflow: hidden;
+}
+
+.care-orbit {
+  position: relative;
+  width: 106px;
+  height: 106px;
+  border-radius: 38px;
+  background:
+    radial-gradient(circle, #fff 0 25%, transparent 26%),
+    conic-gradient(from 30deg, #d59a5a, #f0d8b4, #8a9a73, #d59a5a);
+  box-shadow: inset 0 0 0 10px #fff7ed, 0 14px 30px #8e633020;
+}
+
+.care-orbit::after {
+  content: "";
+  position: absolute;
+  inset: 17px;
+  border: 1px dashed #b98b5c80;
+  border-radius: 50%;
+}
+
+.care-orbit b,
+.care-orbit i {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  font-style: normal;
+  border-radius: 50%;
+  box-shadow: 0 8px 18px #6a4a241a;
+}
+
+.care-orbit b {
+  inset: 37px;
+  background: #493f35;
+  color: #fff;
+  z-index: 2;
+}
+
+.care-orbit i {
+  width: 30px;
+  height: 30px;
+  background: #fff;
+  color: #9b6337;
+  font-size: 10px;
+  z-index: 3;
+}
+
+.care-orbit i:nth-child(1) { left: 7px; top: 38px; }
+.care-orbit i:nth-child(2) { left: 37px; top: 4px; }
+.care-orbit i:nth-child(3) { right: 6px; top: 38px; }
+.care-orbit i:nth-child(4) { left: 38px; bottom: 6px; }
+
+.care-copy small,
+.care-hero small {
+  color: #b47a46;
+  font-size: 8px;
+  letter-spacing: 1.8px;
+}
+
+.care-copy h2 {
+  font: 800 22px "Noto Serif SC";
+  margin: 5px 0 7px;
+}
+
+.care-copy p {
+  margin: 0 0 12px;
+  color: #81766a;
+  font-size: 9px;
+  line-height: 1.7;
+}
+
+.care-copy button {
+  border: 0;
+  border-radius: 999px;
+  background: #493f35;
+  color: white;
+  padding: 9px 13px;
+  font-size: 9px;
+}
+
+.care-page {
+  min-height: 100vh;
+  background: #faf8f4;
+  padding-bottom: 90px;
+}
+
+.care-hero {
+  margin: 0 15px 15px;
+  min-height: 245px;
+  border-radius: 30px;
+  padding: 25px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: #fff;
+  background:
+    linear-gradient(145deg, #2f4036 0%, #58634b 52%, #d09b5d 130%),
+    radial-gradient(circle at 70% 10%, #ffffff40, transparent 35%);
+  box-shadow: 0 18px 48px #38443324;
+}
+
+.care-hero h1 {
+  font: 800 25px/1.35 "Noto Serif SC";
+  margin: 8px 0 10px;
+}
+
+.care-hero p {
+  width: 88%;
+  color: #ffffffb8;
+  font-size: 10px;
+  line-height: 1.8;
+}
+
+.care-hero span {
+  align-self: flex-end;
+  display: grid;
+  place-items: center;
+  width: 78px;
+  height: 78px;
+  border-radius: 28px;
+  background: #ffffff18;
+  backdrop-filter: blur(14px);
+  font-size: 8px;
+}
+
+.care-hero span b {
+  display: block;
+  font-size: 25px;
+}
+
+.care-tabs {
+  display: flex;
+  gap: 8px;
+  overflow: auto;
+  padding: 2px 15px 15px;
+}
+
+.care-tabs button {
+  border: 0;
+  border-radius: 999px;
+  background: #eee8df;
+  color: #85786b;
+  padding: 9px 14px;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+.care-tabs .on {
+  background: #493f35;
+  color: #fff;
+}
+
+.care-mosaic {
+  padding: 0 15px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.care-mosaic button {
+  min-height: 235px;
+  border: 0;
+  border-radius: 25px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 14px 34px #5d463114;
+  text-align: left;
+  padding: 0 0 14px;
+}
+
+.care-mosaic button.wide {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  min-height: 190px;
+  padding-bottom: 0;
+}
+
+.care-mosaic .smart-image {
+  width: 100%;
+  height: 150px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.care-mosaic .wide .smart-image {
+  height: 100%;
+}
+
+.care-mosaic .smart-image img {
+  mix-blend-mode: normal !important;
+  filter: none !important;
+  object-position: center;
+}
+
+.care-mosaic div {
+  padding: 13px 13px 0;
+}
+
+.care-mosaic small {
+  color: #b17a47;
+  font-size: 8px;
+}
+
+.care-mosaic h3 {
+  font: 700 15px "Noto Serif SC";
+  margin: 6px 0;
+}
+
+.care-mosaic p {
+  color: #81786f;
+  font-size: 9px;
+  line-height: 1.65;
+  margin: 0 0 9px;
+}
+
+.care-mosaic em {
+  font-style: normal;
+  font-size: 8px;
+  color: #fff;
+  background: #9b6a3e;
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.care-upload-hint {
+  margin: 14px 15px 0;
+  padding: 16px;
+  border-radius: 22px;
+  background: #f0e9df;
+  color: #65594d;
+}
+
+.care-upload-hint b {
+  font-size: 12px;
+}
+
+.care-upload-hint p {
+  margin: 6px 0 0;
+  font-size: 9px;
+  line-height: 1.7;
+}
