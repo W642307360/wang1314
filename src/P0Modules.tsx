@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { ServiceContext, User } from "./UserModules";
 
 type FavoritePet = {
@@ -18,7 +18,32 @@ type FavoritePet = {
   seller_name?: string;
 };
 
+export type CartPet = {
+  cart_id: string;
+  pet_id?: number | null;
+  name: string;
+  breed: string;
+  gender?: string;
+  age_months?: number;
+  price: number;
+  image?: string;
+  seller_name?: string;
+  added_at: string;
+};
+
+type ChatMessage = {
+  id: number;
+  sender: string;
+  content: string;
+  session_id?: number;
+  product_id?: number | null;
+  product_name?: string;
+  service_type?: string;
+  created_at?: string;
+};
+
 const API_BASE = "http://127.0.0.1:3001";
+const CART_KEY = "fuchong-cart";
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
 
@@ -39,8 +64,10 @@ const maskPhone = (phone?: string) =>
   phone && phone.length >= 7
     ? `${phone.slice(0, 3)}****${phone.slice(-4)}`
     : "未绑定手机号";
+
 const loginMethodText = (value?: string) =>
   value === "phone" ? "手机号登录" : value ? "微信登录" : "游客状态";
+
 const statusText = (status?: string) =>
   status === "sold"
     ? "已售出"
@@ -49,6 +76,19 @@ const statusText = (status?: string) =>
       : status === "missing"
         ? "商品不存在"
         : "正常销售";
+
+const readCart = (): CartPet[] => {
+  try {
+    return JSON.parse(localStorage.getItem(CART_KEY) || "[]");
+  } catch {
+    return [];
+  }
+};
+
+const writeCart = (items: CartPet[]) => {
+  localStorage.setItem(CART_KEY, JSON.stringify(items));
+  window.dispatchEvent(new Event("fuchong-cart-change"));
+};
 
 export function P0LoginPage({
   back,
@@ -100,7 +140,10 @@ export function P0LoginPage({
       await saveLogin({
         nickname: user?.nickname || (type === "wechat" ? "微信关联用户" : "手机号关联用户"),
         avatar: user?.avatar,
-        phone: type === "phone" ? user?.phone || `139${String(Date.now()).slice(-8)}` : user?.phone,
+        phone:
+          type === "phone"
+            ? user?.phone || `139${String(Date.now()).slice(-8)}`
+            : user?.phone,
         login_type: type === "phone" ? "phone" : "mock_wechat",
       });
       alert(type === "wechat" ? "关联微信成功" : "关联手机号成功");
@@ -175,13 +218,13 @@ export function P0CollectionPage({
   back,
   onOpenPet,
 }: {
-  mode: "favorites" | "follows";
+  mode: "favorites" | "cart";
   back: () => void;
-  onOpenPet: (pet: FavoritePet) => void;
+  onOpenPet: (pet: FavoritePet | CartPet) => void;
 }) {
-  const [tab, setTab] = useState(mode);
+  const [tab, setTab] = useState<"favorites" | "cart">(mode);
   const [favorites, setFavorites] = useState<FavoritePet[]>([]);
-  const [follows, setFollows] = useState<string[]>([]);
+  const [cart, setCart] = useState<CartPet[]>(() => readCart());
   const [loading, setLoading] = useState(true);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
@@ -193,26 +236,29 @@ export function P0CollectionPage({
       .finally(() => setLoading(false));
   }, [userId]);
   useEffect(() => {
-    fetch(`${API_BASE}/api/follows?user_id=${userId}`)
-      .then((response) => response.json())
-      .then((data) =>
-        setFollows(Array.isArray(data) ? data.map((item) => item.seller_name) : []),
-      )
-      .catch(() => setFollows([]));
-  }, [userId]);
+    const refresh = () => setCart(readCart());
+    window.addEventListener("fuchong-cart-change", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("fuchong-cart-change", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
   const removeFavorite = async (petId: number) => {
     await fetch(`${API_BASE}/api/favorites/${petId}?user_id=${userId}`, {
       method: "DELETE",
     }).catch(() => {});
     setFavorites((items) => items.filter((item) => item.pet_id !== petId));
   };
-  const removeFollow = async (seller: string) => {
-    await fetch(
-      `${API_BASE}/api/follows?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`,
-      { method: "DELETE" },
-    ).catch(() => {});
-    setFollows((items) => items.filter((item) => item !== seller));
+  const removeCart = (cartId: string) => {
+    const next = cart.filter((item) => item.cart_id !== cartId);
+    setCart(next);
+    writeCart(next);
   };
+  const cartTotal = useMemo(
+    () => cart.reduce((sum, item) => sum + Number(item.price || 0), 0),
+    [cart],
+  );
   return (
     <div className="module-page">
       <Header title="宠物家" back={back} />
@@ -220,8 +266,8 @@ export function P0CollectionPage({
         <button className={tab === "favorites" ? "on" : ""} onClick={() => setTab("favorites")}>
           收藏宠物
         </button>
-        <button className={tab === "follows" ? "on" : ""} onClick={() => setTab("follows")}>
-          关注商家
+        <button className={tab === "cart" ? "on" : ""} onClick={() => setTab("cart")}>
+          购物车
         </button>
       </div>
       {tab === "favorites" ? (
@@ -274,26 +320,42 @@ export function P0CollectionPage({
             <p>去市场遇见心动的生命伙伴</p>
           </div>
         )
-      ) : follows.length ? (
-        <div className="seller-list">
-          {follows.map((seller) => (
-            <article key={seller}>
-              <div className="seller-logo">宠</div>
-              <div>
-                <h3>{seller}</h3>
-                <p>实名认证 · 健康保障 · 评分 5.0</p>
-              </div>
-              <button onClick={() => confirm("确定取消关注吗？") && removeFollow(seller)}>
-                已关注
-              </button>
-            </article>
-          ))}
-        </div>
+      ) : cart.length ? (
+        <>
+          <div className="cart-summary">
+            <span>共 {cart.length} 只宠物</span>
+            <b>合计 ¥{cartTotal}</b>
+          </div>
+          <div className="collection-grid cart-grid">
+            {cart.map((pet) => (
+              <article key={pet.cart_id} className="favorite-card cart-card">
+                <button className="favorite-open" onClick={() => onOpenPet(pet)}>
+                  <span className="collection-photo">
+                    <img src={pet.image || fallbackImg} loading="lazy" decoding="async" />
+                  </span>
+                  <em>购物车</em>
+                </button>
+                <button
+                  className="favorite-remove"
+                  onClick={() => confirm("确定移出购物车吗？") && removeCart(pet.cart_id)}
+                >
+                  ×
+                </button>
+                <h3>{pet.name}</h3>
+                <p>
+                  {pet.breed} · {pet.age_months || "-"}个月 · {pet.gender || "待确认"}
+                </p>
+                <small>加入时间：{String(pet.added_at || "").slice(0, 10)}</small>
+                <b>¥ {pet.price}</b>
+              </article>
+            ))}
+          </div>
+        </>
       ) : (
         <div className="empty">
-          <i>♡</i>
-          <h3>还没有关注商家</h3>
-          <p>关注后及时了解新宠动态</p>
+          <i>🛒</i>
+          <h3>购物车还是空的</h3>
+          <p>进入宠物详情页，可以把多个心仪宠物加入购物车</p>
         </div>
       )}
     </div>
@@ -303,9 +365,11 @@ export function P0CollectionPage({
 export function P0MessagesPage({
   back,
   context,
+  onOpenProduct,
 }: {
   back: () => void;
   context?: ServiceContext | null;
+  onOpenProduct?: (petId: number, productName?: string) => void;
 }) {
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   const serviceTypes = [
@@ -323,7 +387,9 @@ export function P0MessagesPage({
   const [humanPending, setHumanPending] = useState(false);
   const [sending, setSending] = useState(false);
   const [failedText, setFailedText] = useState("");
-  const [chat, setChat] = useState([
+  const [history, setHistory] = useState<ChatMessage[]>([]);
+  const [showHistory, setShowHistory] = useState(true);
+  const [chat, setChat] = useState<ChatMessage[]>([
     {
       id: 1,
       sender: "service",
@@ -332,6 +398,20 @@ export function P0MessagesPage({
         : "请选择需要咨询的服务类型。",
     },
   ]);
+  const loadHistory = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}`);
+      const messages = await response.json();
+      if (Array.isArray(messages)) {
+        setHistory(messages.slice(-30).reverse());
+      }
+    } catch {
+      setHistory([]);
+    }
+  };
+  useEffect(() => {
+    loadHistory();
+  }, [userId]);
   useEffect(() => {
     if (context?.productName) setActiveType("购买咨询");
   }, [context?.productName]);
@@ -347,6 +427,29 @@ export function P0MessagesPage({
           : `已进入${type}，请描述您遇到的问题。`,
       },
     ]);
+  };
+  const continueSession = async (message: ChatMessage) => {
+    if (message.session_id) setSessionId(message.session_id);
+    setActiveType(message.service_type || "购买咨询");
+    try {
+      const response = await fetch(`${API_BASE}/api/messages?session_id=${message.session_id}`);
+      const messages = await response.json();
+      setChat(
+        Array.isArray(messages)
+          ? messages.map((item) => ({
+              id: item.id,
+              sender: item.sender,
+              content: item.content,
+              session_id: item.session_id,
+              product_id: item.product_id,
+              product_name: item.product_name,
+              service_type: item.service_type,
+            }))
+          : [],
+      );
+    } catch {
+      setChat([{ id: Date.now(), sender: "service", content: "历史记录加载失败，请重新发送。" }]);
+    }
   };
   const send = async (override?: string) => {
     const value = (override ?? text).trim();
@@ -381,8 +484,10 @@ export function P0MessagesPage({
           id: Date.now() + 1,
           sender: "service",
           content: saved.reply || "已收到，客服稍后回复您。",
+          session_id: saved.session_id,
         },
       ]);
+      loadHistory();
       return saved.session_id || sessionId;
     } catch {
       setFailedText(value);
@@ -430,6 +535,31 @@ export function P0MessagesPage({
             <em>›</em>
           </button>
         ))}
+      </section>
+      <section className="service-history">
+        <button onClick={() => setShowHistory((value) => !value)}>
+          <b>购买咨询记录</b>
+          <span>{history.length} 条 ›</span>
+        </button>
+        {showHistory && (
+          <div>
+            {history.slice(0, 6).map((item) => (
+              <article key={item.id} className="service-history-item">
+                <button
+                  className="service-history-pet"
+                  disabled={!item.product_id}
+                  onClick={() => item.product_id && onOpenProduct?.(item.product_id, item.product_name)}
+                >
+                  宠
+                </button>
+                <button className="service-history-main" onClick={() => continueSession(item)}>
+                  <strong>{item.product_name || item.service_type || "客服咨询"}</strong>
+                  <small>{item.content}</small>
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
       {activeType && (
         <div className="service-sheet-mask" onClick={() => setActiveType(null)}>

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  type FormEvent,
   useMemo,
   useRef,
   useState,
@@ -89,6 +90,31 @@ const thumbImage = (url?: string, fallback = petPhoto) =>
   optimizeImage(url || fallback, 360, 72);
 const coverImage = (url?: string, fallback = petPhoto) =>
   optimizeImage(url || fallback, 960, 86);
+const CART_KEY = "fuchong-cart";
+type LocalCartPet = {
+  cart_id: string;
+  pet_id?: number | null;
+  name: string;
+  breed: string;
+  gender?: string;
+  age_months?: number;
+  price: number;
+  image?: string;
+  seller_name?: string;
+  added_at: string;
+};
+const readLocalCart = (): LocalCartPet[] => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CART_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+const writeLocalCart = (items: LocalCartPet[]) => {
+  localStorage.setItem(CART_KEY, JSON.stringify(items));
+  window.dispatchEvent(new Event("fuchong-cart-change"));
+};
 async function cachedJson<T>(url: string, ttl = 45_000): Promise<T> {
   const cached = jsonCache.get(url);
   if (cached && Date.now() - cached.at < cached.ttl) return cached.data as T;
@@ -638,19 +664,36 @@ function Breed({
                 <b>¥ {pet.price}</b>
               </button>
             ))}
-        {!pets.length && !loading && (
-          <button
-            onClick={() =>
-              openPet({ id: 0, name: b.name, breed: b.name, price: 6800 }, b)
-            }
-          >
-            <SmartImage src={b.image} alt={b.name} />
-            <span>健康认证</span>
-            <h3>{b.name}档案</h3>
-            <p>暂无在售商品 · 可咨询客服</p>
-            <b>预约咨询</b>
-          </button>
-        )}
+        {!pets.length &&
+          !loading &&
+          Array.from({ length: 6 }).map((_, index) => {
+            const mockPet: ApiPet = {
+              id: 0,
+              name: `${b.name}精选宠物 ${String(index + 1).padStart(2, "0")}`,
+              breed: b.name,
+              price: 3600 + index * 500,
+              gender: index % 2 ? "妹妹" : "弟弟",
+              age_months: 2 + index,
+              health_status: "健康认证",
+              seller_name: "福宠认证宠物馆",
+              image: b.image,
+            };
+            return (
+              <button
+                key={`${b.name}-mock-${index}`}
+                className="breed-showcase-card"
+                onClick={() => openPet(mockPet, b)}
+              >
+                <SmartImage src={b.image} alt={mockPet.name} />
+                <span>{index < 2 ? "今日可咨询" : "健康认证"}</span>
+                <h3>{mockPet.name}</h3>
+                <p>
+                  {mockPet.breed} · {mockPet.age_months}个月 · {mockPet.gender}
+                </p>
+                <b>{index < 2 ? `¥ ${mockPet.price}` : "预约咨询"}</b>
+              </button>
+            );
+          })}
       </div>
       <div ref={sentinel} />
       <RefreshHint refreshing={loading} hasMore={hasMore} />
@@ -658,16 +701,138 @@ function Breed({
   );
 }
 
+function ProductServiceOverlay({
+  context,
+  onClose,
+}: {
+  context: ServiceContext;
+  onClose: () => void;
+}) {
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [humanPending, setHumanPending] = useState(false);
+  const [messages, setMessages] = useState([
+    {
+      id: 1,
+      sender: "service",
+      content: `您好，正在为您连接「${context.productName || "当前宠物"}」的购买咨询。价格、健康、疫苗、库存、购买流程都可以直接问我。`,
+    },
+  ]);
+  const send = async (override?: string) => {
+    const value = (override ?? text).trim();
+    if (!value || sending) return sessionId;
+    setSending(true);
+    setText("");
+    setMessages((items) => [...items, { id: Date.now(), sender: "user", content: value }]);
+    try {
+      const response = await fetch(`${API_BASE}/api/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          sender: "user",
+          content: value,
+          session_id: sessionId,
+          product_id: context.productId || null,
+          product_name: context.productName || "",
+          seller_id: context.sellerId || null,
+          seller_name: context.sellerName || "福宠认证宠物馆",
+          source: "product_detail_inline",
+          service_type: "购买咨询",
+        }),
+      });
+      if (!response.ok) throw new Error("send failed");
+      const saved = await response.json();
+      if (saved.session_id) setSessionId(saved.session_id);
+      setMessages((items) => [
+        ...items,
+        {
+          id: Date.now() + 1,
+          sender: "service",
+          content: saved.reply || "已收到，客服稍后回复您。",
+        },
+      ]);
+      return saved.session_id || sessionId;
+    } catch {
+      setMessages((items) => [
+        ...items,
+        { id: Date.now() + 2, sender: "service", content: "发送失败，请稍后重新发送。" },
+      ]);
+    } finally {
+      setSending(false);
+    }
+    return sessionId;
+  };
+  const handoff = async () => {
+    const sid = sessionId || (await send("需要转人工客服"));
+    if (sid) {
+      await fetch(`${API_BASE}/api/customer-service/sessions/${sid}/handoff`, {
+        method: "POST",
+      }).catch(() => {});
+    }
+    setHumanPending(true);
+    setMessages((items) => [
+      ...items,
+      { id: Date.now() + 3, sender: "service", content: "已为您转入人工客服队列，后台可以看到本次商品咨询记录。" },
+    ]);
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    send();
+  };
+  return (
+    <div className="service-sheet-mask inline-service-mask" onClick={onClose}>
+      <section className="service-sheet inline-service-sheet" onClick={(event) => event.stopPropagation()}>
+        <i />
+        <header>
+          <div>
+            <small>{humanPending ? "人工客服排队中" : "AI购买咨询 · 可转人工"}</small>
+            <h2>购买咨询</h2>
+            <p>当前宠物：{context.productName || "未关联具体宠物"}</p>
+          </div>
+          <button onClick={onClose}>×</button>
+        </header>
+        <div className="inline-product-chip">
+          <b>咨询商品</b>
+          <span>{context.productName || "当前宠物"}</span>
+          <small>{context.sellerName || "福宠认证宠物馆"}</small>
+        </div>
+        <div className="chat-window sheet-chat">
+          {messages.map((message) => (
+            <div key={message.id} className={`chat-bubble ${message.sender}`}>
+              <i>{message.sender === "service" ? "福" : "我"}</i>
+              <p>{message.content}</p>
+            </div>
+          ))}
+        </div>
+        <form className="sheet-input" onSubmit={submit}>
+          <input
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder="输入购买咨询内容…"
+          />
+          <button type="button" onClick={handoff}>
+            转人工
+          </button>
+          <button disabled={sending}>{sending ? "发送中" : "发送"}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function Detail({
   go,
   breed,
   pet,
-  openService,
+  returnPage = "breed",
 }: {
   go: (p: Page) => void;
   breed: BreedItem;
   pet: ApiPet | null;
-  openService: (context: ServiceContext) => void;
+  returnPage?: Page;
 }) {
   const [featureTab, setFeatureTab] = useState("品种");
   const [playing, setPlaying] = useState(false);
@@ -675,6 +840,7 @@ function Detail({
   const [following, setFollowing] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
+  const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
@@ -758,6 +924,22 @@ function Detail({
     ).catch(() => {});
     setFollowing(!following);
   };
+  const addToCart = () => {
+    const nextItem: LocalCartPet = {
+      cart_id: `${petDbId || displayName}-${Date.now()}`,
+      pet_id: petDbId,
+      name: displayName,
+      breed: detailPet?.breed || breed.name,
+      gender: detailPet?.gender,
+      age_months: detailPet?.age_months,
+      price: Number(displayPrice || 0),
+      image: petImage(detailPet, breed.image),
+      seller_name: displaySeller,
+      added_at: new Date().toISOString(),
+    };
+    writeLocalCart([nextItem, ...readLocalCart()].slice(0, 99));
+    setCart(true);
+  };
   return (
     <div className="detail">
       <section className="detail-hero">
@@ -767,7 +949,7 @@ function Detail({
           alt={displayName}
           eager
         />
-        <Back onClick={() => go("breed")} />
+        <Back onClick={() => go(returnPage)} />
         <span className="life">♢ 可查看3日常生活照</span>
         <div className="pet-name">
           <em>Coco</em>
@@ -941,7 +1123,7 @@ function Detail({
       <div className="buybar">
         <button
           onClick={() =>
-            openService({
+            setInlineService({
               productId: petDbId,
               breedId: detailPet?.breed_id || null,
               sellerId: detailPet?.seller_id || null,
@@ -959,7 +1141,7 @@ function Detail({
         </button>
         <button
           className={cart ? "selected" : ""}
-          onClick={() => setCart(true)}
+          onClick={addToCart}
         >
           🛒<small>{cart ? "已加入" : "加入购物车"}</small>
         </button>
@@ -976,6 +1158,12 @@ function Detail({
           <small>¥{displayPrice}</small>
         </button>
       </div>
+      {inlineService && (
+        <ProductServiceOverlay
+          context={inlineService}
+          onClose={() => setInlineService(null)}
+        />
+      )}
       {buyOpen && (
         <div className="modal-mask" onClick={() => setBuyOpen(false)}>
           <section className="buy-modal" onClick={(e) => e.stopPropagation()}>
@@ -1043,7 +1231,7 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
   const services = [
     ["♙", "登录与账号", "登录、手机号与账号安全", "login"],
     ["♡", "我的收藏", "收藏的宠物与心愿清单", "favorites"],
-    ["☆", "我的关注", "关注的商家与动态", "follows"],
+    ["🛒", "购物车", "已加入购物车的宠物", "follows"],
     ["◷", "浏览足迹", "最近看过的宠物", "footprints"],
     ["⌖", "收货地址", "管理配送地址", "addresses"],
     ["⌑", "优惠券", "3 张可用优惠券", "coupons"],
@@ -1100,8 +1288,8 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
           <span>收藏宠物</span>
         </button>
         <button onClick={() => go("follows")}>
-          <b>5</b>
-          <span>关注商家</span>
+          <b>0</b>
+          <span>购物车</span>
         </button>
         <button onClick={() => go("footprints")}>
           <b>36</b>
@@ -1187,9 +1375,8 @@ export default function App() {
   const [hallKey, setHallKey] = useState<HallKey>("dogs");
   const [breed, setBreed] = useState<BreedItem>(dogBreeds[0]);
   const [selectedPet, setSelectedPet] = useState<ApiPet | null>(null);
-  const [serviceContext, setServiceContext] = useState<ServiceContext | null>(
-    null,
-  );
+  const [detailReturnPage, setDetailReturnPage] = useState<Page>("breed");
+  const serviceContext: ServiceContext | null = null;
   const go = (p: Page) => {
     setPage(p);
     scrollTo(0, 0);
@@ -1214,7 +1401,7 @@ export default function App() {
     setSelectedPet(null);
     go("breed");
   };
-  const openPet = (pet: ApiPet, fallbackBreed?: BreedItem) => {
+  const openPet = (pet: ApiPet, fallbackBreed?: BreedItem, returnTo: Page = "breed") => {
     if (fallbackBreed) setBreed(fallbackBreed);
     else
       setBreed((b) => ({
@@ -1223,11 +1410,8 @@ export default function App() {
         image: petImage(pet, b.image),
       }));
     setSelectedPet(pet);
+    setDetailReturnPage(returnTo);
     go("detail");
-  };
-  const openService = (context: ServiceContext) => {
-    setServiceContext(context);
-    go("service");
   };
   if (adminMode) return <AdminApp />;
   return (
@@ -1245,7 +1429,7 @@ export default function App() {
           go={go}
           breed={breed}
           pet={selectedPet}
-          openService={openService}
+          returnPage={detailReturnPage}
         />
       )}
       {page === "family" && (
@@ -1255,7 +1439,7 @@ export default function App() {
           onOpenPet={(pet) =>
             openPet(
               {
-                id: pet.pet_id,
+                id: Number(pet.pet_id || 0),
                 name: pet.name || "商品不存在",
                 breed: pet.breed || breed.name,
                 price: pet.price || 0,
@@ -1265,12 +1449,28 @@ export default function App() {
                 seller_name: pet.seller_name,
               },
               undefined,
+              "family",
             )
           }
         />
       )}{" "}
       {page === "service" && (
-        <P0MessagesPage back={() => go("home")} context={serviceContext} />
+        <P0MessagesPage
+          back={() => go("home")}
+          context={serviceContext}
+          onOpenProduct={(petId, productName) =>
+            openPet(
+              {
+                id: petId,
+                name: productName || "咨询商品",
+                breed: breed.name,
+                price: 0,
+              },
+              undefined,
+              "service",
+            )
+          }
+        />
       )}{" "}
       {page === "me" && <Me go={go} user={user} />}
       {page === "login" && (
@@ -1289,7 +1489,7 @@ export default function App() {
           onOpenPet={(pet) =>
             openPet(
               {
-                id: pet.pet_id,
+                id: Number(pet.pet_id || 0),
                 name: pet.name || "商品不存在",
                 breed: pet.breed || breed.name,
                 price: pet.price || 0,
@@ -1299,18 +1499,19 @@ export default function App() {
                 seller_name: pet.seller_name,
               },
               undefined,
+              "favorites",
             )
           }
         />
       )}{" "}
       {page === "follows" && (
         <P0CollectionPage
-          mode="follows"
+          mode="cart"
           back={() => go("me")}
           onOpenPet={(pet) =>
             openPet(
               {
-                id: pet.pet_id,
+                id: Number(pet.pet_id || 0),
                 name: pet.name || "商品不存在",
                 breed: pet.breed || breed.name,
                 price: pet.price || 0,
@@ -1320,6 +1521,7 @@ export default function App() {
                 seller_name: pet.seller_name,
               },
               undefined,
+              "follows",
             )
           }
         />

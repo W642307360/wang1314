@@ -94,6 +94,52 @@
   height: 180px;
 }
 
+.breed-grid button,
+.available button,
+.hall-list > button,
+.search-result-list button,
+.module-page button,
+.phone-shell input {
+  border: 0 !important;
+  outline: 0 !important;
+  appearance: none;
+}
+
+.breed-grid .grid-pass > button,
+.breed-grid > button {
+  background: linear-gradient(180deg, #fff, #fbf7f1) !important;
+  box-shadow: 0 10px 28px #5d463112 !important;
+}
+
+.available button {
+  display: grid;
+  grid-template-rows: 180px auto auto auto;
+  background: linear-gradient(180deg, #fff, #fffaf4) !important;
+  box-shadow: 0 12px 30px #5d463112 !important;
+}
+
+.available button > .smart-image {
+  grid-row: 1;
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  padding: 0 !important;
+  color: inherit !important;
+  border-radius: 17px 17px 12px 12px;
+}
+
+.available button > span:not(.smart-image) {
+  position: absolute;
+  top: 152px;
+  left: 8px;
+}
+
+.available button > h3,
+.available button > p,
+.available button > b {
+  align-self: start;
+}
+
 .growth .smart-image {
   width: 50px;
   height: 50px;
@@ -238,6 +284,39 @@
 .hall-grid-exotic h3,
 .hall-grid-more h3 {
   margin-top: 0;
+}
+
+.smart-image,
+.smart-image > img,
+.headshot,
+.collection-photo,
+.collection-photo img,
+.available button,
+.breed-showcase-card {
+  border: 0 !important;
+  outline: 0 !important;
+}
+
+.smart-image {
+  background:
+    radial-gradient(circle at 50% 82%, #b8977030 0 18%, transparent 42%),
+    linear-gradient(145deg, #fffaf5, #eee5d9);
+  box-shadow: inset 0 -18px 34px #8a6b4920;
+}
+
+.smart-image > img {
+  mix-blend-mode: multiply;
+}
+
+.available .breed-showcase-card {
+  min-height: 238px;
+  background: linear-gradient(180deg, #fff, #fffaf4);
+  box-shadow: 0 12px 30px #5d463112;
+}
+
+.available .breed-showcase-card .smart-image {
+  border-radius: 18px;
+  overflow: hidden;
 }
 
 @keyframes skeletonMove {
