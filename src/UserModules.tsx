@@ -7,9 +7,12 @@ export type User = {
   nickname: string;
   phone: string;
   avatar: string;
+  login_method?: string;
 };
 export type ServiceContext = {
   productId?: number | null;
+  breedId?: number | null;
+  sellerId?: number | null;
   productName?: string;
   sellerName?: string;
   source?: string;

@@ -18,15 +18,17 @@ import "./Stability.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
-  CollectionPage,
   CouponsPage,
   FootprintsPage,
-  LoginPage,
-  MessagesPage,
   OrdersPage,
   type ServiceContext,
   type User,
 } from "./UserModules";
+import {
+  P0CollectionPage,
+  P0LoginPage,
+  P0MessagesPage,
+} from "./P0Modules";
 import { hallByKey, halls, type BreedItem, type HallKey } from "./catalog";
 import AdminApp from "./Admin";
 import { ensureVisitor } from "./visitor";
@@ -436,6 +438,7 @@ function Hall({
     [hall.breeds, query],
   );
   const virtualBreeds = useVirtualGrid(visible, visible.length > 50, 250, 2);
+  const softHallHero = !["cats", "dogs"].includes(hall.key);
   return (
     <>
       <div className="subhead">
@@ -447,9 +450,12 @@ function Hall({
         <button>⌕</button>
       </div>
       <section
-        className="hall-hero"
+        className={`hall-hero hall-hero-${hall.key}`}
         style={{
-          backgroundImage: `linear-gradient(90deg,#392a1edb,#392a1e20),url(${hall.hero})`,
+          backgroundImage: softHallHero
+            ? `linear-gradient(90deg,#fff7ecf2,#fff2 72%),url(${hall.hero})`
+            : `linear-gradient(90deg,#392a1edb,#392a1e20),url(${hall.hero})`,
+          color: softHallHero ? "#3e352d" : "white",
         }}
       >
         <div>
@@ -471,7 +477,7 @@ function Hall({
         <span>{visible.length} 个结果</span>
       </div>
       <section
-        className={`breed-grid ${virtualBreeds.enabled ? "virtual-grid" : ""}`}
+        className={`breed-grid hall-grid-${hall.key} ${virtualBreeds.enabled ? "virtual-grid" : ""}`}
         style={
           virtualBreeds.enabled ? { height: virtualBreeds.height } : undefined
         }
@@ -701,6 +707,13 @@ function Detail({
   const displayName = detailPet?.name || "Coco";
   const displayPrice = detailPet?.price || 6800;
   const displaySeller = detailPet?.seller_name || "福宠认证宠物馆";
+  const productStatus =
+    detailPet?.product_status ||
+    (detailPet?.status === "published"
+      ? "available"
+      : detailPet?.status === "sold"
+        ? "sold"
+        : "offline");
   const toggleFavorite = async () => {
     if (petDbId) {
       await fetch(
@@ -766,6 +779,11 @@ function Detail({
           ¥{displayPrice} <small>已售 128</small>
         </strong>
         <span className="count">1/6</span>
+        {productStatus !== "available" && (
+          <span className="detail-status">
+            {productStatus === "sold" ? "已售出" : "商品已下架"}
+          </span>
+        )}
       </section>
       {detailReady ? (
       <>
@@ -925,6 +943,8 @@ function Detail({
           onClick={() =>
             openService({
               productId: petDbId,
+              breedId: detailPet?.breed_id || null,
+              sellerId: detailPet?.seller_id || null,
               productName: displayName,
               sellerName: displaySeller,
               source: "product_detail",
@@ -943,8 +963,17 @@ function Detail({
         >
           🛒<small>{cart ? "已加入" : "加入购物车"}</small>
         </button>
-        <button className="buy" onClick={() => setBuyOpen(true)}>
-          立即购买 <small>¥{displayPrice}</small>
+        <button
+          className="buy"
+          disabled={productStatus !== "available"}
+          onClick={() =>
+            productStatus === "available"
+              ? setBuyOpen(true)
+              : alert(productStatus === "sold" ? "该宠物已售出" : "商品已下架")
+          }
+        >
+          {productStatus === "available" ? "立即购买" : "暂不可购"}{" "}
+          <small>¥{displayPrice}</small>
         </button>
       </div>
       {buyOpen && (
@@ -1172,6 +1201,9 @@ export default function App() {
   const logout = () => {
     setUser(null);
     localStorage.removeItem("fuchong-user");
+    localStorage.removeItem("fuchong-user-id");
+    localStorage.removeItem("fuchong-visitor-token");
+    ensureVisitor();
   };
   const openHall = (key: HallKey) => {
     setHallKey(key);
@@ -1217,14 +1249,32 @@ export default function App() {
         />
       )}
       {page === "family" && (
-        <CollectionPage mode="favorites" back={() => go("home")} />
+        <P0CollectionPage
+          mode="favorites"
+          back={() => go("home")}
+          onOpenPet={(pet) =>
+            openPet(
+              {
+                id: pet.pet_id,
+                name: pet.name || "商品不存在",
+                breed: pet.breed || breed.name,
+                price: pet.price || 0,
+                gender: pet.gender,
+                age_months: pet.age_months,
+                image: pet.image,
+                seller_name: pet.seller_name,
+              },
+              undefined,
+            )
+          }
+        />
       )}{" "}
       {page === "service" && (
-        <MessagesPage back={() => go("home")} context={serviceContext} />
+        <P0MessagesPage back={() => go("home")} context={serviceContext} />
       )}{" "}
       {page === "me" && <Me go={go} user={user} />}
       {page === "login" && (
-        <LoginPage
+        <P0LoginPage
           back={() => go("me")}
           user={user}
           onLogin={login}
@@ -1233,10 +1283,46 @@ export default function App() {
       )}{" "}
       {page === "orders" && <OrdersPage back={() => go("me")} />}
       {page === "favorites" && (
-        <CollectionPage mode="favorites" back={() => go("me")} />
+        <P0CollectionPage
+          mode="favorites"
+          back={() => go("me")}
+          onOpenPet={(pet) =>
+            openPet(
+              {
+                id: pet.pet_id,
+                name: pet.name || "商品不存在",
+                breed: pet.breed || breed.name,
+                price: pet.price || 0,
+                gender: pet.gender,
+                age_months: pet.age_months,
+                image: pet.image,
+                seller_name: pet.seller_name,
+              },
+              undefined,
+            )
+          }
+        />
       )}{" "}
       {page === "follows" && (
-        <CollectionPage mode="follows" back={() => go("me")} />
+        <P0CollectionPage
+          mode="follows"
+          back={() => go("me")}
+          onOpenPet={(pet) =>
+            openPet(
+              {
+                id: pet.pet_id,
+                name: pet.name || "商品不存在",
+                breed: pet.breed || breed.name,
+                price: pet.price || 0,
+                gender: pet.gender,
+                age_months: pet.age_months,
+                image: pet.image,
+                seller_name: pet.seller_name,
+              },
+              undefined,
+            )
+          }
+        />
       )}
       {page === "footprints" && <FootprintsPage back={() => go("me")} />}{" "}
       {page === "addresses" && <AddressesPage back={() => go("me")} />}{" "}

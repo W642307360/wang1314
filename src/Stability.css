@@ -12,7 +12,10 @@
   display: block;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, #f8f4ee, #ebe3d8);
+  background:
+    radial-gradient(circle at 50% 72%, #b89b7a30 0 16%, transparent 30%),
+    linear-gradient(145deg, #fffaf4, #efe7dc 58%, #f8f4ef);
+  box-shadow: inset 0 -18px 36px #8a6a4512;
 }
 
 .smart-image > img {
@@ -25,11 +28,25 @@
   transition:
     opacity 0.32s ease,
     transform 0.45s ease;
+  background: transparent;
 }
 
 .smart-image.loaded > img {
   opacity: 1;
   transform: scale(1);
+}
+
+.headshot .smart-image,
+.available .smart-image,
+.collection-photo {
+  border-radius: 16px;
+  box-shadow: inset 0 -22px 45px #71512c18;
+}
+
+.headshot .smart-image > img,
+.available .smart-image > img {
+  mix-blend-mode: multiply;
+  filter: saturate(1.04) contrast(1.02);
 }
 
 .smart-image > i {
@@ -122,6 +139,105 @@
   margin: 12px 4px 2px;
   color: #9b8f83;
   font-size: 10px;
+}
+
+.detail-status {
+  position: absolute;
+  right: 18px;
+  bottom: 56px;
+  background: #4d4841d9;
+  color: white;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 10px;
+  backdrop-filter: blur(10px);
+}
+
+.buybar .buy:disabled {
+  background: #b8b0a7;
+  color: #fff;
+}
+
+.hall-hero-birds,
+.hall-hero-aquatic,
+.hall-hero-exotic,
+.hall-hero-more {
+  position: relative;
+  box-shadow: 0 16px 38px #5d463114;
+  outline: 1px solid #ffffff80;
+}
+
+.hall-hero-birds::after,
+.hall-hero-aquatic::after,
+.hall-hero-exotic::after,
+.hall-hero-more::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #ffffff22, transparent 42%, #fff7 100%);
+}
+
+.hall-grid-birds:not(.virtual-grid),
+.hall-grid-aquatic:not(.virtual-grid),
+.hall-grid-exotic:not(.virtual-grid),
+.hall-grid-more:not(.virtual-grid) {
+  grid-template-columns: 1fr;
+}
+
+.hall-grid-birds .grid-pass,
+.hall-grid-aquatic .grid-pass,
+.hall-grid-exotic .grid-pass,
+.hall-grid-more .grid-pass {
+  grid-template-columns: 1fr;
+}
+
+.hall-grid-birds > .grid-pass > button,
+.hall-grid-aquatic > .grid-pass > button,
+.hall-grid-exotic > .grid-pass > button,
+.hall-grid-more > .grid-pass > button {
+  display: grid;
+  grid-template-columns: 126px 1fr;
+  gap: 12px;
+  align-items: center;
+  min-height: 126px;
+  padding: 10px 12px 10px 10px;
+  overflow: hidden;
+}
+
+.hall-grid-birds .headshot,
+.hall-grid-aquatic .headshot,
+.hall-grid-exotic .headshot,
+.hall-grid-more .headshot {
+  height: 106px;
+  border-radius: 18px;
+  grid-row: span 3;
+  background:
+    radial-gradient(circle at 50% 78%, #a8865b30 0 18%, transparent 38%),
+    linear-gradient(145deg, #fffaf4, #eee5d9);
+}
+
+.hall-grid-birds .headshot .smart-image,
+.hall-grid-aquatic .headshot .smart-image,
+.hall-grid-exotic .headshot .smart-image,
+.hall-grid-more .headshot .smart-image {
+  border-radius: 18px;
+}
+
+.hall-grid-birds .headshot .smart-image > img,
+.hall-grid-aquatic .headshot .smart-image > img,
+.hall-grid-exotic .headshot .smart-image > img,
+.hall-grid-more .headshot .smart-image > img {
+  object-position: center;
+  transform: scale(1.08);
+}
+
+.hall-grid-birds h3,
+.hall-grid-aquatic h3,
+.hall-grid-exotic h3,
+.hall-grid-more h3 {
+  margin-top: 0;
 }
 
 @keyframes skeletonMove {

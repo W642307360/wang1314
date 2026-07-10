@@ -121,10 +121,36 @@ const pageParams = (url, defaults = { pageSize: 12, max: 100 }) => {
   return { page, pageSize, offset: (page - 1) * pageSize };
 };
 const petDetail = (id) => {
-  const pet = db.prepare("SELECT * FROM pets WHERE id=?").get(id);
+  const pet = db
+    .prepare(
+      `SELECT p.*,b.id AS breed_profile_id,b.intro AS breed_intro,b.origin AS breed_origin,
+              b.growth_profile,b.standard_body,
+              pp.id AS product_id,pp.status AS product_status
+       FROM pets p
+       LEFT JOIN breeds b ON b.id=p.breed_id OR b.name=p.breed
+       LEFT JOIN pet_products pp ON pp.pet_id=p.id
+       WHERE p.id=?`,
+    )
+    .get(id);
   if (!pet) return null;
   return {
     ...pet,
+    breed_id: pet.breed_id || pet.breed_profile_id || null,
+    seller_id: pet.seller_id || null,
+    product_status:
+      pet.status === "published"
+        ? pet.product_status || "available"
+        : pet.status === "sold"
+          ? "sold"
+          : "offline",
+    breed_profile: {
+      id: pet.breed_id || pet.breed_profile_id || null,
+      name: pet.breed,
+      intro: pet.breed_intro,
+      origin: pet.breed_origin,
+      growth_profile: pet.growth_profile,
+      standard_body: pet.standard_body,
+    },
     skus: rows("SELECT * FROM pet_skus WHERE pet_id=?", id),
     images: rows(
       "SELECT * FROM pet_images WHERE pet_id=? ORDER BY sort_order",
@@ -330,29 +356,33 @@ createServer(async (req, res) => {
         .get(account, d.phone || "", d.openid || "", d.openid || "");
       if (user) {
         db.prepare(
-          "UPDATE users SET account=COALESCE(?,account),phone=COALESCE(?,phone),openid=COALESCE(?,openid),wechat_openid=COALESCE(?,wechat_openid),nickname=COALESCE(?,nickname),avatar=COALESCE(?,avatar),last_login_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          "UPDATE users SET account=COALESCE(?,account),phone=COALESCE(?,phone),openid=COALESCE(?,openid),wechat_openid=COALESCE(?,wechat_openid),unionid=COALESCE(?,unionid),nickname=COALESCE(?,nickname),avatar=COALESCE(?,avatar),login_method=COALESCE(?,login_method),last_login_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
         ).run(
           account,
           d.phone || null,
           d.openid || null,
           d.openid || null,
+          d.unionid || null,
           d.nickname || null,
           d.avatar || null,
+          d.login_type || "mock_wechat",
           user.id,
         );
       } else {
         const r = db
           .prepare(
-            "INSERT INTO users(account,openid,wechat_openid,nickname,avatar,phone,status,last_login_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+            "INSERT INTO users(account,openid,wechat_openid,unionid,nickname,avatar,phone,status,login_method,last_login_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
           )
           .run(
             account,
             d.openid || null,
             d.openid || null,
+            d.unionid || null,
             d.nickname || "福宠新朋友",
             d.avatar || null,
             d.phone || null,
             "active",
+            d.login_type || "mock_wechat",
           );
         user = db
           .prepare("SELECT * FROM users WHERE id=?")
@@ -366,11 +396,19 @@ createServer(async (req, res) => {
         req.socket.remoteAddress || "",
         req.headers["user-agent"] || "",
       );
+      db.prepare(
+        "INSERT OR IGNORE INTO user_auth(user_id,auth_type,auth_value) VALUES(?,?,?)",
+      ).run(
+        user.id,
+        d.login_type === "phone" ? "phone" : "wechat",
+        d.phone || d.openid || account,
+      );
       return json(res, 200, {
         id: user.id,
         nickname: d.nickname || user.nickname,
         avatar: d.avatar || user.avatar,
         phone: d.phone || user.phone || "",
+        login_method: d.login_type || user.login_method || "mock_wechat",
       });
     }
     if (path === "/api/admin/login" && method === "POST") {
@@ -412,9 +450,10 @@ createServer(async (req, res) => {
         res,
         200,
         rows(
-          `SELECT p.*,c.name AS category_name
+          `SELECT p.*,c.name AS category_name,pp.status AS product_status
            FROM pets p
            LEFT JOIN categories c ON c.id=p.category_id
+           LEFT JOIN pet_products pp ON pp.pet_id=p.id
            WHERE p.status=?
              AND (p.name LIKE ? OR p.breed LIKE ? OR p.description LIKE ? OR c.name LIKE ?)
            ORDER BY p.id DESC
@@ -432,7 +471,7 @@ createServer(async (req, res) => {
     const publicPet = path.match(/^\/api\/pets\/(\d+)$/);
     if (publicPet && method === "GET") {
       const pet = petDetail(Number(publicPet[1]));
-      if (!pet || pet.status !== "published")
+      if (!pet)
         return json(res, 404, { message: "商品不存在或未上架" });
       return json(res, 200, pet);
     }
@@ -522,6 +561,18 @@ createServer(async (req, res) => {
         db.prepare(
           `UPDATE pets SET ${sets.map((k) => `${k}=?`).join(",")},updated_at=CURRENT_TIMESTAMP WHERE id=?`,
         ).run(...sets.map((k) => d[k]), Number(petMatch[1]));
+      if (d.status !== undefined) {
+        db.prepare(
+          "UPDATE pet_products SET status=?,updated_at=CURRENT_TIMESTAMP WHERE pet_id=?",
+        ).run(
+          d.status === "published"
+            ? "available"
+            : d.status === "sold"
+              ? "sold"
+              : "offline",
+          Number(petMatch[1]),
+        );
+      }
       logAdmin(admin, req, "update", "pets", Number(petMatch[1]), d);
       return json(res, 200, petDetail(Number(petMatch[1])));
     }
@@ -538,7 +589,7 @@ createServer(async (req, res) => {
         res,
         200,
         rows(
-          "SELECT id,nickname,avatar,phone,status,created_at FROM users ORDER BY id DESC",
+          "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users ORDER BY id DESC",
         ),
       );
     if (path === "/api/admin/uploads" && method === "POST") {
@@ -695,7 +746,7 @@ createServer(async (req, res) => {
         else {
           const s = db
             .prepare(
-              "INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status) VALUES(?,?,?,?,?,?)",
+              "INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?)",
             )
             .run(
               userId,
@@ -704,13 +755,15 @@ createServer(async (req, res) => {
               d.seller_name || pet?.seller_name || "福宠认证宠物馆",
               d.source || "message_center",
               "ai",
+              d.service_type || "购买咨询",
+              d.seller_id || pet?.seller_id || null,
             );
           sessionId = s.lastInsertRowid;
         }
       }
       const r = db
         .prepare(
-          "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status) VALUES(?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           userId,
@@ -722,10 +775,12 @@ createServer(async (req, res) => {
           d.product_name || pet?.name || null,
           d.seller_name || pet?.seller_name || "福宠认证宠物馆",
           "sent",
+          d.service_type || "购买咨询",
+          d.seller_id || pet?.seller_id || null,
         );
       const reply = aiReply(d.content, pet);
       db.prepare(
-        "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status) VALUES(?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
       ).run(
         userId,
         "service",
@@ -736,6 +791,8 @@ createServer(async (req, res) => {
         d.product_name || pet?.name || null,
         d.seller_name || pet?.seller_name || "福宠认证宠物馆",
         "sent",
+        d.service_type || "购买咨询",
+        d.seller_id || pet?.seller_id || null,
       );
       db.prepare(
         "UPDATE customer_service_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -772,9 +829,12 @@ createServer(async (req, res) => {
         200,
         rows(
           `SELECT f.*,p.name,p.breed,p.price,p.gender,p.age_months,p.color,p.health_status,p.seller_name,
+                  p.status AS pet_status,p.breed_id,p.seller_id,
+                  CASE WHEN p.id IS NULL THEN 'missing' WHEN p.status='published' THEN COALESCE(pp.status,'available') WHEN p.status='sold' THEN 'sold' ELSE 'offline' END AS product_status,
                   COALESCE(p.thumbnail_url,p.highres_url,pi.thumbnail_url,pi.url) AS image
            FROM favorites f
-           JOIN pets p ON p.id=f.pet_id
+           LEFT JOIN pets p ON p.id=f.pet_id
+           LEFT JOIN pet_products pp ON pp.pet_id=p.id
            LEFT JOIN pet_images pi ON pi.pet_id=p.id
            WHERE f.user_id=?
            GROUP BY f.id
@@ -994,7 +1054,7 @@ createServer(async (req, res) => {
       const id = Number(userRoute[1]),
         user = db
           .prepare(
-            "SELECT id,nickname,avatar,phone,status,created_at FROM users WHERE id=?",
+            "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users WHERE id=?",
           )
           .get(id);
       return json(
@@ -1005,6 +1065,7 @@ createServer(async (req, res) => {
               ...user,
               orders: rows("SELECT * FROM orders WHERE user_id=?", id),
               favorites: rows("SELECT * FROM favorites WHERE user_id=?", id),
+              auth: rows("SELECT * FROM user_auth WHERE user_id=?", id),
               footprints: rows("SELECT * FROM footprints WHERE user_id=?", id),
               addresses: rows("SELECT * FROM addresses WHERE user_id=?", id),
               loginLogs: rows(
