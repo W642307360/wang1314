@@ -106,6 +106,7 @@
 }
 
 .breed-grid .grid-pass > button,
+.breed-grid .virtual-grid-inner > button,
 .breed-grid > button {
   background: linear-gradient(180deg, #fff, #fbf7f1) !important;
   box-shadow: 0 10px 28px #5d463112 !important;
@@ -323,4 +324,77 @@
   to {
     background-position: -220% 0;
   }
+}
+
+.brand {
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 17px;
+  object-fit: cover;
+  box-shadow:
+    0 12px 26px #9b3b1024,
+    inset 0 0 0 1px #ffffff66;
+}
+
+.breed-grid > button,
+.breed-grid .grid-pass > button {
+  border-radius: 29px !important;
+  padding: 9px 9px 17px !important;
+  background:
+    linear-gradient(180deg, #fffdfa 0%, #f6f1ea 100%) !important;
+  box-shadow:
+    0 16px 34px #5d463114,
+    inset 0 0 0 1px #ffffff9c !important;
+}
+
+.headshot,
+.headshot .smart-image {
+  border-radius: 24px !important;
+}
+
+.headshot {
+  background:
+    radial-gradient(circle at 50% 78%, #b6977224 0 16%, transparent 38%),
+    linear-gradient(145deg, #fffaf4, #f0e9df) !important;
+}
+
+.smart-image > img,
+.headshot img,
+.headshot .smart-image > img,
+.available .smart-image > img,
+.breed-showcase-card .smart-image > img,
+.collection-photo img {
+  mix-blend-mode: normal !important;
+  filter: none !important;
+  object-position: center center !important;
+}
+
+.available button,
+.available .breed-showcase-card {
+  border-radius: 24px !important;
+  background: #fff !important;
+}
+
+.available button > .smart-image {
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.available button > .smart-image > img {
+  object-fit: cover;
+  transform-origin: center center;
+}
+
+.phone-shell .breed-grid.virtual-grid .virtual-grid-inner > button {
+  border-radius: 29px !important;
+  overflow: hidden !important;
+  background:
+    linear-gradient(180deg, #fffdfa 0%, #f6f1ea 100%) !important;
+  box-shadow:
+    0 16px 34px #5d463114,
+    inset 0 0 0 1px #ffffff9c !important;
 }

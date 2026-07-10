@@ -33,6 +33,7 @@ import {
 import { hallByKey, halls, type BreedItem, type HallKey } from "./catalog";
 import AdminApp from "./Admin";
 import { ensureVisitor } from "./visitor";
+import { optimizePetImage } from "./imagePipeline";
 
 type Page =
   | "home"
@@ -75,21 +76,10 @@ const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
 const API_BASE = "http://127.0.0.1:3001";
 const jsonCache = new Map<string, { at: number; ttl: number; data: unknown }>();
 const imageMemoryCache = new Set<string>();
-const optimizeImage = (url = petPhoto, width = 360, quality = 72) => {
-  if (!url.startsWith("http")) return url;
-  const joiner = url.includes("?") ? "&" : "?";
-  if (url.includes("images.unsplash.com")) {
-    return `${url}${url.includes("auto=format") ? "" : `${joiner}auto=format`}&fit=crop&w=${width}&q=${quality}&fm=webp`;
-  }
-  if (url.includes("Special:FilePath") && !url.includes("width=")) {
-    return `${url}${joiner}width=${width}`;
-  }
-  return url;
-};
 const thumbImage = (url?: string, fallback = petPhoto) =>
-  optimizeImage(url || fallback, 360, 72);
+  optimizePetImage(url || fallback, "thumb", fallback);
 const coverImage = (url?: string, fallback = petPhoto) =>
-  optimizeImage(url || fallback, 960, 86);
+  optimizePetImage(url || fallback, "detail", fallback);
 const CART_KEY = "fuchong-cart";
 type LocalCartPet = {
   cart_id: string;
@@ -268,6 +258,7 @@ function Home({
     <>
       <header>
         <div className="brand">
+          <img className="brand-logo" src="/assets/fuchong-logo-source.jpg" alt="福宠 logo" />
           <h1>福宠</h1>
         </div>
         <button className="search" onClick={() => go("search")}>
