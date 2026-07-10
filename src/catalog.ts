@@ -1,5 +1,5 @@
 export type HallKey='cats'|'dogs'|'birds'|'aquatic'|'exotic'|'more'
-export type BreedItem={id:string;name:string;en:string;desc:string;image:string}
+export type BreedItem={id:string;name:string;en:string;desc:string;image:string;growthImage?:string}
 export type Hall={key:HallKey;name:string;subtitle:string;hero:string;accent:string;breeds:BreedItem[]}
 
 const photos={
@@ -36,10 +36,22 @@ const verifiedPortraits:Record<string,string>={
  '无毛猫':'20170604 Sphynx cat 7984.jpg',
  '斯芬克斯':'Cat Sphynx. img 040.jpg'
 }
+const localBreedPortraits:Record<string,string>={
+ '布偶猫':'/assets/cats/ragdoll-portrait.jpg',
+ '缅因猫':'/assets/cats/maine-coon-portrait.jpg',
+ '英短蓝猫':'/assets/cats/british-blue-portrait.jpg',
+ '银渐层':'/assets/cats/silver-shaded-portrait.jpg'
+}
+const localBreedGrowth:Record<string,string>={
+ '布偶猫':'/assets/cats/ragdoll-growth.jpg',
+ '缅因猫':'/assets/cats/maine-coon-growth.jpg',
+ '英短蓝猫':'/assets/cats/british-blue-growth.jpg',
+ '银渐层':'/assets/cats/silver-shaded-growth.jpg'
+}
 const commonsPortrait=(file:string)=>`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=720`
 
 export const halls:Hall[]=(Object.keys(names) as HallKey[]).map(key=>{
  const [name,subtitle,tagline,accent]=meta[key]
- return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:verifiedPortraits[name]?commonsPortrait(verifiedPortraits[name]):photos[key][i%photos[key].length]}))}
+ return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:localBreedPortraits[name]||(verifiedPortraits[name]?commonsPortrait(verifiedPortraits[name]):photos[key][i%photos[key].length]),growthImage:localBreedGrowth[name]}))}
 })
 export const hallByKey=(key:HallKey)=>halls.find(x=>x.key===key)||halls[0]

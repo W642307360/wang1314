@@ -1070,24 +1070,32 @@ function Detail({
       </section>
       <section className="growth">
         <h3>{breed.name} · 专属成长记录</h3>
-        <div>
-          {["1个月", "2个月", "3个月", "6个月", "1岁", "2岁", "3岁", "5岁"].map(
-            (x, i) => (
-              <article key={x}>
-                <b>{x}</b>
-                <small>{i < 3 ? "体型初长" : "健康成长"}</small>
-                <SmartImage
-                  src={breed.image}
-                  alt={`${breed.name}-${x}`}
-                  style={{
-                    transform: `scale(${0.72 + i * 0.045})`,
-                    filter: `saturate(${0.72 + i * 0.06}) brightness(${1.08 - i * 0.025})`,
-                  }}
-                />
-              </article>
-            ),
-          )}
-        </div>
+        {breed.growthImage ? (
+          <SmartImage
+            className="growth-timeline-image"
+            src={breed.growthImage}
+            alt={`${breed.name}从幼年到成年的专属成长记录`}
+          />
+        ) : (
+          <div>
+            {["1个月", "2个月", "3个月", "6个月", "1岁", "2岁", "3岁", "5岁"].map(
+              (x, i) => (
+                <article key={x}>
+                  <b>{x}</b>
+                  <small>{i < 3 ? "体型初长" : "健康成长"}</small>
+                  <SmartImage
+                    src={breed.image}
+                    alt={`${breed.name}-${x}`}
+                    style={{
+                      transform: `scale(${0.72 + i * 0.045})`,
+                      filter: `saturate(${0.72 + i * 0.06}) brightness(${1.08 - i * 0.025})`,
+                    }}
+                  />
+                </article>
+              ),
+            )}
+          </div>
+        )}
       </section>
       <section className="origin">
         <div>

@@ -147,6 +147,27 @@
   border-radius: 7px;
 }
 
+.growth .smart-image.growth-timeline-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1306 / 304;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(126, 97, 68, 0.06);
+}
+
+.growth .smart-image.growth-timeline-image > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  mix-blend-mode: normal;
+  filter: none;
+  transform: none;
+}
+
 .buy-pet .smart-image {
   width: 56px;
   height: 56px;
