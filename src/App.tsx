@@ -851,6 +851,10 @@ function Detail({
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
+  const [selectedAddress, setSelectedAddress] = useState<any>(null);
+  const [addressLoading, setAddressLoading] = useState(false);
+  const [orderSubmitting, setOrderSubmitting] = useState(false);
+  const [orderError, setOrderError] = useState("");
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
@@ -880,6 +884,19 @@ function Detail({
       .catch(() => {});
     return () => window.clearTimeout(readyTimer);
   }, [breed.name, pet, pet?.id, userId]);
+  useEffect(() => {
+    if (!buyOpen) return;
+    setAddressLoading(true);
+    setOrderError("");
+    fetch(`${API_BASE}/api/addresses?user_id=${userId}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("地址加载失败"))))
+      .then((items) => {
+        const list = Array.isArray(items) ? items : [];
+        setSelectedAddress(list.find((item) => item.is_default) || list[0] || null);
+      })
+      .catch(() => setOrderError("收货地址加载失败，请稍后重试"))
+      .finally(() => setAddressLoading(false));
+  }, [buyOpen, userId]);
   const displayName = detailPet?.name || "Coco";
   const displayPrice = detailPet?.price || 6800;
   const displaySeller = detailPet?.seller_name || "福宠认证宠物馆";
@@ -908,16 +925,47 @@ function Detail({
     setFavorite(!favorite);
   };
   const submitOrder = async () => {
-    if (!petDbId) return;
-    const address = { name: "待选择", phone: "", detail: "用户提交后补充" };
-    const r = await fetch(`${API_BASE}/api/orders`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ user_id: userId, pet_id: petDbId, address }),
-    });
-    if (r.ok) {
+    if (!petDbId || orderSubmitting) return;
+    if (!selectedAddress) {
+      setOrderError("请先到“我的－收货地址”新增地址");
+      return;
+    }
+    setOrderSubmitting(true);
+    setOrderError("");
+    try {
+      const address = {
+        id: selectedAddress.id,
+        name: selectedAddress.name,
+        phone: selectedAddress.phone,
+        province: selectedAddress.province,
+        city: selectedAddress.city,
+        district: selectedAddress.district,
+        detail: selectedAddress.detail,
+      };
+      const r = await fetch(`${API_BASE}/api/orders`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId, pet_id: petDbId, address }),
+      });
+      const order = await r.json();
+      if (!r.ok) throw new Error(order.message || "订单提交失败");
+      if (/MicroMessenger/i.test(navigator.userAgent)) {
+        const payResponse = await fetch(`${API_BASE}/api/payments/wechat/prepay`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order_id: order.id, user_id: userId }),
+        });
+        const pay = await payResponse.json();
+        const bridge = (window as any).WeixinJSBridge;
+        if (payResponse.ok && bridge)
+          bridge.invoke("getBrandWCPayRequest", pay, () => go("orders"));
+      }
       setBuyOpen(false);
       go("orders");
+    } catch (error) {
+      setOrderError(error instanceof Error ? error.message : "订单提交失败");
+    } finally {
+      setOrderSubmitting(false);
     }
   };
   const toggleFollow = async () => {
@@ -1199,7 +1247,13 @@ function Detail({
             </div>
             <div className="buy-line">
               <span>配送地址</span>
-              <b>请选择收货地址 ›</b>
+              <b>
+                {addressLoading
+                  ? "地址加载中…"
+                  : selectedAddress
+                    ? `${selectedAddress.name} · ${selectedAddress.phone} · ${selectedAddress.detail}`
+                    : "暂无地址，请先新增"}
+              </b>
             </div>
             <div className="buy-line">
               <span>平台保障</span>
@@ -1209,7 +1263,10 @@ function Detail({
               <span>应付合计</span>
               <strong>¥{displayPrice}</strong>
             </div>
-            <button onClick={submitOrder}>提交订单</button>
+            {orderError && <p className="buy-error">{orderError}</p>}
+            <button disabled={orderSubmitting || addressLoading} onClick={submitOrder}>
+              {orderSubmitting ? "正在生成订单…" : "提交订单"}
+            </button>
             <small>提交即代表同意《活体宠物购买保障协议》</small>
           </section>
         </div>

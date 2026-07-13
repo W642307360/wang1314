@@ -40,11 +40,20 @@ npm start
 ```bash
 PORT=3001
 DB_PATH=./data/fuchong.db
-JWT_SECRET=please-change-in-production
+ADMIN_TOKEN_SECRET=please-change-in-production
 ADMIN_INITIAL_PASSWORD=123456789
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+WECHAT_PAY_APP_ID=wx_xxx
+WECHAT_PAY_MCH_ID=商户号
+WECHAT_PAY_SERIAL_NO=商户证书序列号
+WECHAT_PAY_PRIVATE_KEY_PATH=./certs/apiclient_key.pem
+WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH=./certs/wechatpay_platform.pem
+WECHAT_PAY_API_V3_KEY=32位APIv3密钥
+WECHAT_PAY_NOTIFY_URL=https://你的域名/api/payments/wechat/notify
 ```
 
-生产部署必须修改 `JWT_SECRET`。
+生产部署必须修改 `ADMIN_TOKEN_SECRET`，密钥与证书文件禁止提交 Git。微信支付金额由系统中的元自动换算为分，支付结果只接受微信签名验证通过的服务端回调。
 
 ## 数据库安全
 
@@ -76,6 +85,9 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 - `POST /api/orders`
 - `GET /api/orders?user_id=`
 - `POST /api/payments/mock`
+- `POST /api/payments/wechat/prepay`
+- `POST /api/payments/wechat/notify`
+- `PATCH /api/orders/:id/cancel`
 - `GET/POST /api/favorites`
 - `GET/POST/DELETE /api/follows`
 - `GET/POST/DELETE /api/footprints`
@@ -86,6 +98,7 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 后台：
 
 - `POST /api/admin/login`
+- `GET /api/admin/stats`
 - `GET /api/admin/db/status`
 - `GET/POST /api/admin/pets`
 - `GET/PATCH/DELETE /api/admin/pets/:id`
@@ -114,7 +127,15 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 
 ```bash
 npm run build
+cd server
+npm test
 ```
+
+接口测试使用系统临时目录中的独立 SQLite 数据库，不会读取、修改或清空真实业务数据库。当前覆盖管理员鉴权、商品创建、真实地址下单、支付幂等、未付款禁止发货、物流进度与用户端同步。
+
+## 飞书同步
+
+后台保存多维表格配置后，可启动真实远程读取。同步流程按每批最多 500 条执行：飞书鉴权 → 分页读取记录 → 字段校验/转换 → 宠物与品种关联 → 商品、库存、图片、视频写入 → 错误日志。未提供 `FEISHU_APP_SECRET` 时不会伪造远程成功，任务会明确记录失败原因；也可使用后台测试模式验证队列。
 
 建议上线前检查：
 

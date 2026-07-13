@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import type { ServiceContext, User } from "./UserModules";
 
 type FavoritePet = {
@@ -398,7 +398,7 @@ export function P0MessagesPage({
         : "请选择需要咨询的服务类型。",
     },
   ]);
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}`);
       const messages = await response.json();
@@ -408,10 +408,10 @@ export function P0MessagesPage({
     } catch {
       setHistory([]);
     }
-  };
+  }, [userId]);
   useEffect(() => {
     loadHistory();
-  }, [userId]);
+  }, [loadHistory]);
   useEffect(() => {
     if (context?.productName) setActiveType("购买咨询");
   }, [context?.productName]);

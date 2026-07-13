@@ -257,7 +257,7 @@ function AdminPanel({ token }: { token: string }) {
             运营管理员 <b>管</b>
           </div>
         </header>
-        {tab === "dashboard" && <Dashboard />}
+        {tab === "dashboard" && <Dashboard token={token} />}
         {tab === "products" && (
           <Products
             products={products}
@@ -448,20 +448,29 @@ function Field({
     </label>
   );
 }
-function Dashboard() {
+function Dashboard({ token }: { token: string }) {
+  const [stats, setStats] = useState<any>(null);
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/stats", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then((r) => r.json())
+      .then(setStats);
+  }, [token]);
+  const cards = [
+    ["在售宠物", stats?.products?.published ?? "—", "实时商品库"],
+    ["累计订单", stats?.orders?.total ?? "—", `已付款 ${stats?.orders?.paid ?? 0}`],
+    ["成交金额", `¥${stats?.orders?.revenue ?? 0}`, "真实支付订单"],
+    ["用户总数", stats?.users?.total ?? "—", `访客 ${stats?.users?.visitors ?? 0}`],
+  ];
   return (
     <>
       <section className="admin-stats">
-        {[
-          ["在售宠物", "128", "+12.5%"],
-          ["今日订单", "36", "+8.2%"],
-          ["成交金额", "¥126,800", "+18.6%"],
-          ["注册用户", "8,629", "+6.4%"],
-        ].map((x) => (
+        {cards.map((x) => (
           <article key={x[0]}>
             <small>{x[0]}</small>
             <h2>{x[1]}</h2>
-            <span>{x[2]} 较昨日</span>
+            <span>{x[2]}</span>
           </article>
         ))}
       </section>
@@ -477,10 +486,10 @@ function Dashboard() {
         <article>
           <h3>待处理事项</h3>
           {[
-            ["待审核商品", "18"],
-            ["待确认订单", "12"],
-            ["售后申请", "6"],
-            ["异常同步", "2"],
+            ["低库存商品", String(stats?.products?.low_stock ?? 0)],
+            ["待付款订单", String(stats?.orders?.pending_payment ?? 0)],
+            ["售后申请", String(stats?.operations?.pending_after_sales ?? 0)],
+            ["同步错误记录", String(stats?.operations?.sync_errors ?? 0)],
           ].map((x) => (
             <button key={x[0]}>
               {x[0]}
@@ -780,13 +789,16 @@ function OrdersManager({ token }: { token: string }) {
       .then((r) => r.json())
       .then(setOrders);
   }, [headers]);
-  const update = async (id: number, status: string) => {
+  const update = async (
+    id: number,
+    patch: { status?: string; payment_status?: string },
+  ) => {
     await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
       method: "PATCH",
       headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(patch),
     });
-    setOrders((v) => v.map((o) => (o.id === id ? { ...o, status } : o)));
+    setOrders((v) => v.map((o) => (o.id === id ? { ...o, ...patch } : o)));
   };
   const open = async (id: number) =>
     setDetail(
@@ -822,10 +834,20 @@ function OrdersManager({ token }: { token: string }) {
               <td>{o.status}</td>
               <td>
                 <button onClick={() => open(o.id)}>详情</button>
-                <button onClick={() => update(o.id, "pending_ship")}>
+                <button
+                  disabled={o.payment_status === "paid"}
+                  onClick={() =>
+                    update(o.id, {
+                      status: "pending_ship",
+                      payment_status: "paid",
+                    })
+                  }
+                >
                   确认付款
                 </button>
-                <button onClick={() => update(o.id, "completed")}>完成</button>
+                <button onClick={() => update(o.id, { status: "completed" })}>
+                  完成
+                </button>
                 <button
                   onClick={() =>
                     alert(`联系买家：${o.phone || "未绑定手机号"}`)
@@ -859,6 +881,14 @@ function Logistics({ token }: { token: string }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [company, setCompany] = useState("");
   const [tracking, setTracking] = useState("");
+  const [stage, setStage] = useState("packed");
+  const stages: Record<string, { percent: number; label: string }> = {
+    pending: { percent: 0, label: "待处理/待打包" },
+    packed: { percent: 25, label: "商品打包完成" },
+    shipped: { percent: 50, label: "已发货/运输中" },
+    delivering: { percent: 75, label: "配送中" },
+    delivered: { percent: 100, label: "已完成/用户收货" },
+  };
   const headers = useMemo(
     () => ({
       authorization: `Bearer ${token}`,
@@ -872,17 +902,25 @@ function Logistics({ token }: { token: string }) {
       .then(setOrders);
   }, [headers]);
   const update = async (id: number) => {
-    await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}/logistics`, {
+    const response = await fetch(
+      `http://127.0.0.1:3001/api/admin/orders/${id}/logistics`,
+      {
       method: "PUT",
       headers,
       body: JSON.stringify({
         company,
         tracking_no: tracking,
-        status: "shipped",
-        progress: [{ time: new Date().toISOString(), text: "已发货" }],
+        status: stage,
+        progress_percent: stages[stage].percent,
+        note: stages[stage].label,
       }),
-    });
-    alert("物流已更新");
+      },
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      return alert(error.message || "物流更新失败");
+    }
+    alert(`物流已更新到 ${stages[stage].percent}%`);
   };
   return (
     <section className="admin-table">
@@ -900,6 +938,13 @@ function Logistics({ token }: { token: string }) {
           onChange={(e) => setTracking(e.target.value)}
           placeholder="物流单号"
         />
+        <select value={stage} onChange={(e) => setStage(e.target.value)}>
+          {Object.entries(stages).map(([value, item]) => (
+            <option value={value} key={value}>
+              {item.percent}% · {item.label}
+            </option>
+          ))}
+        </select>
       </div>
       <table>
         <thead>
@@ -1177,7 +1222,7 @@ function FeishuManager({ token }: { token: string }) {
       body: JSON.stringify({
         config_id: id,
         mode: "incremental",
-        total: 500,
+        read_remote: true,
         batch_size: 500,
       }),
     });

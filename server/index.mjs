@@ -14,6 +14,9 @@ import {
   scryptSync,
   timingSafeEqual,
   createHmac,
+  sign as rsaSign,
+  verify as rsaVerify,
+  createDecipheriv,
 } from "node:crypto";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +24,9 @@ mkdirSync(join(root, "data"), { recursive: true });
 mkdirSync(join(root, "uploads"), { recursive: true });
 const db = new DatabaseSync(
   process.env.DB_PATH || join(root, "data", "fuchong.db"),
+);
+db.exec(
+  "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
 );
 db.exec(readFileSync(join(root, "schema.sql"), "utf8"));
 const migrate = () => {
@@ -58,15 +64,6 @@ if (!existingAdmin) {
   db.prepare(
     "INSERT INTO admins(username,password_hash,salt) VALUES(?,?,?)",
   ).run("admin", hash(initialAdminPassword, salt), salt);
-} else if (
-  hash(initialAdminPassword, existingAdmin.salt) !== existingAdmin.password_hash
-) {
-  const salt = randomBytes(16).toString("hex");
-  db.prepare("UPDATE admins SET password_hash=?,salt=? WHERE username=?").run(
-    hash(initialAdminPassword, salt),
-    salt,
-    "admin",
-  );
 }
 if (!db.prepare("SELECT id FROM users LIMIT 1").get())
   db.prepare("INSERT INTO users(nickname,phone) VALUES(?,?)").run(
@@ -92,10 +89,17 @@ const auth = (req) => {
   const t = req.headers.authorization?.replace("Bearer ", "");
   if (!t) return null;
   const [b, s] = t.split(".");
-  if (!b || !timingSafeEqual(Buffer.from(sign(b)), Buffer.from(s || "")))
+  if (!b || !s) return null;
+  const expected = Buffer.from(sign(b));
+  const actual = Buffer.from(s);
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual))
     return null;
-  const p = JSON.parse(Buffer.from(b, "base64url"));
-  return p.exp > Date.now() ? p : null;
+  try {
+    const p = JSON.parse(Buffer.from(b, "base64url"));
+    return p.exp > Date.now() ? p : null;
+  } catch {
+    return null;
+  }
 };
 const json = (res, status, data) => {
   res.writeHead(status, {
@@ -106,9 +110,18 @@ const json = (res, status, data) => {
   });
   res.end(JSON.stringify(data));
 };
-const body = async (req) => {
+const rawBody = async (req) => {
   let raw = "";
-  for await (const c of req) raw += c;
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > 25 * 1024 * 1024) throw new Error("请求内容过大");
+    raw += c;
+  }
+  return raw;
+};
+const body = async (req) => {
+  const raw = await rawBody(req);
   return raw ? JSON.parse(raw) : {};
 };
 const rows = (sql, ...args) => db.prepare(sql).all(...args);
@@ -193,6 +206,122 @@ const logAdmin = (admin, req, action, resource, resourceId, detail = {}) => {
     req.socket.remoteAddress || "",
   );
 };
+const wechatConfig = () => {
+  const config = {
+    appId: process.env.WECHAT_PAY_APP_ID,
+    mchId: process.env.WECHAT_PAY_MCH_ID,
+    serialNo: process.env.WECHAT_PAY_SERIAL_NO,
+    privateKeyPath: process.env.WECHAT_PAY_PRIVATE_KEY_PATH,
+    platformPublicKeyPath: process.env.WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH,
+    apiV3Key: process.env.WECHAT_PAY_API_V3_KEY,
+    notifyUrl: process.env.WECHAT_PAY_NOTIFY_URL,
+  };
+  const prepayRequired = [
+    "appId",
+    "mchId",
+    "serialNo",
+    "privateKeyPath",
+    "notifyUrl",
+  ];
+  const notifyRequired = ["platformPublicKeyPath", "apiV3Key"];
+  const prepayMissing = prepayRequired.filter((key) => !config[key]);
+  const notifyMissing = notifyRequired.filter((key) => !config[key]);
+  return {
+    ...config,
+    prepayMissing,
+    notifyMissing,
+    prepayReady: prepayMissing.length === 0,
+    notifyReady: notifyMissing.length === 0,
+  };
+};
+const wechatAuthorization = (method, requestPath, payload, config) => {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = randomBytes(16).toString("hex");
+  const message = `${method}\n${requestPath}\n${timestamp}\n${nonce}\n${payload}\n`;
+  const signature = rsaSign(
+    "RSA-SHA256",
+    Buffer.from(message),
+    readFileSync(config.privateKeyPath, "utf8"),
+  ).toString("base64");
+  return {
+    timestamp,
+    nonce,
+    value: `WECHATPAY2-SHA256-RSA2048 mchid="${config.mchId}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${config.serialNo}"`,
+  };
+};
+const wechatClientPayment = (prepayId, config) => {
+  const timeStamp = String(Math.floor(Date.now() / 1000));
+  const nonceStr = randomBytes(16).toString("hex");
+  const packageValue = `prepay_id=${prepayId}`;
+  const message = `${config.appId}\n${timeStamp}\n${nonceStr}\n${packageValue}\n`;
+  return {
+    timeStamp,
+    nonceStr,
+    package: packageValue,
+    signType: "RSA",
+    paySign: rsaSign(
+      "RSA-SHA256",
+      Buffer.from(message),
+      readFileSync(config.privateKeyPath, "utf8"),
+    ).toString("base64"),
+  };
+};
+const decryptWechatResource = (resource, apiV3Key) => {
+  const encrypted = Buffer.from(resource.ciphertext, "base64");
+  const authTag = encrypted.subarray(encrypted.length - 16);
+  const ciphertext = encrypted.subarray(0, encrypted.length - 16);
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    Buffer.from(apiV3Key, "utf8"),
+    Buffer.from(resource.nonce, "utf8"),
+  );
+  decipher.setAAD(Buffer.from(resource.associated_data || "", "utf8"));
+  decipher.setAuthTag(authTag);
+  return JSON.parse(
+    Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
+      "utf8",
+    ),
+  );
+};
+const markOrderPaid = (order, payment) => {
+  const existing = db
+    .prepare(
+      "SELECT * FROM payments WHERE order_id=? AND status='paid' ORDER BY id DESC LIMIT 1",
+    )
+    .get(order.id);
+  if (existing) return { payment: existing, idempotent: true };
+  if (Number(payment.amount) !== Number(order.total_amount))
+    throw new Error("支付金额与订单金额不一致");
+  db.exec("BEGIN");
+  try {
+    const inserted = db
+      .prepare(
+        "INSERT INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload) VALUES(?,?,?,?,?,?,?)",
+      )
+      .run(
+        order.id,
+        payment.paymentNo,
+        payment.channel,
+        payment.amount,
+        "paid",
+        payment.paidAt || new Date().toISOString(),
+        JSON.stringify(payment.raw || {}),
+      );
+    db.prepare(
+      "UPDATE orders SET payment_status='paid',status='pending_ship',paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(order.id);
+    db.exec("COMMIT");
+    return {
+      payment: db
+        .prepare("SELECT * FROM payments WHERE id=?")
+        .get(inserted.lastInsertRowid),
+      idempotent: false,
+    };
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+};
 const syncQueues = new Map();
 const generateSyncItems = (total = 500) =>
   Array.from({ length: total }, (_, i) => ({
@@ -214,6 +343,89 @@ const generateSyncItems = (total = 500) =>
     external_id: `mock-${i + 1}`,
     stock: 1,
   }));
+const feishuValue = (value) => {
+  if (value == null) return null;
+  if (typeof value === "string" || typeof value === "number") return value;
+  if (Array.isArray(value))
+    return value
+      .map((item) =>
+        typeof item === "object"
+          ? item.url || item.tmp_url || item.text || item.name || ""
+          : item,
+      )
+      .filter(Boolean);
+  if (typeof value === "object")
+    return value.url || value.tmp_url || value.text || value.name || null;
+  return String(value);
+};
+const feishuItems = async (config) => {
+  const appId = config.app_id || process.env.FEISHU_APP_ID;
+  const appSecret = process.env.FEISHU_APP_SECRET;
+  if (!appId || !appSecret)
+    throw new Error("缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET 环境变量");
+  const appToken =
+    config.app_token ||
+    String(config.document_url || "").match(/\/base\/([^/?#]+)/)?.[1];
+  const tableId = config.table_id;
+  if (!appToken || !tableId) throw new Error("飞书 app_token 或 table_id 未配置");
+  const authResponse = await fetch(
+    "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+    },
+  );
+  const authData = await authResponse.json();
+  if (!authResponse.ok || authData.code)
+    throw new Error(authData.msg || "获取飞书 tenant_access_token 失败");
+  const mapping = JSON.parse(config.field_mapping || "{}");
+  const field = (record, key, fallback) =>
+    feishuValue(record.fields?.[mapping[key] || fallback]);
+  const records = [];
+  let pageToken = "";
+  for (let page = 0; page < 200; page++) {
+    const endpoint = new URL(
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`,
+    );
+    endpoint.searchParams.set("page_size", "500");
+    if (pageToken) endpoint.searchParams.set("page_token", pageToken);
+    const response = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${authData.tenant_access_token}` },
+    });
+    const data = await response.json();
+    if (!response.ok || data.code)
+      throw new Error(data.msg || "读取飞书多维表格失败");
+    records.push(...(data.data?.items || []));
+    if (!data.data?.has_more) break;
+    pageToken = data.data.page_token;
+  }
+  return records.map((record) => {
+    const images = field(record, "images", "图片");
+    const videos = field(record, "videos", "视频");
+    return {
+      name: field(record, "name", "宠物名称"),
+      category_id: Number(field(record, "category_id", "分类ID") || 1),
+      breed: field(record, "breed", "品种"),
+      gender: field(record, "gender", "性别"),
+      age_months: Number(field(record, "age_months", "月龄") || 0) || null,
+      color: field(record, "color", "毛色"),
+      body_type: field(record, "body_type", "体型"),
+      personality: field(record, "personality", "性格"),
+      health_status: field(record, "health_status", "健康状态"),
+      vaccine_record: field(record, "vaccine_record", "疫苗记录"),
+      description: field(record, "description", "商品详情"),
+      price: Number(field(record, "price", "价格") || 0),
+      seller_name: field(record, "seller_name", "商家名称"),
+      status: field(record, "status", "商品状态") || "draft",
+      source: "feishu",
+      external_id: record.record_id,
+      stock: Number(field(record, "stock", "库存") || 1),
+      images: Array.isArray(images) ? images : images ? [images] : [],
+      videos: Array.isArray(videos) ? videos : videos ? [videos] : [],
+    };
+  });
+};
 const processSyncTask = (taskId, items) => {
   const state = syncQueues.get(taskId);
   if (!state || state.paused) return;
@@ -269,6 +481,37 @@ const processSyncTask = (taskId, items) => {
             item.source || "feishu",
             item.external_id || `task-${taskId}-${start + i + 1}`,
           )?.id;
+        const breed = db
+          .prepare("SELECT id FROM breeds WHERE name=?")
+          .get(item.breed);
+        let breedId = breed?.id;
+        if (!breedId) {
+          const createdBreed = db
+            .prepare(
+              "INSERT INTO breeds(name,category_id,intro,origin,growth_profile,standard_body) VALUES(?,?,?,?,?,?)",
+            )
+            .run(
+              item.breed,
+              item.category_id || 1,
+              `${item.breed}标准品种档案`,
+              "待运营补充",
+              "待运营补充",
+              item.body_type || "待运营补充",
+            );
+          breedId = createdBreed.lastInsertRowid;
+        }
+        if (petId)
+          db.prepare("UPDATE pets SET breed_id=? WHERE id=?").run(breedId, petId);
+        if (petId)
+          db.prepare(
+            "INSERT INTO pet_products(pet_id,breed_id,seller_id,product_name,status) VALUES(?,?,?,?,?) ON CONFLICT(pet_id) DO UPDATE SET breed_id=excluded.breed_id,product_name=excluded.product_name,status=excluded.status,updated_at=CURRENT_TIMESTAMP",
+          ).run(
+            petId,
+            breedId,
+            item.seller_id || null,
+            item.name,
+            item.status === "published" ? "available" : "offline",
+          );
         if (petId)
           db.prepare(
             "INSERT INTO inventory(pet_id,total_stock,available_stock) SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM inventory WHERE pet_id=? AND sku_id IS NULL)",
@@ -277,6 +520,16 @@ const processSyncTask = (taskId, items) => {
           db.prepare(
             "UPDATE inventory SET total_stock=?,available_stock=MAX(available_stock,?),updated_at=CURRENT_TIMESTAMP WHERE pet_id=? AND sku_id IS NULL",
           ).run(Number(item.stock || 1), Number(item.stock || 1), petId);
+        for (const [imageIndex, imageUrl] of (item.images || []).entries())
+          if (petId && imageUrl)
+            db.prepare(
+              "INSERT OR IGNORE INTO pet_images(pet_id,url,type,sort_order) VALUES(?,?,?,?)",
+            ).run(petId, String(imageUrl), "gallery", imageIndex);
+        for (const videoUrl of item.videos || [])
+          if (petId && videoUrl)
+            db.prepare(
+              "INSERT OR IGNORE INTO pet_videos(pet_id,url,status) VALUES(?,?,?)",
+            ).run(petId, String(videoUrl), "pending_transcode");
         success++;
       } catch (e) {
         failed++;
@@ -442,18 +695,111 @@ createServer(async (req, res) => {
         migrations: rows("SELECT * FROM schema_migrations ORDER BY id"),
       });
     }
+    if (path === "/api/admin/stats" && method === "GET") {
+      const scalar = (sql, ...args) => db.prepare(sql).get(...args).value;
+      return json(res, 200, {
+        products: {
+          published: scalar(
+            "SELECT COUNT(*) AS value FROM pets WHERE status='published'",
+          ),
+          total: scalar("SELECT COUNT(*) AS value FROM pets"),
+          low_stock: scalar(
+            "SELECT COUNT(*) AS value FROM inventory WHERE available_stock<=low_stock_threshold",
+          ),
+        },
+        users: {
+          total: scalar("SELECT COUNT(*) AS value FROM users"),
+          visitors: scalar("SELECT COUNT(*) AS value FROM visitors"),
+          registered: scalar(
+            "SELECT COUNT(*) AS value FROM users WHERE status<>'guest'",
+          ),
+          active_7d: scalar(
+            "SELECT COUNT(DISTINCT user_id) AS value FROM user_login_logs WHERE datetime(created_at)>=datetime('now','-7 day')",
+          ),
+        },
+        orders: {
+          total: scalar("SELECT COUNT(*) AS value FROM orders"),
+          pending_payment: scalar(
+            "SELECT COUNT(*) AS value FROM orders WHERE payment_status='unpaid'",
+          ),
+          paid: scalar(
+            "SELECT COUNT(*) AS value FROM orders WHERE payment_status='paid'",
+          ),
+          revenue: scalar(
+            "SELECT COALESCE(SUM(total_amount),0) AS value FROM orders WHERE payment_status='paid'",
+          ),
+        },
+        behavior: {
+          favorites: scalar("SELECT COUNT(*) AS value FROM favorites"),
+          footprints: scalar("SELECT COUNT(*) AS value FROM footprints"),
+          messages: scalar("SELECT COUNT(*) AS value FROM messages"),
+        },
+        operations: {
+          pending_after_sales: scalar(
+            "SELECT COUNT(*) AS value FROM after_sales WHERE status<>'completed'",
+          ),
+          pending_complaints: scalar(
+            "SELECT COUNT(*) AS value FROM complaints WHERE status<>'completed'",
+          ),
+          sync_errors: scalar("SELECT COUNT(*) AS value FROM sync_task_errors"),
+        },
+      });
+    }
     if (path === "/api/pets" && method === "GET") {
-      const q = `%${url.searchParams.get("q") || ""}%`,
-        status = url.searchParams.get("status") || "published";
+      const search = String(url.searchParams.get("q") || "").trim();
+      const q = `%${search}%`;
+      const status = url.searchParams.get("status") || "published";
       const { pageSize, offset } = pageParams(url, { pageSize: 12, max: 50 });
+      const baseSelect = `SELECT p.*,c.name AS category_name,pp.status AS product_status
+                          FROM pets p
+                          LEFT JOIN categories c ON c.id=p.category_id
+                          LEFT JOIN pet_products pp ON pp.pet_id=p.id`;
+      if (!search)
+        return json(
+          res,
+          200,
+          rows(
+            `${baseSelect} WHERE p.status=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            status,
+            pageSize,
+            offset,
+          ),
+        );
+      const exactBreed = db
+        .prepare("SELECT 1 FROM pets WHERE status=? AND breed=? LIMIT 1")
+        .get(status, search);
+      if (exactBreed)
+        return json(
+          res,
+          200,
+          rows(
+            `${baseSelect} WHERE p.status=? AND p.breed=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            status,
+            search,
+            pageSize,
+            offset,
+          ),
+        );
+      const exactCategory = db
+        .prepare("SELECT id FROM categories WHERE name=? LIMIT 1")
+        .get(search);
+      if (exactCategory)
+        return json(
+          res,
+          200,
+          rows(
+            `${baseSelect} WHERE p.status=? AND p.category_id=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            status,
+            exactCategory.id,
+            pageSize,
+            offset,
+          ),
+        );
       return json(
         res,
         200,
         rows(
-          `SELECT p.*,c.name AS category_name,pp.status AS product_status
-           FROM pets p
-           LEFT JOIN categories c ON c.id=p.category_id
-           LEFT JOIN pet_products pp ON pp.pet_id=p.id
+          `${baseSelect}
            WHERE p.status=?
              AND (p.name LIKE ? OR p.breed LIKE ? OR p.description LIKE ? OR c.name LIKE ?)
            ORDER BY p.id DESC
@@ -628,22 +974,85 @@ createServer(async (req, res) => {
     }
     const logistics = path.match(/^\/api\/admin\/orders\/(\d+)\/logistics$/);
     if (logistics && method === "PUT") {
-      const d = await body(req);
+      const d = await body(req),
+        orderId = Number(logistics[1]),
+        order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      if (d.status === "shipped" && order.payment_status !== "paid")
+        return json(res, 409, { message: "订单尚未付款，不能发货" });
+      const statusProgress = {
+          pending: 0,
+          packed: 25,
+          shipped: 50,
+          delivering: 75,
+          delivered: 100,
+        },
+        progressPercent = Math.min(
+          100,
+          Math.max(
+            0,
+            Number(d.progress_percent ?? statusProgress[d.status] ?? 0),
+          ),
+        ),
+        progress = Array.isArray(d.progress)
+          ? d.progress
+          : [
+              {
+                time: new Date().toISOString(),
+                text: d.note || d.status || "物流状态已更新",
+                percent: progressPercent,
+              },
+            ];
       db.prepare(
         `INSERT INTO logistics(order_id,company,tracking_no,status,progress) VALUES(?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET company=excluded.company,tracking_no=excluded.tracking_no,status=excluded.status,progress=excluded.progress,updated_at=CURRENT_TIMESTAMP`,
       ).run(
-        Number(logistics[1]),
+        orderId,
         d.company,
         d.tracking_no,
-        d.status,
-        JSON.stringify(d.progress || []),
+        d.status || "pending",
+        JSON.stringify(progress),
       );
-      return json(res, 200, { ok: true });
+      const logisticsRow = db
+        .prepare("SELECT * FROM logistics WHERE order_id=?")
+        .get(orderId);
+      db.prepare(
+        "INSERT INTO logistics_events(order_id,logistics_id,progress_percent,status,note) VALUES(?,?,?,?,?)",
+      ).run(
+        orderId,
+        logisticsRow.id,
+        progressPercent,
+        d.status || "pending",
+        d.note || progress.at(-1)?.text || "物流状态已更新",
+      );
+      if (d.status === "shipped" || d.status === "delivering")
+        db.prepare(
+          "UPDATE orders SET status='pending_receive',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(orderId);
+      if (d.status === "delivered")
+        db.prepare(
+          "UPDATE orders SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(orderId);
+      logAdmin(admin, req, "update", "logistics", logisticsRow.id, {
+        order_id: orderId,
+        status: d.status || "pending",
+        progress_percent: progressPercent,
+      });
+      return json(res, 200, {
+        ok: true,
+        logistics: logisticsRow,
+        progress_percent: progressPercent,
+      });
     }
     if (path === "/api/orders" && method === "POST") {
       const d = await body(req),
         pet = petDetail(d.pet_id);
       if (!pet) return json(res, 404, { message: "商品不存在" });
+      const userId = Number(d.user_id || 0);
+      const user = db.prepare("SELECT id FROM users WHERE id=?").get(userId);
+      if (!user) return json(res, 400, { message: "用户不存在，请先登录" });
+      const address = d.address;
+      if (!address?.name || !address?.phone || !address?.detail)
+        return json(res, 400, { message: "请选择完整的收货地址" });
       const stock = db
         .prepare(
           "SELECT COALESCE(SUM(available_stock),0) AS available FROM inventory WHERE pet_id=?",
@@ -658,7 +1067,7 @@ createServer(async (req, res) => {
           .prepare(
             "INSERT INTO orders(order_no,user_id,total_amount,address_snapshot) VALUES(?,?,?,?)",
           )
-          .run(no, d.user_id || 1, pet.price, JSON.stringify(d.address));
+          .run(no, userId, pet.price, JSON.stringify(address));
         db.prepare(
           "INSERT INTO order_items(order_id,pet_id,pet_snapshot,price) VALUES(?,?,?,?)",
         ).run(o.lastInsertRowid, pet.id, JSON.stringify(pet), pet.price);
@@ -672,33 +1081,176 @@ createServer(async (req, res) => {
         throw e;
       }
     }
+    if (path === "/api/payments/wechat/prepay" && method === "POST") {
+      const d = await body(req);
+      const config = wechatConfig();
+      if (!config.prepayReady)
+        return json(res, 503, {
+          message: "微信支付商户配置尚未完成",
+          missing: config.prepayMissing,
+        });
+      const order = db
+        .prepare(
+          `SELECT o.*,COALESCE(NULLIF(u.openid,''),NULLIF(u.wechat_openid,'')) AS openid
+           FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?`,
+        )
+        .get(Number(d.order_id));
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      if (d.user_id && Number(d.user_id) !== Number(order.user_id))
+        return json(res, 403, { message: "无权支付该订单" });
+      if (order.payment_status === "paid")
+        return json(res, 409, { message: "订单已付款" });
+      if (order.status !== "pending_payment")
+        return json(res, 409, { message: "当前订单状态不能付款" });
+      const openid = d.openid || order.openid;
+      if (!openid) return json(res, 400, { message: "当前用户尚未关联微信账号" });
+      const requestPath = "/v3/pay/transactions/jsapi";
+      const requestPayload = JSON.stringify({
+        appid: config.appId,
+        mchid: config.mchId,
+        description: `福宠平台订单 ${order.order_no}`,
+        out_trade_no: order.order_no,
+        notify_url: config.notifyUrl,
+        amount: { total: Math.round(Number(order.total_amount) * 100), currency: "CNY" },
+        payer: { openid },
+      });
+      const authorization = wechatAuthorization(
+        "POST",
+        requestPath,
+        requestPayload,
+        config,
+      );
+      const payResponse = await fetch(`https://api.mch.weixin.qq.com${requestPath}`, {
+        method: "POST",
+        headers: {
+          authorization: authorization.value,
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "fuchong-platform/1.0",
+        },
+        body: requestPayload,
+      });
+      const payResult = await payResponse.json().catch(() => ({}));
+      if (!payResponse.ok || !payResult.prepay_id)
+        return json(res, 502, {
+          message: "微信预支付下单失败",
+          detail: payResult.message || payResult.code || "微信支付接口异常",
+        });
+      const paymentNo = `WXPENDING${Date.now()}`;
+      db.prepare(
+        "INSERT INTO payments(order_id,payment_no,channel,amount,status,raw_payload) VALUES(?,?,?,?,?,?)",
+      ).run(
+        order.id,
+        paymentNo,
+        "wechat_jsapi",
+        order.total_amount,
+        "pending",
+        JSON.stringify({ prepay_id: payResult.prepay_id, out_trade_no: order.order_no }),
+      );
+      return json(res, 201, {
+        order_id: order.id,
+        order_no: order.order_no,
+        ...wechatClientPayment(payResult.prepay_id, config),
+      });
+    }
+    if (path === "/api/payments/wechat/notify" && method === "POST") {
+      const config = wechatConfig();
+      if (!config.notifyReady)
+        return json(res, 503, { code: "FAIL", message: "微信支付回调配置不完整" });
+      const timestamp = req.headers["wechatpay-timestamp"];
+      const nonce = req.headers["wechatpay-nonce"];
+      const signature = req.headers["wechatpay-signature"];
+      if (!timestamp || !nonce || !signature)
+        return json(res, 400, { code: "FAIL", message: "缺少微信支付签名头" });
+      const raw = await rawBody(req);
+      const signedMessage = `${timestamp}\n${nonce}\n${raw}\n`;
+      const verified = rsaVerify(
+        "RSA-SHA256",
+        Buffer.from(signedMessage),
+        readFileSync(config.platformPublicKeyPath, "utf8"),
+        Buffer.from(String(signature), "base64"),
+      );
+      if (!verified)
+        return json(res, 401, { code: "FAIL", message: "微信支付签名验证失败" });
+      const notification = JSON.parse(raw || "{}");
+      const trade = decryptWechatResource(notification.resource, config.apiV3Key);
+      if (trade.trade_state === "SUCCESS") {
+        const order = db
+          .prepare("SELECT * FROM orders WHERE order_no=?")
+          .get(trade.out_trade_no);
+        if (!order)
+          return json(res, 404, { code: "FAIL", message: "订单不存在" });
+        markOrderPaid(order, {
+          paymentNo: trade.transaction_id,
+          channel: "wechat_jsapi",
+          amount: Number(trade.amount?.total) / 100,
+          paidAt: trade.success_time,
+          raw: trade,
+        });
+      }
+      return json(res, 200, { code: "SUCCESS", message: "成功" });
+    }
     if (path === "/api/payments/mock" && method === "POST") {
       const d = await body(req);
       const order = db
         .prepare("SELECT * FROM orders WHERE id=?")
         .get(Number(d.order_id));
       if (!order) return json(res, 404, { message: "订单不存在" });
+      const existingPayment = db
+        .prepare(
+          "SELECT * FROM payments WHERE order_id=? AND status='paid' ORDER BY id DESC LIMIT 1",
+        )
+        .get(order.id);
+      if (existingPayment)
+        return json(res, 200, {
+          id: existingPayment.id,
+          payment_no: existingPayment.payment_no,
+          idempotent: true,
+        });
+      if (order.payment_status === "paid")
+        return json(res, 409, { message: "订单已付款，但支付流水缺失，请管理员核对" });
+      if (!["pending_payment", "pending_confirm"].includes(order.status))
+        return json(res, 409, { message: "当前订单状态不能支付" });
       const paymentNo = `PAY${Date.now()}`;
+      const result = markOrderPaid(order, {
+        paymentNo,
+        channel: d.channel || "mock",
+        amount: order.total_amount,
+        raw: d,
+      });
+      return json(res, 201, {
+        id: result.payment.id,
+        payment_no: result.payment.payment_no,
+        idempotent: result.idempotent,
+      });
+    }
+    const userCancelRoute = path.match(/^\/api\/orders\/(\d+)\/cancel$/);
+    if (userCancelRoute && method === "PATCH") {
+      const d = await body(req);
+      const orderId = Number(userCancelRoute[1]);
+      const userId = Number(d.user_id || 0);
+      const order = db
+        .prepare("SELECT * FROM orders WHERE id=? AND user_id=?")
+        .get(orderId, userId);
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      if (order.payment_status === "paid")
+        return json(res, 409, { message: "已付款订单请申请售后退款" });
+      if (!['pending_payment', 'pending_confirm'].includes(order.status))
+        return json(res, 409, { message: "当前订单不能取消" });
       db.exec("BEGIN");
       try {
-        const r = db
-          .prepare(
-            "INSERT INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload) VALUES(?,?,?,?,?,?,?)",
-          )
-          .run(
-            order.id,
-            paymentNo,
-            d.channel || "mock",
-            order.total_amount,
-            "paid",
-            new Date().toISOString(),
-            JSON.stringify(d),
-          );
+        const items = rows("SELECT pet_id,quantity FROM order_items WHERE order_id=?", orderId);
+        for (const item of items)
+          db.prepare(
+            `UPDATE inventory
+             SET available_stock=available_stock+?,locked_stock=MAX(locked_stock-?,0),updated_at=CURRENT_TIMESTAMP
+             WHERE id=(SELECT id FROM inventory WHERE pet_id=? ORDER BY sku_id IS NULL,id LIMIT 1)`,
+          ).run(item.quantity || 1, item.quantity || 1, item.pet_id);
         db.prepare(
-          "UPDATE orders SET payment_status='paid',status='pending_ship',paid_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        ).run(order.id);
+          "UPDATE orders SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(orderId);
         db.exec("COMMIT");
-        return json(res, 201, { id: r.lastInsertRowid, payment_no: paymentNo });
+        return json(res, 200, { ok: true, status: "cancelled" });
       } catch (e) {
         db.exec("ROLLBACK");
         throw e;
@@ -710,7 +1262,13 @@ createServer(async (req, res) => {
         res,
         200,
         rows(
-          "SELECT o.*,oi.pet_snapshot,oi.price FROM orders o LEFT JOIN order_items oi ON oi.order_id=o.id WHERE o.user_id=? ORDER BY o.id DESC",
+          `SELECT o.*,oi.pet_snapshot,oi.price,
+                  l.company AS logistics_company,l.tracking_no,l.status AS logistics_status,l.progress AS logistics_progress,
+                  COALESCE((SELECT progress_percent FROM logistics_events le WHERE le.order_id=o.id ORDER BY le.id DESC LIMIT 1),0) AS logistics_percent
+           FROM orders o
+           LEFT JOIN order_items oi ON oi.order_id=o.id
+           LEFT JOIN logistics l ON l.order_id=o.id
+           WHERE o.user_id=? ORDER BY o.id DESC`,
           userId,
         ),
       );
@@ -924,21 +1482,33 @@ createServer(async (req, res) => {
       );
     if (path === "/api/addresses" && method === "POST") {
       const d = await body(req);
-      const r = db
-        .prepare(
-          "INSERT INTO addresses(user_id,name,phone,province,city,district,detail,is_default) VALUES(?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          d.user_id || 1,
-          d.name,
-          d.phone,
-          d.province ?? null,
-          d.city ?? null,
-          d.district ?? null,
-          d.detail,
-          d.is_default ? 1 : 0,
-        );
-      return json(res, 201, { id: r.lastInsertRowid });
+      const userId = Number(d.user_id || 1);
+      db.exec("BEGIN");
+      try {
+        if (d.is_default)
+          db.prepare("UPDATE addresses SET is_default=0 WHERE user_id=?").run(
+            userId,
+          );
+        const r = db
+          .prepare(
+            "INSERT INTO addresses(user_id,name,phone,province,city,district,detail,is_default) VALUES(?,?,?,?,?,?,?,?)",
+          )
+          .run(
+            userId,
+            d.name,
+            d.phone,
+            d.province ?? null,
+            d.city ?? null,
+            d.district ?? null,
+            d.detail,
+            d.is_default ? 1 : 0,
+          );
+        db.exec("COMMIT");
+        return json(res, 201, { id: r.lastInsertRowid });
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
     }
     if (path === "/api/coupons" && method === "GET")
       return json(
@@ -1038,15 +1608,44 @@ createServer(async (req, res) => {
               logistics: db
                 .prepare("SELECT * FROM logistics WHERE order_id=?")
                 .get(Number(orderRoute[1])),
+              logistics_events: rows(
+                "SELECT * FROM logistics_events WHERE order_id=? ORDER BY id",
+                Number(orderRoute[1]),
+              ),
             }
           : { message: "订单不存在" },
       );
     }
     if (orderRoute && method === "PATCH") {
       const d = await body(req);
+      const orderId = Number(orderRoute[1]);
+      const existing = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+      if (!existing) return json(res, 404, { message: "订单不存在" });
+      db.exec("BEGIN");
+      try {
+        if (d.payment_status === "paid" && existing.payment_status !== "paid") {
+          const paymentNo = `MANUAL${Date.now()}`;
+          db.prepare(
+            "INSERT INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload) VALUES(?,?,?,?,?,?,?)",
+          ).run(
+            orderId,
+            paymentNo,
+            "admin_manual",
+            existing.total_amount,
+            "paid",
+            new Date().toISOString(),
+            JSON.stringify({ operator: admin.username, source: "admin_order" }),
+          );
+        }
       db.prepare(
-        "UPDATE orders SET status=COALESCE(?,status),payment_status=COALESCE(?,payment_status),updated_at=CURRENT_TIMESTAMP WHERE id=?",
-      ).run(d.status, d.payment_status, Number(orderRoute[1]));
+          "UPDATE orders SET status=COALESCE(?,status),payment_status=COALESCE(?,payment_status),paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,CURRENT_TIMESTAMP) ELSE paid_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(d.status, d.payment_status, d.payment_status, orderId);
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+      logAdmin(admin, req, "update", "orders", orderId, d);
       return json(res, 200, { ok: true });
     }
     const userRoute = path.match(/^\/api\/admin\/users\/(\d+)$/);
@@ -1143,9 +1742,16 @@ createServer(async (req, res) => {
     }
     if (path === "/api/admin/feishu/sync" && method === "POST") {
       const d = await body(req);
-      const items = Array.isArray(d.items)
-        ? d.items
-        : generateSyncItems(Number(d.total || 500));
+      const config = db
+        .prepare("SELECT * FROM feishu_sync_configs WHERE id=?")
+        .get(Number(d.config_id));
+      if (!config) return json(res, 404, { message: "飞书数据源不存在" });
+      const suppliedItems = Array.isArray(d.items) ? d.items : null;
+      const mockItems =
+        !suppliedItems && !d.read_remote
+          ? generateSyncItems(Number(d.total || 500))
+          : null;
+      const initialItems = suppliedItems || mockItems;
       const r = db
         .prepare(
           "INSERT INTO feishu_sync_tasks(config_id,mode,status,total,batch_size) VALUES(?,?,?,?,?)",
@@ -1154,23 +1760,42 @@ createServer(async (req, res) => {
           d.config_id,
           d.mode || "incremental",
           "pending",
-          items.length,
+          initialItems?.length || 0,
           Math.min(500, Math.max(1, Number(d.batch_size || 500))),
         );
-      syncQueues.set(r.lastInsertRowid, { items, paused: false });
-      setTimeout(() => processSyncTask(r.lastInsertRowid, items), 0);
+      const taskId = Number(r.lastInsertRowid);
+      if (initialItems) {
+        syncQueues.set(taskId, { items: initialItems, paused: false });
+        setTimeout(() => processSyncTask(taskId, initialItems), 0);
+      } else {
+        setTimeout(async () => {
+          try {
+            const items = await feishuItems(config);
+            db.prepare(
+              "UPDATE feishu_sync_tasks SET total=?,status='running' WHERE id=?",
+            ).run(items.length, taskId);
+            syncQueues.set(taskId, { items, paused: false });
+            processSyncTask(taskId, items);
+          } catch (e) {
+            db.prepare(
+              "UPDATE feishu_sync_tasks SET status='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+            ).run(e.message, taskId);
+          }
+        }, 0);
+      }
       logAdmin(
         admin,
         req,
         "start_sync",
         "feishu_sync_tasks",
-        r.lastInsertRowid,
+        taskId,
         {
-          total: items.length,
+          total: initialItems?.length || 0,
+          source: initialItems ? "payload_or_test" : "feishu_api",
         },
       );
       return json(res, 202, {
-        taskId: r.lastInsertRowid,
+        taskId,
         status: "pending",
         message: "同步任务已进入队列",
       });

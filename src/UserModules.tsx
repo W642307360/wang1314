@@ -19,14 +19,28 @@ export type ServiceContext = {
 };
 export type Order = {
   id: string;
+  databaseId?: number;
   status: string;
+  rawStatus?: string;
   petName: string;
   breed: string;
   price: number;
   image: string;
+  logisticsPercent?: number;
+  logisticsStatus?: string;
+  trackingNo?: string;
 };
 const petImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  pending_payment: "待付款",
+  pending_confirm: "待确认",
+  pending_ship: "待发货",
+  pending_receive: "待收货",
+  completed: "已完成",
+  cancelled: "已取消",
+  after_sale: "售后",
+};
 
 function Header({ title, back }: { title: string; back: () => void }) {
   return (
@@ -494,25 +508,29 @@ export function OrdersPage({ back }: { back: () => void }) {
     "售后",
   ];
   const [tab, setTab] = useState("全部");
-  const [orders, setOrders] = useState<Order[]>([
-    {
-      id: "FC20260709001",
-      status: "待确认",
-      petName: "小太阳 1号",
-      breed: "金毛寻回犬 · 3个月",
-      price: 7300,
-      image: petImg,
-    },
-    {
-      id: "FC20260708012",
-      status: "待收货",
-      petName: "小太阳 2号",
-      breed: "金毛寻回犬 · 4个月",
-      price: 7600,
-      image: petImg,
-    },
-  ]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const cancelOrder = async (order: Order) => {
+    if (!order.databaseId || !window.confirm("确认取消这个订单吗？")) return;
+    const response = await fetch(
+      `http://127.0.0.1:3001/api/orders/${order.databaseId}/cancel`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) return window.alert(result.message || "取消失败");
+    setOrders((current) =>
+      current.map((item) =>
+        item.databaseId === order.databaseId
+          ? { ...item, status: "已取消", rawStatus: "cancelled" }
+          : item,
+      ),
+    );
+  };
   useEffect(() => {
     fetch(`http://127.0.0.1:3001/api/orders?user_id=${userId}`)
       .then((r) => r.json())
@@ -527,16 +545,22 @@ export function OrdersPage({ back }: { back: () => void }) {
               } catch {}
               return {
                 id: o.order_no,
-                status: o.status,
+                databaseId: o.id,
+                status: ORDER_STATUS_LABEL[o.status] || o.status,
+                rawStatus: o.status,
                 petName: pet.name || "宠物订单",
                 breed: pet.breed || "宠物档案",
                 price: o.total_amount,
                 image: pet.images?.[0]?.url || petImg,
+                logisticsPercent: Number(o.logistics_percent || 0),
+                logisticsStatus: o.logistics_status,
+                trackingNo: o.tracking_no,
               };
             }),
           ),
       )
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [userId]);
   const visible =
     tab === "全部" ? orders : orders.filter((o) => o.status === tab);
@@ -554,7 +578,9 @@ export function OrdersPage({ back }: { back: () => void }) {
           </button>
         ))}
       </div>
-      {visible.length ? (
+      {loading ? (
+        <div className="module-loading">订单加载中…</div>
+      ) : visible.length ? (
         <div className="orders">
           {visible.map((o) => (
             <article key={o.id}>
@@ -571,11 +597,30 @@ export function OrdersPage({ back }: { back: () => void }) {
                 </p>
                 <b>¥{o.price}</b>
               </div>
+              {(o.logisticsPercent || 0) > 0 && (
+                <div className="order-logistics">
+                  <span>
+                    物流进度 {o.logisticsPercent}%
+                    {o.trackingNo ? ` · ${o.trackingNo}` : ""}
+                  </span>
+                  <i>
+                    <b style={{ width: `${o.logisticsPercent}%` }} />
+                  </i>
+                </div>
+              )}
               <footer>
                 <small>订单号 {o.id}</small>
                 <button>联系商家</button>
-                <button>
-                  {o.status === "待确认" ? "取消订单" : "再次购买"}
+                <button
+                  onClick={() =>
+                    ["pending_payment", "pending_confirm"].includes(o.rawStatus || "")
+                      ? cancelOrder(o)
+                      : undefined
+                  }
+                >
+                  {["pending_payment", "pending_confirm"].includes(o.rawStatus || "")
+                    ? "取消订单"
+                    : "再次购买"}
                 </button>
               </footer>
             </article>
