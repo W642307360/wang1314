@@ -16,6 +16,7 @@ dist-ssr
 !.env.example
 server/certs/
 work/
+.runtime/
 server/data/
 server/backups/
 server/uploads/

@@ -1810,7 +1810,7 @@ export default function App() {
           go={go}
         />
       )}
-      {!["hall", "breed", "detail"].includes(page) && (
+      {!["hall", "breed", "detail", "addresses"].includes(page) && (
         <Nav go={go} page={page} />
       )}
     </main>

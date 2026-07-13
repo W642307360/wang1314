@@ -2,6 +2,13 @@
 import "./UserModules.css";
 import "./Chat.css";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const EMPTY_ADDRESS_FORM = {
+  name: "",
+  phone: "",
+  region: "",
+  detail: "",
+  isDefault: false,
+};
 
 export type User = {
   id: string;
@@ -343,20 +350,23 @@ export function AddressesPage({ back }: { back: () => void }) {
     detail: string;
     is_default: number;
   };
-  const emptyForm = {
-    name: "",
-    phone: "",
-    region: "",
-    detail: "",
-    isDefault: false,
-  };
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const draftKey = `fuchong-address-draft-${userId}`;
   const [items, setItems] = useState<AddressItem[]>([]);
   const [editing, setEditing] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<typeof EMPTY_ADDRESS_FORM>(() => {
+    try {
+      return {
+        ...EMPTY_ADDRESS_FORM,
+        ...JSON.parse(localStorage.getItem(draftKey) || "{}"),
+      };
+    } catch {
+      return EMPTY_ADDRESS_FORM;
+    }
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   const load = useCallback(() =>
     fetch(`${API_BASE}/api/addresses?user_id=${userId}`)
       .then(async (r) => {
@@ -368,9 +378,20 @@ export function AddressesPage({ back }: { back: () => void }) {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    if (editing && !editingId)
+      localStorage.setItem(draftKey, JSON.stringify(form));
+  }, [draftKey, editing, editingId, form]);
   const openCreate = () => {
     setEditingId(null);
-    setForm(emptyForm);
+    try {
+      setForm({
+        ...EMPTY_ADDRESS_FORM,
+        ...JSON.parse(localStorage.getItem(draftKey) || "{}"),
+      });
+    } catch {
+      setForm(EMPTY_ADDRESS_FORM);
+    }
     setError("");
     setEditing(true);
   };
@@ -409,6 +430,8 @@ export function AddressesPage({ back }: { back: () => void }) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "地址保存失败");
       await load();
+      localStorage.removeItem(draftKey);
+      setForm(EMPTY_ADDRESS_FORM);
       setEditing(false);
       setEditingId(null);
     } catch (e) {
@@ -433,10 +456,10 @@ export function AddressesPage({ back }: { back: () => void }) {
       {editing ? (
         <form className="address-form" onSubmit={save}>
           <h3>{editingId ? "编辑收货地址" : "新增收货地址"}</h3>
-          <input value={form.name} onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))} required placeholder="收货人" />
-          <input inputMode="tel" maxLength={11} value={form.phone} onChange={(e) => setForm((v) => ({ ...v, phone: e.target.value.replace(/\D/g, "") }))} required placeholder="11位手机号" />
-          <input value={form.region} onChange={(e) => setForm((v) => ({ ...v, region: e.target.value }))} required placeholder="省 / 市 / 区" />
-          <textarea value={form.detail} onChange={(e) => setForm((v) => ({ ...v, detail: e.target.value }))} required placeholder="街道、门牌号等详细地址" />
+          <input name="recipient" autoComplete="name" value={form.name} onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))} required placeholder="收货人" />
+          <input name="phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={11} value={form.phone} onChange={(e) => setForm((v) => ({ ...v, phone: e.target.value.replace(/\D/g, "") }))} required placeholder="11位手机号" />
+          <input name="region" autoComplete="address-level1" value={form.region} onChange={(e) => setForm((v) => ({ ...v, region: e.target.value }))} required placeholder="省 / 市 / 区" />
+          <textarea name="detail" autoComplete="street-address" value={form.detail} onChange={(e) => setForm((v) => ({ ...v, detail: e.target.value }))} required placeholder="街道、门牌号等详细地址" />
           <label>
             <input checked={form.isDefault} onChange={(e) => setForm((v) => ({ ...v, isDefault: e.target.checked }))} type="checkbox" /> 设为默认地址
           </label>
