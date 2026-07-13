@@ -56,37 +56,29 @@ const emptyProduct: ProductForm = {
   stock: "1",
   status: "draft",
 };
-const seedProducts = [
-  {
-    id: "P001",
-    name: "Coco",
-    breed: "布偶猫",
-    price: 6800,
-    status: "在售",
-    stock: 1,
-  },
-  {
-    id: "P002",
-    name: "小太阳",
-    breed: "金毛",
-    price: 7300,
-    status: "待审核",
-    stock: 1,
-  },
-  {
-    id: "P003",
-    name: "雪球",
-    breed: "萨摩耶",
-    price: 8600,
-    status: "已下架",
-    stock: 0,
-  },
-];
-
 export default function AdminApp() {
   const [token, setToken] = useState(
     () => localStorage.getItem("fuchong-admin-token") || "",
   );
+  const [checking, setChecking] = useState(Boolean(token));
+  useEffect(() => {
+    if (!token) {
+      setChecking(false);
+      return;
+    }
+    fetch("http://127.0.0.1:3001/api/admin/stats", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        if (response.status === 401) {
+          localStorage.removeItem("fuchong-admin-token");
+          setToken("");
+        }
+      })
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, [token]);
+  if (checking) return <div className="admin-checking">正在验证管理员身份…</div>;
   if (!token)
     return (
       <AdminLogin
@@ -96,7 +88,15 @@ export default function AdminApp() {
         }}
       />
     );
-  return <AdminPanel token={token} />;
+  return (
+    <AdminPanel
+      token={token}
+      logout={() => {
+        localStorage.removeItem("fuchong-admin-token");
+        setToken("");
+      }}
+    />
+  );
 }
 function AdminLogin({ success }: { success: (token: string) => void }) {
   const [username, setUsername] = useState("admin"),
@@ -146,18 +146,24 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
     </div>
   );
 }
-function AdminPanel({ token }: { token: string }) {
+function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<ProductForm>(emptyProduct);
-  const [products, setProducts] = useState<any[]>(seedProducts);
+  const [products, setProducts] = useState<any[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState("");
   useEffect(() => {
     fetch("http://127.0.0.1:3001/api/admin/pets", {
       headers: { authorization: `Bearer ${token}` },
     })
-      .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setProducts(d))
-      .catch(() => {});
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.message || "商品加载失败");
+        setProducts(Array.isArray(data) ? data : []);
+      })
+      .catch((e) => setProductsError(e instanceof Error ? e.message : "商品加载失败"))
+      .finally(() => setProductsLoading(false));
   }, [token]);
   const breeds = useMemo(
     () => halls.find((h) => h.key === form.hall)?.breeds || [],
@@ -255,31 +261,32 @@ function AdminPanel({ token }: { token: string }) {
           </div>
           <div className="admin-user">
             运营管理员 <b>管</b>
+            <button className="admin-logout" onClick={logout}>退出</button>
           </div>
         </header>
         {tab === "dashboard" && <Dashboard token={token} />}
         {tab === "products" && (
-          <Products
-            products={products}
-            open={() => setShowForm(true)}
-            token={token}
-            update={(id, patch) =>
-              setProducts((v) =>
-                v.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-              )
-            }
-            remove={async (id) => {
-              await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
-                method: "DELETE",
-                headers: { authorization: `Bearer ${token}` },
-              });
-              setProducts((v) => v.filter((p) => p.id !== id));
-            }}
-          />
+          productsLoading ? <div className="admin-state">商品数据加载中…</div> : productsError ? <div className="admin-state error">{productsError}</div> : <Products
+              products={products}
+              open={() => setShowForm(true)}
+              token={token}
+              update={(id, patch) =>
+                setProducts((v) =>
+                  v.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+                )
+              }
+              remove={async (id) => {
+                await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
+                  method: "DELETE",
+                  headers: { authorization: `Bearer ${token}` },
+                });
+                setProducts((v) => v.filter((p) => p.id !== id));
+              }}
+            />
         )}{" "}
         {tab === "users" && <UsersManager token={token} />}{" "}
         {tab === "orders" && <OrdersManager token={token} />}{" "}
-        {tab === "transactions" && <Transactions />}
+        {tab === "transactions" && <Transactions token={token} />}
         {tab === "logistics" && <Logistics token={token} />}
         {tab === "afterSales" && <AfterSales token={token} />}
         {tab === "content" && <ContentManager token={token} />}
@@ -685,33 +692,55 @@ function DataTable({
     </section>
   );
 }
-function Transactions() {
+function EmptyRow({ cols, text }: { cols: number; text: string }) {
+  return (
+    <tr>
+      <td className="admin-empty" colSpan={cols}>{text}</td>
+    </tr>
+  );
+}
+function Transactions({ token }: { token: string }) {
+  const [payments, setPayments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    fetch("http://127.0.0.1:3001/api/admin/payments", {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "交易数据加载失败");
+        setPayments(Array.isArray(data) ? data : []);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "交易数据加载失败"))
+      .finally(() => setLoading(false));
+  }, [token]);
+  const paid = payments.filter((item) => item.status === "paid");
+  const pending = payments.filter((item) => item.status === "pending");
+  const refunds = payments.filter((item) => item.status === "refunded");
   return (
     <>
       <section className="admin-stats">
         <article>
           <small>今日入账</small>
-          <h2>¥126,800</h2>
-          <span>36 笔交易</span>
+          <h2>¥{paid.reduce((sum, item) => sum + Number(item.amount || 0), 0)}</h2>
+          <span>{paid.length} 笔成功交易</span>
         </article>
         <article>
           <small>待结算</small>
-          <h2>¥42,600</h2>
-          <span>预计 T+1</span>
+          <h2>¥{pending.reduce((sum, item) => sum + Number(item.amount || 0), 0)}</h2>
+          <span>{pending.length} 笔待确认</span>
         </article>
         <article>
           <small>退款金额</small>
-          <h2>¥6,800</h2>
-          <span>1 笔退款</span>
+          <h2>¥{refunds.reduce((sum, item) => sum + Number(item.amount || 0), 0)}</h2>
+          <span>{refunds.length} 笔退款</span>
         </article>
       </section>
       <DataTable
         title="交易流水"
         heads={["流水号", "类型", "关联订单", "金额", "状态"]}
-        rows={[
-          ["TX260709001", "支付", "FC20260709001", "+¥6,800", "成功"],
-          ["TX260709002", "退款", "FC20260707002", "-¥6,800", "处理中"],
-        ]}
+        rows={loading ? [["—", "—", "—", "加载中…", "—"]] : error ? [["—", "—", "—", error, "失败"]] : payments.map((item) => [item.payment_no, item.channel, item.order_no, `¥${item.amount}`, item.status])}
       />
     </>
   );
@@ -751,6 +780,7 @@ function UsersManager({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!users.length && <EmptyRow cols={5} text="暂无用户数据" />}
           {users.map((u) => (
             <tr key={u.id}>
               <td>{u.nickname}</td>
@@ -823,6 +853,7 @@ function OrdersManager({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!orders.length && <EmptyRow cols={6} text="暂无订单数据" />}
           {orders.map((o) => (
             <tr key={o.id}>
               <td>{o.order_no}</td>
@@ -956,6 +987,7 @@ function Logistics({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!orders.length && <EmptyRow cols={4} text="暂无可处理物流订单" />}
           {orders.map((o) => (
             <tr key={o.id}>
               <td>{o.order_no}</td>
@@ -1035,6 +1067,7 @@ function AfterSales({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!items.length && <EmptyRow cols={5} text="暂无客诉或售后申请" />}
           {items.map((x) => (
             <tr key={`${x.kind}-${x.id}`}>
               <td>{x.kind}</td>
@@ -1177,6 +1210,9 @@ function FeishuManager({ token }: { token: string }) {
   const [tasks, setTasks] = useState<any[]>([]);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [appId, setAppId] = useState("cli_a902ca6a2cb85cc0");
+  const [tableId, setTableId] = useState("tblUaCqyE3xkk1Bj");
+  const [notice, setNotice] = useState("");
   const headers = useMemo(
     () => ({
       authorization: `Bearer ${token}`,
@@ -1196,12 +1232,15 @@ function FeishuManager({ token }: { token: string }) {
     void load();
   }, [load]);
   const save = async () => {
-    await fetch("http://127.0.0.1:3001/api/admin/feishu/configs", {
+    setNotice("");
+    const response = await fetch("http://127.0.0.1:3001/api/admin/feishu/configs", {
       method: "POST",
       headers,
       body: JSON.stringify({
         name,
         document_url: url,
+        app_id: appId,
+        table_id: tableId,
         field_mapping: {
           name: "宠物名称",
           breed: "品种",
@@ -1211,12 +1250,16 @@ function FeishuManager({ token }: { token: string }) {
         },
       }),
     });
+    const result = await response.json();
+    if (!response.ok) return setNotice(result.message || "保存失败");
     setName("");
     setUrl("");
     load();
+    setNotice("飞书连接配置已保存；真实读取还需要服务端 FEISHU_APP_SECRET。 ");
   };
   const sync = async (id: number) => {
-    await fetch("http://127.0.0.1:3001/api/admin/feishu/sync", {
+    setNotice("正在创建真实飞书读取任务…");
+    const response = await fetch("http://127.0.0.1:3001/api/admin/feishu/sync", {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1226,8 +1269,10 @@ function FeishuManager({ token }: { token: string }) {
         batch_size: 500,
       }),
     });
-    load();
-    alert("同步任务已进入队列");
+    const result = await response.json();
+    if (!response.ok) return setNotice(result.message || "同步任务创建失败");
+    setNotice(`任务 #${result.taskId} 已创建，请点击“刷新任务”查看真实结果。`);
+    window.setTimeout(load, 800);
   };
   const taskAction = async (
     id: number,
@@ -1258,8 +1303,11 @@ function FeishuManager({ token }: { token: string }) {
           onChange={(e) => setUrl(e.target.value)}
           placeholder="飞书多维表格链接"
         />
+        <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="飞书 App ID" />
+        <input value={tableId} onChange={(e) => setTableId(e.target.value)} placeholder="数据表 Table ID" />
         <button onClick={save}>保存连接</button>
       </div>
+      {notice && <p className="feishu-notice">{notice}</p>}
       <table>
         <thead>
           <tr>
@@ -1270,6 +1318,7 @@ function FeishuManager({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!configs.length && <EmptyRow cols={4} text="暂无飞书数据源，请先填写上方连接信息" />}
           {configs.map((c) => (
             <tr key={c.id}>
               <td>{c.name}</td>
@@ -1298,6 +1347,7 @@ function FeishuManager({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
+          {!tasks.length && <EmptyRow cols={6} text="暂无同步任务" />}
           {tasks.map((t) => (
             <tr key={t.id}>
               <td>#{t.id}</td>
@@ -1318,6 +1368,14 @@ function FeishuManager({ token }: { token: string }) {
           ))}
         </tbody>
       </table>
+      {tasks.some((task) => task.error) && (
+        <div className="feishu-errors">
+          <h3>最近同步错误</h3>
+          {tasks.filter((task) => task.error).slice(0, 5).map((task) => (
+            <p key={`error-${task.id}`}>任务 #{task.id}：{task.error}</p>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

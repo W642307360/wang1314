@@ -361,8 +361,12 @@ const feishuValue = (value) => {
 const feishuItems = async (config) => {
   const appId = config.app_id || process.env.FEISHU_APP_ID;
   const appSecret = process.env.FEISHU_APP_SECRET;
-  if (!appId || !appSecret)
-    throw new Error("缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET 环境变量");
+  const missingCredentials = [
+    !appId ? "FEISHU_APP_ID" : null,
+    !appSecret ? "FEISHU_APP_SECRET" : null,
+  ].filter(Boolean);
+  if (missingCredentials.length)
+    throw new Error(`缺少 ${missingCredentials.join("、")} 环境变量`);
   const appToken =
     config.app_token ||
     String(config.document_url || "").match(/\/base\/([^/?#]+)/)?.[1];
@@ -745,6 +749,18 @@ createServer(async (req, res) => {
         },
       });
     }
+    if (path === "/api/admin/payments" && method === "GET")
+      return json(
+        res,
+        200,
+        rows(
+          `SELECT p.*,o.order_no,u.nickname,u.phone
+           FROM payments p
+           JOIN orders o ON o.id=p.order_id
+           JOIN users u ON u.id=o.user_id
+           ORDER BY p.id DESC LIMIT 200`,
+        ),
+      );
     if (path === "/api/pets" && method === "GET") {
       const search = String(url.searchParams.get("q") || "").trim();
       const q = `%${search}%`;
@@ -1483,6 +1499,14 @@ createServer(async (req, res) => {
     if (path === "/api/addresses" && method === "POST") {
       const d = await body(req);
       const userId = Number(d.user_id || 1);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
+        return json(res, 400, { message: "用户不存在，请重新登录" });
+      if (!String(d.name || "").trim())
+        return json(res, 400, { message: "请填写收货人" });
+      if (!/^1\d{10}$/.test(String(d.phone || "")))
+        return json(res, 400, { message: "请填写正确的11位手机号" });
+      if (!String(d.detail || "").trim())
+        return json(res, 400, { message: "请填写详细地址" });
       db.exec("BEGIN");
       try {
         if (d.is_default)
@@ -1509,6 +1533,53 @@ createServer(async (req, res) => {
         db.exec("ROLLBACK");
         throw e;
       }
+    }
+    const addressItem = path.match(/^\/api\/addresses\/(\d+)$/);
+    if (addressItem && method === "PATCH") {
+      const d = await body(req);
+      const id = Number(addressItem[1]);
+      const userId = Number(d.user_id || 0);
+      const current = db
+        .prepare("SELECT * FROM addresses WHERE id=? AND user_id=?")
+        .get(id, userId);
+      if (!current) return json(res, 404, { message: "地址不存在" });
+      const name = String(d.name ?? current.name).trim();
+      const phone = String(d.phone ?? current.phone).trim();
+      const detail = String(d.detail ?? current.detail).trim();
+      if (!name || !detail || !/^1\d{10}$/.test(phone))
+        return json(res, 400, { message: "请完整填写收货人、手机号和详细地址" });
+      db.exec("BEGIN");
+      try {
+        if (d.is_default)
+          db.prepare("UPDATE addresses SET is_default=0 WHERE user_id=?").run(userId);
+        db.prepare(
+          `UPDATE addresses SET name=?,phone=?,province=?,city=?,district=?,detail=?,is_default=?
+           WHERE id=? AND user_id=?`,
+        ).run(
+          name,
+          phone,
+          d.province ?? current.province,
+          d.city ?? current.city,
+          d.district ?? current.district,
+          detail,
+          d.is_default == null ? current.is_default : d.is_default ? 1 : 0,
+          id,
+          userId,
+        );
+        db.exec("COMMIT");
+        return json(res, 200, db.prepare("SELECT * FROM addresses WHERE id=?").get(id));
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    }
+    if (addressItem && method === "DELETE") {
+      const userId = Number(url.searchParams.get("user_id") || 0);
+      const result = db
+        .prepare("DELETE FROM addresses WHERE id=? AND user_id=?")
+        .run(Number(addressItem[1]), userId);
+      if (!result.changes) return json(res, 404, { message: "地址不存在" });
+      return json(res, 200, { ok: true });
     }
     if (path === "/api/coupons" && method === "GET")
       return json(

@@ -94,6 +94,20 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     }),
   });
   assert.equal(address.response.status, 201);
+  const updatedAddress = await request(`/api/addresses/${address.payload.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: 1,
+      name: "测试用户",
+      phone: "13800000000",
+      province: "四川省 成都市",
+      detail: "测试地址二号",
+      is_default: true,
+    }),
+  });
+  assert.equal(updatedAddress.response.status, 200);
+  assert.equal(updatedAddress.payload.detail, "测试地址二号");
 
   const order = await request("/api/orders", {
     method: "POST",
@@ -149,4 +163,46 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const stats = await request("/api/admin/stats", { headers: adminHeaders });
   assert.equal(stats.response.status, 200);
   assert.equal(stats.payload.orders.paid, 1);
+
+  const feishuConfig = await request("/api/admin/feishu/configs", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      name: "临时测试数据源",
+      document_url: "https://example.feishu.cn/base/test",
+      app_id: "cli_test",
+      table_id: "tbl_test",
+      field_mapping: { name: "宠物名称", breed: "品种" },
+    }),
+  });
+  assert.equal(feishuConfig.response.status, 201);
+  const sync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 500,
+      items: [
+        { external_id: "test-1", name: "飞书测试布偶猫", breed: "布偶猫", category_id: 1, price: 6800, stock: 1 },
+        { external_id: "test-2", name: "飞书测试缅因猫", breed: "缅因猫", category_id: 1, price: 7200, stock: 1 },
+      ],
+    }),
+  });
+  assert.equal(sync.response.status, 202);
+  let syncTask;
+  for (let i = 0; i < 30; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    syncTask = tasks.payload.find((item) => item.id === sync.payload.taskId);
+    if (["completed", "failed"].includes(syncTask?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(syncTask.status, "completed");
+  assert.equal(syncTask.success, 2);
+  assert.equal(syncTask.failed, 0);
+
+  const deletedAddress = await request(
+    `/api/addresses/${address.payload.id}?user_id=1`,
+    { method: "DELETE" },
+  );
+  assert.equal(deletedAddress.response.status, 200);
 });

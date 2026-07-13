@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "./UserModules.css";
 import "./Chat.css";
 
@@ -331,81 +331,116 @@ export function FootprintsPage({ back }: { back: () => void }) {
 }
 
 export function AddressesPage({ back }: { back: () => void }) {
-  const [items, setItems] = useState<
-    Array<{
-      id: number;
-      name: string;
-      phone: string;
-      address: string;
-      isDefault: boolean;
-    }>
-  >([]);
+  type AddressItem = {
+    id: number;
+    name: string;
+    phone: string;
+    province?: string;
+    city?: string;
+    district?: string;
+    detail: string;
+    is_default: number;
+  };
+  const emptyForm = {
+    name: "",
+    phone: "",
+    region: "",
+    detail: "",
+    isDefault: false,
+  };
+  const [items, setItems] = useState<AddressItem[]>([]);
   const [editing, setEditing] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [form, setForm] = useState(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
-  useEffect(() => {
+  const load = useCallback(() =>
     fetch(`http://127.0.0.1:3001/api/addresses?user_id=${userId}`)
-      .then((r) => r.json())
-      .then(
-        (d) =>
-          Array.isArray(d) &&
-          setItems(
-            d.map((a) => ({
-              id: a.id,
-              name: a.name,
-              phone: a.phone,
-              address: [a.province, a.city, a.district, a.detail]
-                .filter(Boolean)
-                .join(" "),
-              isDefault: Boolean(a.is_default),
-            })),
-          ),
-      )
-      .catch(() => {});
-  }, [userId]);
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.message || "地址加载失败");
+        setItems(Array.isArray(data) ? data : []);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "地址加载失败")), [userId]);
+  useEffect(() => {
+    load();
+  }, [load]);
+  const openCreate = () => {
+    setEditingId(null);
+    setForm(emptyForm);
+    setError("");
+    setEditing(true);
+  };
+  const openEdit = (item: AddressItem) => {
+    setEditingId(item.id);
+    setForm({
+      name: item.name,
+      phone: item.phone,
+      region: [item.province, item.city, item.district].filter(Boolean).join(" "),
+      detail: item.detail,
+      isDefault: Boolean(item.is_default),
+    });
+    setError("");
+    setEditing(true);
+  };
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:3001/api/addresses${editingId ? `/${editingId}` : ""}`,
+        {
+          method: editingId ? "PATCH" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            name: form.name.trim(),
+            phone: form.phone.trim(),
+            province: form.region.trim(),
+            detail: form.detail.trim(),
+            is_default: form.isDefault,
+          }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "地址保存失败");
+      await load();
+      setEditing(false);
+      setEditingId(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "地址保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async (item: AddressItem) => {
+    if (!confirm("删除该地址？")) return;
+    const response = await fetch(
+      `http://127.0.0.1:3001/api/addresses/${item.id}?user_id=${userId}`,
+      { method: "DELETE" },
+    );
+    const result = await response.json();
+    if (!response.ok) return setError(result.message || "删除失败");
+    setItems((current) => current.filter((address) => address.id !== item.id));
+  };
   return (
     <div className="module-page">
       <Header title="收货地址" back={back} />
       {editing ? (
-        <form
-          className="address-form"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            const f = new FormData(e.currentTarget);
-            const payload = {
-              user_id: userId,
-              name: String(f.get("name") || ""),
-              phone: String(f.get("phone") || ""),
-              province: String(f.get("region") || ""),
-              detail: String(f.get("detail") || ""),
-              is_default: Boolean(f.get("default")),
-            };
-            const r = await fetch("http://127.0.0.1:3001/api/addresses", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            const saved = await r.json();
-            setItems((v) => [
-              ...v,
-              {
-                id: saved.id,
-                name: payload.name,
-                phone: payload.phone,
-                address: `${payload.province} ${payload.detail}`,
-                isDefault: payload.is_default,
-              },
-            ]);
-            setEditing(false);
-          }}
-        >
-          <input name="name" required placeholder="收货人" />
-          <input name="phone" required placeholder="手机号" />
-          <input name="region" required placeholder="省 / 市 / 区" />
-          <textarea name="detail" required placeholder="详细地址" />
+        <form className="address-form" onSubmit={save}>
+          <h3>{editingId ? "编辑收货地址" : "新增收货地址"}</h3>
+          <input value={form.name} onChange={(e) => setForm((v) => ({ ...v, name: e.target.value }))} required placeholder="收货人" />
+          <input inputMode="tel" maxLength={11} value={form.phone} onChange={(e) => setForm((v) => ({ ...v, phone: e.target.value.replace(/\D/g, "") }))} required placeholder="11位手机号" />
+          <input value={form.region} onChange={(e) => setForm((v) => ({ ...v, region: e.target.value }))} required placeholder="省 / 市 / 区" />
+          <textarea value={form.detail} onChange={(e) => setForm((v) => ({ ...v, detail: e.target.value }))} required placeholder="街道、门牌号等详细地址" />
           <label>
-            <input name="default" type="checkbox" /> 设为默认地址
+            <input checked={form.isDefault} onChange={(e) => setForm((v) => ({ ...v, isDefault: e.target.checked }))} type="checkbox" /> 设为默认地址
           </label>
-          <button>保存地址</button>
+          {error && <p className="form-error">{error}</p>}
+          <button disabled={saving}>{saving ? "保存中…" : "保存地址"}</button>
+          <button className="form-cancel" type="button" onClick={() => setEditing(false)}>取消</button>
         </form>
       ) : (
         <>
@@ -415,18 +450,11 @@ export function AddressesPage({ back }: { back: () => void }) {
                 <b>
                   {a.name}　{a.phone}
                 </b>
-                <p>{a.address}</p>
-                <small>{a.isDefault ? "默认地址" : ""}</small>
+                <p>{[a.province, a.city, a.district, a.detail].filter(Boolean).join(" ")}</p>
+                <small>{a.is_default ? "默认地址" : "普通地址"}</small>
                 <div>
-                  <button onClick={() => setEditing(true)}>编辑</button>
-                  <button
-                    onClick={() =>
-                      confirm("删除该地址？") &&
-                      setItems((v) => v.filter((x) => x.id !== a.id))
-                    }
-                  >
-                    删除
-                  </button>
+                  <button onClick={() => openEdit(a)}>编辑</button>
+                  <button onClick={() => remove(a)}>删除</button>
                 </div>
               </article>
             ))
@@ -437,7 +465,8 @@ export function AddressesPage({ back }: { back: () => void }) {
               text="添加地址后可用于订单配送"
             />
           )}
-          <button className="fixed-primary" onClick={() => setEditing(true)}>
+          {error && <p className="address-error">{error}</p>}
+          <button className="fixed-primary" onClick={openCreate}>
             ＋ 新增收货地址
           </button>
         </>
