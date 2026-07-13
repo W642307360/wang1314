@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+﻿import { useCallback, useEffect, useState } from "react";
 import "./UserModules.css";
 import "./Chat.css";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 
 export type User = {
   id: string;
@@ -29,6 +30,8 @@ export type Order = {
   logisticsPercent?: number;
   logisticsStatus?: string;
   trackingNo?: string;
+  petId?: number;
+  sellerName?: string;
 };
 const petImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
@@ -71,7 +74,6 @@ function Empty({
     </div>
   );
 }
-
 export function LoginPage({
   back,
   user,
@@ -85,7 +87,7 @@ export function LoginPage({
 }) {
   const [phone, setPhone] = useState("");
   const doLogin = async (payload: Partial<User> & { login_type: string }) => {
-    const r = await fetch("http://127.0.0.1:3001/api/users/login", {
+    const r = await fetch(`${API_BASE}/api/users/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -176,28 +178,28 @@ export function CollectionPage({
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
     setLoading(true);
-    fetch(`http://127.0.0.1:3001/api/favorites?user_id=${userId}`)
+    fetch(`${API_BASE}/api/favorites?user_id=${userId}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) && setFavorites(d))
       .catch(() => setFavorites([]))
       .finally(() => setLoading(false));
   }, [userId]);
   useEffect(() => {
-    fetch(`http://127.0.0.1:3001/api/follows?user_id=${userId}`)
+    fetch(`${API_BASE}/api/follows?user_id=${userId}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) && setFollows(d.map((x) => x.seller_name)))
       .catch(() => {});
   }, [userId]);
   const removeFavorite = async (petId: number) => {
     await fetch(
-      `http://127.0.0.1:3001/api/favorites/${petId}?user_id=${userId}`,
+      `${API_BASE}/api/favorites/${petId}?user_id=${userId}`,
       { method: "DELETE" },
     ).catch(() => {});
     setFavorites((v) => v.filter((i) => i.pet_id !== petId));
   };
   const removeFollow = async (seller: string) => {
     await fetch(
-      `http://127.0.0.1:3001/api/follows?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`,
+      `${API_BASE}/api/follows?user_id=${userId}&seller_name=${encodeURIComponent(seller)}`,
       { method: "DELETE" },
     ).catch(() => {});
     setFollows((v) => v.filter((x) => x !== seller));
@@ -278,20 +280,20 @@ export function FootprintsPage({ back }: { back: () => void }) {
   const [items, setItems] = useState<any[]>([]);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
-    fetch(`http://127.0.0.1:3001/api/footprints?user_id=${userId}`)
+    fetch(`${API_BASE}/api/footprints?user_id=${userId}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) && setItems(d))
       .catch(() => {});
   }, [userId]);
   const clear = async () => {
-    await fetch(`http://127.0.0.1:3001/api/footprints?user_id=${userId}`, {
+    await fetch(`${API_BASE}/api/footprints?user_id=${userId}`, {
       method: "DELETE",
     });
     setItems([]);
   };
   const remove = async (id: number) => {
     await fetch(
-      `http://127.0.0.1:3001/api/footprints/${id}?user_id=${userId}`,
+      `${API_BASE}/api/footprints/${id}?user_id=${userId}`,
       { method: "DELETE" },
     );
     setItems((v) => v.filter((x) => x.id !== id));
@@ -356,7 +358,7 @@ export function AddressesPage({ back }: { back: () => void }) {
   const [error, setError] = useState("");
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   const load = useCallback(() =>
-    fetch(`http://127.0.0.1:3001/api/addresses?user_id=${userId}`)
+    fetch(`${API_BASE}/api/addresses?user_id=${userId}`)
       .then(async (r) => {
         const data = await r.json();
         if (!r.ok) throw new Error(data.message || "地址加载失败");
@@ -390,7 +392,7 @@ export function AddressesPage({ back }: { back: () => void }) {
     setError("");
     try {
       const response = await fetch(
-        `http://127.0.0.1:3001/api/addresses${editingId ? `/${editingId}` : ""}`,
+        `${API_BASE}/api/addresses${editingId ? `/${editingId}` : ""}`,
         {
           method: editingId ? "PATCH" : "POST",
           headers: { "content-type": "application/json" },
@@ -418,7 +420,7 @@ export function AddressesPage({ back }: { back: () => void }) {
   const remove = async (item: AddressItem) => {
     if (!confirm("删除该地址？")) return;
     const response = await fetch(
-      `http://127.0.0.1:3001/api/addresses/${item.id}?user_id=${userId}`,
+      `${API_BASE}/api/addresses/${item.id}?user_id=${userId}`,
       { method: "DELETE" },
     );
     const result = await response.json();
@@ -477,6 +479,21 @@ export function AddressesPage({ back }: { back: () => void }) {
 
 export function CouponsPage({ back }: { back: () => void }) {
   const [tab, setTab] = useState("available");
+  const [coupons, setCoupons] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/coupons?user_id=${userId}`)
+      .then((response) => response.json())
+      .then((data) => setCoupons(Array.isArray(data) ? data : []))
+      .catch(() => setCoupons([]))
+      .finally(() => setLoading(false));
+  }, [userId]);
+  const visible = coupons.filter((coupon) => {
+    if (tab === "available") return coupon.user_status === "available";
+    if (tab === "used") return coupon.user_status === "used";
+    return coupon.user_status === "expired" || (coupon.expires_at && new Date(coupon.expires_at) < new Date());
+  });
   return (
     <div className="module-page">
       <Header title="我的优惠券" back={back} />
@@ -485,7 +502,7 @@ export function CouponsPage({ back }: { back: () => void }) {
           className={tab === "available" ? "on" : ""}
           onClick={() => setTab("available")}
         >
-          可使用 3
+          可使用 {coupons.filter((coupon) => coupon.user_status === "available").length}
         </button>
         <button
           className={tab === "used" ? "on" : ""}
@@ -500,21 +517,17 @@ export function CouponsPage({ back }: { back: () => void }) {
           已过期
         </button>
       </div>
-      {tab === "available" ? (
+      {loading ? <div className="module-loading">优惠券加载中…</div> : visible.length ? (
         <div className="coupon-list">
-          {[
-            [300, "新人专享"],
-            [500, "宠物到家礼"],
-            [1000, "安心购补贴"],
-          ].map(([n, t]) => (
-            <article key={t}>
-              <strong>¥{n}</strong>
+          {visible.map((coupon) => (
+            <article key={coupon.id}>
+              <strong>¥{coupon.amount}</strong>
               <div>
-                <h3>{t}</h3>
-                <p>满 ¥5000 可用 · 全平台宠物</p>
-                <small>有效期至 2026-12-31</small>
+                <h3>{coupon.title}</h3>
+                <p>满 ¥{coupon.threshold || 0} 可用 · 全平台宠物</p>
+                <small>有效期至 {coupon.expires_at || "长期有效"}</small>
               </div>
-              <button>去使用</button>
+              {tab === "available" && <button onClick={back}>去使用</button>}
             </article>
           ))}
         </div>
@@ -525,7 +538,15 @@ export function CouponsPage({ back }: { back: () => void }) {
   );
 }
 
-export function OrdersPage({ back }: { back: () => void }) {
+export function OrdersPage({
+  back,
+  onService,
+  onRebuy,
+}: {
+  back: () => void;
+  onService?: (order: Order) => void;
+  onRebuy?: (order: Order) => void;
+}) {
   const tabs = [
     "全部",
     "待付款",
@@ -539,11 +560,14 @@ export function OrdersPage({ back }: { back: () => void }) {
   const [tab, setTab] = useState("全部");
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [detail, setDetail] = useState<any>(null);
+  const [actionError, setActionError] = useState("");
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   const cancelOrder = async (order: Order) => {
     if (!order.databaseId || !window.confirm("确认取消这个订单吗？")) return;
     const response = await fetch(
-      `http://127.0.0.1:3001/api/orders/${order.databaseId}/cancel`,
+      `${API_BASE}/api/orders/${order.databaseId}/cancel`,
       {
         method: "PATCH",
         headers: { "content-type": "application/json" },
@@ -560,8 +584,44 @@ export function OrdersPage({ back }: { back: () => void }) {
       ),
     );
   };
+  const openDetail = async (order: Order) => {
+    if (!order.databaseId) return;
+    setActionError("");
+    const response = await fetch(
+      `${API_BASE}/api/orders/${order.databaseId}?user_id=${userId}`,
+    );
+    const result = await response.json();
+    if (!response.ok) return setActionError(result.message || "订单详情加载失败");
+    setDetail(result);
+  };
+  const payOrder = async (order: Order) => {
+    if (!order.databaseId) return;
+    setActionError("");
+    if (!import.meta.env.DEV || !confirm("本地开发环境将执行模拟支付，确认继续吗？")) return;
+    const response = await fetch(`${API_BASE}/api/payments/mock`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ order_id: order.databaseId, channel: "local_test" }),
+    });
+    const result = await response.json();
+    if (!response.ok) return setActionError(result.message || "支付失败");
+    setRefreshKey((value) => value + 1);
+  };
+  const afterSale = async (order: Order) => {
+    if (!order.databaseId) return;
+    const reason = prompt("请填写售后或退款原因");
+    if (!reason) return;
+    const response = await fetch(`${API_BASE}/api/after-sales`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: userId, order_id: order.databaseId, type: "refund", reason, amount: order.price }),
+    });
+    const result = await response.json();
+    if (!response.ok) return setActionError(result.message || "售后申请失败");
+    setRefreshKey((value) => value + 1);
+  };
   useEffect(() => {
-    fetch(`http://127.0.0.1:3001/api/orders?user_id=${userId}`)
+    fetch(`${API_BASE}/api/orders?user_id=${userId}`)
       .then((r) => r.json())
       .then(
         (d) =>
@@ -584,13 +644,15 @@ export function OrdersPage({ back }: { back: () => void }) {
                 logisticsPercent: Number(o.logistics_percent || 0),
                 logisticsStatus: o.logistics_status,
                 trackingNo: o.tracking_no,
+                petId: Number(pet.id || o.pet_id || 0),
+                sellerName: pet.seller_name || "福宠认证宠物馆",
               };
             }),
           ),
       )
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [userId]);
+  }, [userId, refreshKey]);
   const visible =
     tab === "全部" ? orders : orders.filter((o) => o.status === tab);
   return (
@@ -607,6 +669,7 @@ export function OrdersPage({ back }: { back: () => void }) {
           </button>
         ))}
       </div>
+      {actionError && <p className="order-action-error">{actionError}</p>}
       {loading ? (
         <div className="module-loading">订单加载中…</div>
       ) : visible.length ? (
@@ -639,12 +702,19 @@ export function OrdersPage({ back }: { back: () => void }) {
               )}
               <footer>
                 <small>订单号 {o.id}</small>
-                <button>联系商家</button>
+                <button onClick={() => openDetail(o)}>订单详情</button>
+                <button onClick={() => onService?.(o)}>联系商家</button>
+                {o.rawStatus === "pending_payment" && (
+                  <button onClick={() => payOrder(o)}>立即付款</button>
+                )}
+                {["pending_ship", "pending_receive", "completed"].includes(o.rawStatus || "") && (
+                  <button onClick={() => afterSale(o)}>申请售后</button>
+                )}
                 <button
                   onClick={() =>
                     ["pending_payment", "pending_confirm"].includes(o.rawStatus || "")
                       ? cancelOrder(o)
-                      : undefined
+                      : onRebuy?.(o)
                   }
                 >
                   {["pending_payment", "pending_confirm"].includes(o.rawStatus || "")
@@ -661,6 +731,27 @@ export function OrdersPage({ back }: { back: () => void }) {
           title={`暂无${tab}订单`}
           text="每一次相遇，都值得安心守护"
         />
+      )}
+      {detail && (
+        <div className="order-detail-mask" onClick={() => setDetail(null)}>
+          <section className="order-detail-sheet" onClick={(event) => event.stopPropagation()}>
+            <header><h2>订单详情</h2><button onClick={() => setDetail(null)}>×</button></header>
+            <dl>
+              <dt>订单号</dt><dd>{detail.order_no}</dd>
+              <dt>订单状态</dt><dd>{ORDER_STATUS_LABEL[detail.status] || detail.status}</dd>
+              <dt>支付状态</dt><dd>{detail.payment_status === "paid" ? "已付款" : "未付款"}</dd>
+              <dt>收货地址</dt><dd>{(() => { try { const address = JSON.parse(detail.address_snapshot || "{}"); return `${address.name || ""} ${address.phone || ""} ${address.detail || ""}`; } catch { return "地址信息异常"; } })()}</dd>
+              <dt>物流单号</dt><dd>{detail.tracking_no || "待发货"}</dd>
+            </dl>
+            <h3>物流进度</h3>
+            <div className="logistics-timeline">
+              {detail.logistics_events?.length ? detail.logistics_events.map((event: any, index: number) => (
+                <p key={index}><b>{event.progress_percent}%</b><span>{event.note || event.status}<small>{event.created_at}</small></span></p>
+              )) : <p>暂无物流记录</p>}
+            </div>
+            {detail.after_sales?.map((item: any) => <p className="after-sale-state" key={item.id}>售后：{item.reason} · {item.status}</p>)}
+          </section>
+        </div>
       )}
     </div>
   );
@@ -692,7 +783,7 @@ export function MessagesPage({
     setChat((v) => [...v, { id: Date.now(), sender: "user", content: value }]);
     if (!override) setText("");
     try {
-      await fetch("http://127.0.0.1:3001/api/messages", {
+      await fetch(`${API_BASE}/api/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -707,7 +798,7 @@ export function MessagesPage({
         }),
       });
       const r = await fetch(
-        `http://127.0.0.1:3001/api/messages?user_id=${userId}`,
+        `${API_BASE}/api/messages?user_id=${userId}`,
       );
       const messages = await r.json();
       if (Array.isArray(messages)) {
@@ -740,7 +831,7 @@ export function MessagesPage({
     const sid = sessionId || (await send("需要转人工客服"));
     if (!sid) return;
     await fetch(
-      `http://127.0.0.1:3001/api/customer-service/sessions/${sid}/handoff`,
+      `${API_BASE}/api/customer-service/sessions/${sid}/handoff`,
       { method: "POST" },
     ).catch(() => {});
     setHumanPending(true);

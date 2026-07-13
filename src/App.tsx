@@ -74,7 +74,7 @@ const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
 const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
   pet?.thumbnail_url || pet?.image || pet?.highres_url || fallback;
-const API_BASE = "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const jsonCache = new Map<string, { at: number; ttl: number; data: unknown }>();
 const imageMemoryCache = new Set<string>();
 const thumbImage = (url?: string, fallback = petPhoto) =>
@@ -1296,12 +1296,20 @@ function Parent({ title, sex }: { title: string; sex: string }) {
   );
 }
 function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
+  const [summary, setSummary] = useState<any>({ orders: {} });
+  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/users/${userId}/summary`)
+      .then((response) => response.json())
+      .then((data) => data && !data.message && setSummary(data))
+      .catch(() => {});
+  }, [userId]);
   const orders = [
-    ["待付款", "0"],
-    ["待确认", "1"],
-    ["待发货", "0"],
-    ["待收货", "2"],
-    ["售后/退款", "0"],
+    ["待付款", String(summary.orders?.pending_payment || 0)],
+    ["待确认", String(summary.orders?.pending_confirm || 0)],
+    ["待发货", String(summary.orders?.pending_ship || 0)],
+    ["待收货", String(summary.orders?.pending_receive || 0)],
+    ["售后/退款", String(summary.orders?.after_sale || 0)],
   ];
   const services = [
     ["♙", "登录与账号", "登录、手机号与账号安全", "login"],
@@ -1309,7 +1317,7 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
     ["🛒", "购物车", "已加入购物车的宠物", "follows"],
     ["◷", "浏览足迹", "最近看过的宠物", "footprints"],
     ["⌖", "收货地址", "管理配送地址", "addresses"],
-    ["⌑", "优惠券", "3 张可用优惠券", "coupons"],
+    ["⌑", "优惠券", `${summary.coupons || 0} 张可用优惠券`, "coupons"],
     ["♧", "专属客服", "售前咨询与售后服务", "service"],
     ["⚙", "设置", "账号、安全与通知", "settings"],
     ["ⓘ", "关于福宠", "品牌、协议与隐私", "about"],
@@ -1359,19 +1367,19 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
       </section>
       <section className="me-stats">
         <button onClick={() => go("favorites")}>
-          <b>12</b>
+          <b>{summary.favorites || 0}</b>
           <span>收藏宠物</span>
         </button>
         <button onClick={() => go("follows")}>
-          <b>0</b>
+          <b>{readLocalCart().length}</b>
           <span>购物车</span>
         </button>
         <button onClick={() => go("footprints")}>
-          <b>36</b>
+          <b>{summary.footprints || 0}</b>
           <span>浏览足迹</span>
         </button>
         <button onClick={() => go("coupons")}>
-          <b>3</b>
+          <b>{summary.coupons || 0}</b>
           <span>优惠券</span>
         </button>
       </section>
@@ -1526,7 +1534,34 @@ function CareManual({ go }: { go: (p: Page) => void }) {
   );
 }
 
-function SubPage({ title, go }: { title: string; go: (p: Page) => void }) {
+function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about" | "agreement" | "privacy"; go: (p: Page) => void }) {
+  const [orderNotice, setOrderNotice] = useState(
+    () => localStorage.getItem("fuchong-order-notice") !== "off",
+  );
+  const [serviceNotice, setServiceNotice] = useState(
+    () => localStorage.getItem("fuchong-service-notice") !== "off",
+  );
+  const setNotice = (key: string, value: boolean, update: (next: boolean) => void) => {
+    localStorage.setItem(key, value ? "on" : "off");
+    update(value);
+  };
+  const content = {
+    about: [
+      ["平台定位", "福宠是连接宠物家庭、认证商家与专业服务的宠物生活平台。"],
+      ["平台保障", "商品档案、健康记录、订单支付、物流和售后均采用可追溯的数据记录。"],
+      ["联系我们", "可从底部客服入口发起购买、订单、物流、售后或健康咨询。"],
+    ],
+    agreement: [
+      ["账号与使用", "用户应提供真实、合法的信息，不得利用平台发布违法内容或实施欺诈。"],
+      ["交易规则", "订单以服务端生成记录为准；活体宠物交易应充分了解健康、运输及适养责任。"],
+      ["售后处理", "退款、售后和投诉按照订单证据、商家承诺及平台保障规则处理。"],
+    ],
+    privacy: [
+      ["信息收集", "仅为登录、交易、配送、客服和安全目的收集必要的账号、手机号、地址与行为数据。"],
+      ["信息使用", "不会将个人信息用于无关目的；敏感信息只在完成服务所需范围内处理。"],
+      ["用户权利", "用户可以管理地址、登录状态和本地缓存，并可通过客服申请查询或更正资料。"],
+    ],
+  } as const;
   return (
     <div className="subpage">
       <div className="subhead">
@@ -1537,9 +1572,30 @@ function SubPage({ title, go }: { title: string; go: (p: Page) => void }) {
         </div>
         <span />
       </div>
-      <div className="simple-card">
-        该入口已建立，将在对应模块阶段补齐完整交互。
-      </div>
+      {kind === "settings" ? (
+        <section className="settings-card">
+          <label>
+            <span><b>订单状态通知</b><small>付款、发货和物流进度变化</small></span>
+            <input type="checkbox" checked={orderNotice} onChange={(e) => setNotice("fuchong-order-notice", e.target.checked, setOrderNotice)} />
+          </label>
+          <label>
+            <span><b>客服消息通知</b><small>客服回复和人工接入提醒</small></span>
+            <input type="checkbox" checked={serviceNotice} onChange={(e) => setNotice("fuchong-service-notice", e.target.checked, setServiceNotice)} />
+          </label>
+          <button onClick={() => {
+            Object.keys(localStorage).filter((key) => key.startsWith("fuchong-cache:")).forEach((key) => localStorage.removeItem(key));
+            alert("页面缓存已清理，账号和订单数据不受影响");
+          }}>清理页面缓存</button>
+          <button onClick={() => go("login")}>账号与登录安全</button>
+        </section>
+      ) : (
+        <section className="policy-card">
+          {content[kind].map(([heading, text]) => (
+            <article key={heading}><h3>{heading}</h3><p>{text}</p></article>
+          ))}
+          <small>更新日期：2026年7月14日</small>
+        </section>
+      )}
     </div>
   );
 }
@@ -1561,7 +1617,7 @@ export default function App() {
   const [breed, setBreed] = useState<BreedItem>(dogBreeds[0]);
   const [selectedPet, setSelectedPet] = useState<ApiPet | null>(null);
   const [detailReturnPage, setDetailReturnPage] = useState<Page>("breed");
-  const serviceContext: ServiceContext | null = null;
+  const [serviceContext, setServiceContext] = useState<ServiceContext | null>(null);
   const go = (p: Page) => {
     setPage(p);
     scrollTo(0, 0);
@@ -1641,7 +1697,7 @@ export default function App() {
       )}{" "}
       {page === "service" && (
         <P0MessagesPage
-          back={() => go("home")}
+          back={() => go(serviceContext?.source === "order_center" ? "orders" : "home")}
           context={serviceContext}
           onOpenProduct={(petId, productName) =>
             openPet(
@@ -1667,7 +1723,30 @@ export default function App() {
           onLogout={logout}
         />
       )}{" "}
-      {page === "orders" && <OrdersPage back={() => go("me")} />}
+      {page === "orders" && (
+        <OrdersPage
+          back={() => go("me")}
+          onService={(order) => {
+            setServiceContext({
+              productId: order.petId,
+              productName: order.petName,
+              sellerName: order.sellerName,
+              source: "order_center",
+            });
+            go("service");
+          }}
+          onRebuy={(order) =>
+            openPet({
+              id: Number(order.petId || 0),
+              name: order.petName,
+              breed: order.breed,
+              price: order.price,
+              seller_name: order.sellerName,
+              image: order.image,
+            }, undefined, "orders")
+          }
+        />
+      )}
       {page === "favorites" && (
         <P0CollectionPage
           mode="favorites"
@@ -1717,6 +1796,7 @@ export default function App() {
       {page === "coupons" && <CouponsPage back={() => go("me")} />}
       {["settings", "about", "agreement", "privacy"].includes(page) && (
         <SubPage
+          kind={page as "settings" | "about" | "agreement" | "privacy"}
           title={
             (
               {

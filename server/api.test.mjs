@@ -66,6 +66,32 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     headers: { authorization: "Bearer malformed.token" },
   });
   assert.equal(malformed.response.status, 401);
+  const databaseStatus = await request("/api/admin/db/status", {
+    headers: adminHeaders,
+  });
+  assert.equal(databaseStatus.response.status, 200);
+  assert.equal(databaseStatus.payload.integrity[0].integrity_check, "ok");
+  assert.equal(databaseStatus.payload.foreign_key_violations.length, 0);
+
+  const profile = await request("/api/users/1", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1, nickname: "全链路测试用户", avatar: "https://example.com/avatar.webp" }),
+  });
+  assert.equal(profile.response.status, 200);
+  assert.equal(profile.payload.nickname, "全链路测试用户");
+  const bindPhone = await request("/api/users/1/bind-phone", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1, phone: "13700000000" }),
+  });
+  assert.equal(bindPhone.response.status, 200);
+  const linkAuth = await request("/api/users/1/auth", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1, auth_type: "wechat", auth_value: "mock-wechat:test-user" }),
+  });
+  assert.equal(linkAuth.response.status, 200);
 
   const pet = await request("/api/admin/pets", {
     method: "POST",
@@ -81,6 +107,23 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(pet.response.status, 201);
   assert.ok(pet.payload.id);
+  const productEdit = await request(`/api/admin/pets/${pet.payload.id}`, {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ color: "海豹双色", personality: "温顺亲人" }),
+  });
+  assert.equal(productEdit.response.status, 200);
+  assert.equal(productEdit.payload.color, "海豹双色");
+  const inventoryUpdate = await request(
+    `/api/admin/pets/${pet.payload.id}/inventory`,
+    {
+      method: "PATCH",
+      headers: adminHeaders,
+      body: JSON.stringify({ total_stock: 2 }),
+    },
+  );
+  assert.equal(inventoryUpdate.response.status, 200);
+  assert.equal(inventoryUpdate.payload.available_stock, 2);
 
   const address = await request("/api/addresses", {
     method: "POST",
@@ -159,10 +202,58 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const saved = orders.payload.find((item) => item.id === order.payload.id);
   assert.equal(saved.payment_status, "paid");
   assert.equal(saved.logistics_percent, 50);
+  const orderDetail = await request(
+    `/api/orders/${order.payload.id}?user_id=1`,
+  );
+  assert.equal(orderDetail.response.status, 200);
+  assert.equal(orderDetail.payload.logistics_events.length, 1);
+  const userSummary = await request("/api/users/1/summary");
+  assert.equal(userSummary.response.status, 200);
+  assert.equal(userSummary.payload.orders.pending_receive, 1);
+  const afterSale = await request("/api/after-sales", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: 1,
+      order_id: order.payload.id,
+      type: "refund",
+      reason: "自动化售后测试",
+      amount: 6800,
+    }),
+  });
+  assert.equal(afterSale.response.status, 201);
+  const adminAfterSales = await request("/api/admin/after-sales", {
+    headers: adminHeaders,
+  });
+  assert.equal(
+    adminAfterSales.payload.some((item) => item.id === afterSale.payload.id),
+    true,
+  );
 
   const stats = await request("/api/admin/stats", { headers: adminHeaders });
   assert.equal(stats.response.status, 200);
   assert.equal(stats.payload.orders.paid, 1);
+  const resolvedAfterSale = await request(
+    `/api/admin/after-sales/${afterSale.payload.id}`,
+    {
+      method: "PATCH",
+      headers: adminHeaders,
+      body: JSON.stringify({ status: "completed", result: "自动化退款完成" }),
+    },
+  );
+  assert.equal(resolvedAfterSale.response.status, 200);
+  assert.equal(resolvedAfterSale.payload.order.payment_status, "refunded");
+  assert.equal(resolvedAfterSale.payload.order.refund_status, "completed");
+  const refundedDetail = await request(`/api/orders/${order.payload.id}?user_id=1`);
+  assert.equal(refundedDetail.payload.after_sales[0].status, "completed");
+  assert.equal(
+    refundedDetail.payload.payments.some((item) => item.status === "refunded"),
+    true,
+  );
+  const refundedInventory = await request(`/api/admin/pets/${pet.payload.id}/inventory`, {
+    headers: adminHeaders,
+  });
+  assert.equal(refundedInventory.payload[0].locked_stock, 0);
 
   const feishuConfig = await request("/api/admin/feishu/configs", {
     method: "POST",
@@ -199,6 +290,75 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(syncTask.status, "completed");
   assert.equal(syncTask.success, 2);
   assert.equal(syncTask.failed, 0);
+
+  const banner = await request("/api/admin/banners", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ title: "测试 Banner", image: "https://example.com/test.webp" }),
+  });
+  assert.equal(banner.response.status, 201);
+  const bannerPatch = await request(`/api/admin/banners/${banner.payload.id}`, {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ status: "inactive" }),
+  });
+  assert.equal(bannerPatch.response.status, 200);
+  const bannerDelete = await request(`/api/admin/banners/${banner.payload.id}`, {
+    method: "DELETE",
+    headers: adminHeaders,
+  });
+  assert.equal(bannerDelete.response.status, 200);
+
+  const coupon = await request("/api/admin/coupons", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      title: "自动化满减券",
+      amount: 100,
+      threshold: 1000,
+      expires_at: "2030-12-31",
+    }),
+  });
+  assert.equal(coupon.response.status, 201);
+  const issueCoupon = await request(
+    `/api/admin/coupons/${coupon.payload.id}/issue`,
+    {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ user_id: 1 }),
+    },
+  );
+  assert.equal(issueCoupon.response.status, 201);
+  const userCoupons = await request("/api/coupons?user_id=1");
+  assert.equal(
+    userCoupons.payload.some((item) => item.id === coupon.payload.id),
+    true,
+  );
+  const invalidUpload = await request("/api/admin/uploads", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ fileName: "dangerous.exe", data: "AA==" }),
+  });
+  assert.equal(invalidUpload.response.status, 400);
+
+  const disableUser = await request("/api/admin/users/1", {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ status: "disabled" }),
+  });
+  assert.equal(disableUser.response.status, 200);
+  const disabledLogin = await request("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "13700000000", login_type: "phone" }),
+  });
+  assert.equal(disabledLogin.response.status, 403);
+  const enableUser = await request("/api/admin/users/1", {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ status: "active" }),
+  });
+  assert.equal(enableUser.response.status, 200);
 
   const deletedAddress = await request(
     `/api/addresses/${address.payload.id}?user_id=1`,

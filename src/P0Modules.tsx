@@ -42,7 +42,7 @@ type ChatMessage = {
   created_at?: string;
 };
 
-const API_BASE = "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const CART_KEY = "fuchong-cart";
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
@@ -102,6 +102,13 @@ export function P0LoginPage({
   onLogout: () => void;
 }) {
   const [phone, setPhone] = useState("");
+  const [nickname, setNickname] = useState(user?.nickname || "");
+  const [avatar, setAvatar] = useState(user?.avatar || "");
+  const [profileMessage, setProfileMessage] = useState("");
+  useEffect(() => {
+    setNickname(user?.nickname || "");
+    setAvatar(user?.avatar || "");
+  }, [user?.nickname, user?.avatar]);
   const saveLogin = async (payload: Partial<User> & { login_type: string }) => {
     const response = await fetch(`${API_BASE}/api/users/login`, {
       method: "POST",
@@ -126,30 +133,62 @@ export function P0LoginPage({
     return next;
   };
   const bindPhone = async () => {
-    const mockPhone = `138${String(Date.now()).slice(-8)}`;
-    await saveLogin({
-      nickname: user?.nickname || "福宠用户",
-      avatar: user?.avatar,
-      phone: mockPhone,
-      login_type: "mock_wechat_phone",
+    if (!user) return;
+    const authorizedPhone = prompt("请输入微信授权返回的手机号（本地测试）", user.phone || "");
+    if (!authorizedPhone) return;
+    const response = await fetch(`${API_BASE}/api/users/${user.id}/bind-phone`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: Number(user.id), phone: authorizedPhone }),
     });
-    alert(`手机号授权绑定成功：${maskPhone(mockPhone)}`);
+    const result = await response.json();
+    if (!response.ok) return alert(result.message || "手机号绑定失败");
+    const next = { ...user, phone: result.phone };
+    localStorage.setItem("fuchong-user", JSON.stringify(next));
+    onLogin(next);
+    alert(`手机号授权绑定成功：${maskPhone(result.phone)}`);
   };
   const linkAuth = async (type: "wechat" | "phone") => {
     try {
-      await saveLogin({
-        nickname: user?.nickname || (type === "wechat" ? "微信关联用户" : "手机号关联用户"),
-        avatar: user?.avatar,
-        phone:
-          type === "phone"
-            ? user?.phone || `139${String(Date.now()).slice(-8)}`
-            : user?.phone,
-        login_type: type === "phone" ? "phone" : "mock_wechat",
+      if (!user) return;
+      const authValue =
+        type === "phone"
+          ? user.phone
+          : `mock-wechat:${user.id}`;
+      if (!authValue) throw new Error("请先绑定手机号");
+      const response = await fetch(`${API_BASE}/api/users/${user.id}/auth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: Number(user.id),
+          auth_type: type,
+          auth_value: authValue,
+        }),
       });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "关联失败");
+      const next = { ...user, login_method: result.login_method };
+      localStorage.setItem("fuchong-user", JSON.stringify(next));
+      onLogin(next);
       alert(type === "wechat" ? "关联微信成功" : "关联手机号成功");
     } catch (error) {
       alert(`关联失败：${error instanceof Error ? error.message : "请稍后重试"}`);
     }
+  };
+  const saveProfile = async () => {
+    if (!user) return;
+    setProfileMessage("");
+    const response = await fetch(`${API_BASE}/api/users/${user.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: Number(user.id), nickname, avatar }),
+    });
+    const saved = await response.json();
+    if (!response.ok) return setProfileMessage(saved.message || "资料保存失败");
+    const next = { ...user, nickname: saved.nickname, avatar: saved.avatar || user.avatar };
+    localStorage.setItem("fuchong-user", JSON.stringify(next));
+    onLogin(next);
+    setProfileMessage("资料已保存");
   };
   if (user) {
     return (
@@ -160,6 +199,10 @@ export function P0LoginPage({
           <h2>{user.nickname}</h2>
           <small>登录方式：{loginMethodText(user.login_method)}</small>
           <p>{maskPhone(user.phone)}</p>
+          <input value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="昵称" />
+          <input value={avatar} onChange={(event) => setAvatar(event.target.value)} placeholder="头像图片地址" />
+          <button onClick={saveProfile}>保存用户资料</button>
+          {profileMessage && <em>{profileMessage}</em>}
           <button onClick={bindPhone}>微信授权绑定手机号</button>
           <button onClick={() => linkAuth("wechat")}>关联微信</button>
           <button onClick={() => linkAuth("phone")}>关联手机号</button>

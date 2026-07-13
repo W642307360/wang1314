@@ -6,6 +6,7 @@ import {
   existsSync,
   writeFileSync,
   readdirSync,
+  statSync,
 } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,12 +23,20 @@ import {
 const root = dirname(fileURLToPath(import.meta.url));
 mkdirSync(join(root, "data"), { recursive: true });
 mkdirSync(join(root, "uploads"), { recursive: true });
-const db = new DatabaseSync(
-  process.env.DB_PATH || join(root, "data", "fuchong.db"),
-);
+const dbPath = process.env.DB_PATH || join(root, "data", "fuchong.db");
+const backupDir = join(root, "backups");
+mkdirSync(backupDir, { recursive: true });
+const shouldBackup = existsSync(dbPath) && statSync(dbPath).size > 0;
+const db = new DatabaseSync(dbPath);
 db.exec(
   "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;",
 );
+if (shouldBackup) {
+  const day = new Date().toISOString().slice(0, 10);
+  const dailyBackup = join(backupDir, `fuchong-${day}.db`);
+  if (!existsSync(dailyBackup))
+    db.exec(`VACUUM INTO '${dailyBackup.replaceAll("'", "''")}'`);
+}
 db.exec(readFileSync(join(root, "schema.sql"), "utf8"));
 const migrate = () => {
   const dir = join(root, "migrations");
@@ -53,7 +62,10 @@ const migrate = () => {
   }
 };
 migrate();
-const SECRET = process.env.JWT_SECRET || "dev-only-change-in-production";
+const SECRET =
+  process.env.ADMIN_TOKEN_SECRET ||
+  process.env.JWT_SECRET ||
+  "dev-only-change-in-production";
 const hash = (password, salt) => scryptSync(password, salt, 64).toString("hex");
 const initialAdminPassword = process.env.ADMIN_INITIAL_PASSWORD || "123456789";
 const existingAdmin = db
@@ -71,9 +83,8 @@ if (!db.prepare("SELECT id FROM users LIMIT 1").get())
     "13800000000",
   );
 for (const name of ["猫猫馆", "狗狗馆", "鸟类馆", "水族馆", "奇宠馆", "更多馆"])
-  db.prepare(
-    "INSERT OR IGNORE INTO categories(id,name,sort_order) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM categories),?,0)",
-  ).run(name);
+  if (!db.prepare("SELECT id FROM categories WHERE name=? LIMIT 1").get(name))
+    db.prepare("INSERT INTO categories(name,sort_order,status) VALUES(?,0,'active')").run(name);
 const b64 = (x) => Buffer.from(JSON.stringify(x)).toString("base64url");
 const sign = (x) => createHmac("sha256", SECRET).update(x).digest("base64url");
 const tokenFor = (admin) => {
@@ -566,9 +577,18 @@ createServer(async (req, res) => {
     if (path.startsWith("/uploads/") && method === "GET") {
       const file = join(root, "uploads", path.slice(9));
       if (!existsSync(file)) return json(res, 404, { message: "文件不存在" });
+      const contentTypes = {
+        ".mp4": "video/mp4",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+      };
       res.writeHead(200, {
-        "content-type": extname(file) === ".mp4" ? "video/mp4" : "image/jpeg",
+        "content-type":
+          contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
         "access-control-allow-origin": "*",
+        "cache-control": "public,max-age=31536000,immutable",
       });
       return res.end(readFileSync(file));
     }
@@ -612,6 +632,8 @@ createServer(async (req, res) => {
         )
         .get(account, d.phone || "", d.openid || "", d.openid || "");
       if (user) {
+        if (user.status === "disabled")
+          return json(res, 403, { message: "账号已停用，请联系客服" });
         db.prepare(
           "UPDATE users SET account=COALESCE(?,account),phone=COALESCE(?,phone),openid=COALESCE(?,openid),wechat_openid=COALESCE(?,wechat_openid),unionid=COALESCE(?,unionid),nickname=COALESCE(?,nickname),avatar=COALESCE(?,avatar),login_method=COALESCE(?,login_method),last_login_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
         ).run(
@@ -668,6 +690,106 @@ createServer(async (req, res) => {
         login_method: d.login_type || user.login_method || "mock_wechat",
       });
     }
+    const bindPhoneRoute = path.match(/^\/api\/users\/(\d+)\/bind-phone$/);
+    if (bindPhoneRoute && method === "PATCH") {
+      const d = await body(req);
+      const id = Number(bindPhoneRoute[1]);
+      if (Number(d.user_id) !== id)
+        return json(res, 403, { message: "无权修改该用户" });
+      const phone = String(d.phone || "").trim();
+      if (!/^1\d{10}$/.test(phone))
+        return json(res, 400, { message: "请填写正确的11位手机号" });
+      const duplicate = db
+        .prepare("SELECT id FROM users WHERE phone=? AND id<>?")
+        .get(phone, id);
+      if (duplicate) return json(res, 409, { message: "该手机号已绑定其他账号" });
+      db.prepare(
+        "UPDATE users SET phone=?,login_method=COALESCE(login_method,'wechat'),updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(phone, id);
+      db.prepare(
+        "INSERT OR REPLACE INTO user_auth(user_id,auth_type,auth_value) VALUES(?,?,?)",
+      ).run(id, "phone", phone);
+      return json(res, 200, { ok: true, phone });
+    }
+    const userAuthRoute = path.match(/^\/api\/users\/(\d+)\/auth$/);
+    if (userAuthRoute && method === "POST") {
+      const d = await body(req);
+      const id = Number(userAuthRoute[1]);
+      if (Number(d.user_id) !== id)
+        return json(res, 403, { message: "无权修改该用户" });
+      if (!['wechat', 'phone'].includes(d.auth_type) || !String(d.auth_value || "").trim())
+        return json(res, 400, { message: "关联登录参数不完整" });
+      const conflict = db
+        .prepare(
+          "SELECT user_id FROM user_auth WHERE auth_type=? AND auth_value=? AND user_id<>?",
+        )
+        .get(d.auth_type, d.auth_value, id);
+      if (conflict) return json(res, 409, { message: "该登录方式已关联其他账号" });
+      db.prepare(
+        "INSERT OR REPLACE INTO user_auth(user_id,auth_type,auth_value) VALUES(?,?,?)",
+      ).run(id, d.auth_type, String(d.auth_value).trim());
+      db.prepare(
+        "UPDATE users SET login_method=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(d.auth_type, id);
+      return json(res, 200, { ok: true, login_method: d.auth_type });
+    }
+    const userSummaryRoute = path.match(/^\/api\/users\/(\d+)\/summary$/);
+    if (userSummaryRoute && method === "GET") {
+      const id = Number(userSummaryRoute[1]);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(id))
+        return json(res, 404, { message: "用户不存在" });
+      const count = (sql, ...args) => db.prepare(sql).get(...args).count;
+      return json(res, 200, {
+        favorites: count("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?", id),
+        footprints: count("SELECT COUNT(*) AS count FROM footprints WHERE user_id=?", id),
+        coupons: count(
+          "SELECT COUNT(*) AS count FROM user_coupons WHERE user_id=? AND status='available'",
+          id,
+        ),
+        orders: Object.fromEntries(
+          rows(
+            "SELECT status,COUNT(*) AS count FROM orders WHERE user_id=? GROUP BY status",
+            id,
+          ).map((item) => [item.status, item.count]),
+        ),
+        spending: db
+          .prepare(
+            "SELECT COUNT(*) AS order_count,COALESCE(SUM(total_amount),0) AS amount FROM orders WHERE user_id=? AND payment_status='paid'",
+          )
+          .get(id),
+      });
+    }
+    const publicUserRoute = path.match(/^\/api\/users\/(\d+)$/);
+    if (publicUserRoute && method === "GET") {
+      const user = db
+        .prepare(
+          "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users WHERE id=?",
+        )
+        .get(Number(publicUserRoute[1]));
+      return json(res, user ? 200 : 404, user || { message: "用户不存在" });
+    }
+    if (publicUserRoute && method === "PATCH") {
+      const d = await body(req);
+      const id = Number(publicUserRoute[1]);
+      if (Number(d.user_id) !== id)
+        return json(res, 403, { message: "无权修改该用户" });
+      const user = db.prepare("SELECT * FROM users WHERE id=?").get(id);
+      if (!user) return json(res, 404, { message: "用户不存在" });
+      const nickname = String(d.nickname ?? user.nickname).trim();
+      if (!nickname) return json(res, 400, { message: "昵称不能为空" });
+      db.prepare(
+        "UPDATE users SET nickname=?,avatar=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(nickname, d.avatar ?? user.avatar, id);
+      return json(
+        res,
+        200,
+        db
+          .prepare(
+            "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users WHERE id=?",
+          )
+          .get(id),
+      );
+    }
     if (path === "/api/admin/login" && method === "POST") {
       const d = await body(req),
         a = db.prepare("SELECT * FROM admins WHERE username=?").get(d.username);
@@ -697,6 +819,12 @@ createServer(async (req, res) => {
           }
         }),
         migrations: rows("SELECT * FROM schema_migrations ORDER BY id"),
+        integrity: db.prepare("PRAGMA integrity_check").all(),
+        foreign_key_violations: db.prepare("PRAGMA foreign_key_check").all(),
+        backups: existsSync(backupDir)
+          ? readdirSync(backupDir).filter((name) => name.endsWith(".db"))
+          : [],
+        database_path: dbPath,
       });
     }
     if (path === "/api/admin/stats" && method === "GET") {
@@ -737,7 +865,21 @@ createServer(async (req, res) => {
           favorites: scalar("SELECT COUNT(*) AS value FROM favorites"),
           footprints: scalar("SELECT COUNT(*) AS value FROM footprints"),
           messages: scalar("SELECT COUNT(*) AS value FROM messages"),
+          purchase_users: scalar(
+            "SELECT COUNT(DISTINCT user_id) AS value FROM orders",
+          ),
         },
+        trends: rows(
+          `WITH RECURSIVE days(day) AS (
+             SELECT date('now','-6 day') UNION ALL
+             SELECT date(day,'+1 day') FROM days WHERE day<date('now')
+           )
+           SELECT day,
+             (SELECT COUNT(*) FROM orders WHERE date(created_at)=day) AS orders,
+             (SELECT COUNT(DISTINCT user_id) FROM user_login_logs WHERE date(created_at)=day) AS active_users,
+             (SELECT COUNT(*) FROM footprints WHERE date(viewed_at)=day) AS views
+           FROM days ORDER BY day`,
+        ),
         operations: {
           pending_after_sales: scalar(
             "SELECT COUNT(*) AS value FROM after_sales WHERE status<>'completed'",
@@ -938,6 +1080,40 @@ createServer(async (req, res) => {
       logAdmin(admin, req, "update", "pets", Number(petMatch[1]), d);
       return json(res, 200, petDetail(Number(petMatch[1])));
     }
+    const inventoryRoute = path.match(/^\/api\/admin\/pets\/(\d+)\/inventory$/);
+    if (inventoryRoute && method === "GET")
+      return json(
+        res,
+        200,
+        rows(
+          "SELECT * FROM inventory WHERE pet_id=? ORDER BY sku_id IS NOT NULL,id",
+          Number(inventoryRoute[1]),
+        ),
+      );
+    if (inventoryRoute && method === "PATCH") {
+      const d = await body(req);
+      const petId = Number(inventoryRoute[1]);
+      const total = Math.max(0, Number(d.total_stock || 0));
+      const current = db
+        .prepare("SELECT id,locked_stock FROM inventory WHERE pet_id=? AND sku_id IS NULL ORDER BY id LIMIT 1")
+        .get(petId);
+      const locked = Math.max(
+        0,
+        Number(d.locked_stock == null ? current?.locked_stock || 0 : d.locked_stock),
+      );
+      if (locked > total)
+        return json(res, 400, { message: "总库存不能小于已锁定库存" });
+      if (current)
+        db.prepare(
+          "UPDATE inventory SET total_stock=?,locked_stock=?,available_stock=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(total, locked, total - locked, current.id);
+      else
+        db.prepare(
+          "INSERT INTO inventory(pet_id,total_stock,locked_stock,available_stock) VALUES(?,?,?,?)",
+        ).run(petId, total, locked, total - locked);
+      logAdmin(admin, req, "update", "inventory", petId, { total, locked });
+      return json(res, 200, { ok: true, total_stock: total, available_stock: total - locked });
+    }
     if (path === "/api/admin/orders")
       return json(
         res,
@@ -955,12 +1131,23 @@ createServer(async (req, res) => {
         ),
       );
     if (path === "/api/admin/uploads" && method === "POST") {
-      const d = await body(req),
-        safe = `${Date.now()}-${String(d.fileName || "file").replace(/[^a-zA-Z0-9._-]/g, "_")}`,
-        target = join(root, "uploads", safe);
-      writeFileSync(target, Buffer.from(d.data || "", "base64"));
+      const d = await body(req);
+      const cleanName = String(d.fileName || "file").replace(
+        /[^a-zA-Z0-9._-]/g,
+        "_",
+      );
+      const extension = extname(cleanName).toLowerCase();
+      const allowed = new Set([".jpg", ".jpeg", ".png", ".webp", ".mp4"]);
+      if (!allowed.has(extension))
+        return json(res, 400, { message: "仅支持 JPG、PNG、WebP 图片或 MP4 视频" });
+      const buffer = Buffer.from(String(d.data || ""), "base64");
+      if (!buffer.length || buffer.length > 10 * 1024 * 1024)
+        return json(res, 400, { message: "文件不能为空且不能超过 10MB" });
+      const safe = `${Date.now()}-${randomBytes(4).toString("hex")}-${cleanName}`;
+      const target = join(root, "uploads", safe);
+      writeFileSync(target, buffer);
       return json(res, 201, {
-        url: `http://127.0.0.1:3001/uploads/${safe}`,
+        url: `${process.env.PUBLIC_API_BASE || `http://${req.headers.host || "127.0.0.1:3001"}`}/uploads/${safe}`,
         type: d.type || "file",
       });
     }
@@ -981,12 +1168,77 @@ createServer(async (req, res) => {
     const afterSale = path.match(/^\/api\/admin\/after-sales\/(\d+)$/);
     if (afterSale && method === "PATCH") {
       const d = await body(req);
-      db.prepare("UPDATE after_sales SET result=?,status=? WHERE id=?").run(
-        d.result,
-        d.status,
-        Number(afterSale[1]),
-      );
-      return json(res, 200, { ok: true });
+      const id = Number(afterSale[1]);
+      const current = db
+        .prepare("SELECT * FROM after_sales WHERE id=?")
+        .get(id);
+      if (!current) return json(res, 404, { message: "售后申请不存在" });
+      const status = d.status || current.status;
+      if (!["pending", "processing", "rejected", "completed"].includes(status))
+        return json(res, 400, { message: "售后状态不合法" });
+      db.exec("BEGIN");
+      try {
+        db.prepare("UPDATE after_sales SET result=?,status=? WHERE id=?").run(
+          d.result ?? current.result,
+          status,
+          id,
+        );
+        if (status === "processing")
+          db.prepare(
+            "UPDATE orders SET status='after_sale',refund_status='processing',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          ).run(current.order_id);
+        if (status === "rejected")
+          db.prepare(
+            "UPDATE orders SET status='pending_receive',refund_status='rejected',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          ).run(current.order_id);
+        if (status === "completed") {
+          db.prepare(
+            "UPDATE orders SET status='cancelled',payment_status='refunded',refund_status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+          ).run(current.order_id);
+          const refundNo = `REF${current.order_id}${id}`;
+          db.prepare(
+            `INSERT OR IGNORE INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload)
+             VALUES(?,?,?,?,?,?,?)`,
+          ).run(
+            current.order_id,
+            refundNo,
+            "admin_refund",
+            -Math.abs(Number(current.amount || 0)),
+            "refunded",
+            new Date().toISOString(),
+            JSON.stringify({ after_sale_id: id, result: d.result || "" }),
+          );
+          const shipping = db
+            .prepare("SELECT status FROM logistics WHERE order_id=?")
+            .get(current.order_id);
+          for (const item of rows(
+            "SELECT pet_id,quantity FROM order_items WHERE order_id=?",
+            current.order_id,
+          )) {
+            const canRestock = !shipping || ["pending", "packed"].includes(shipping.status);
+            db.prepare(
+              `UPDATE inventory
+               SET available_stock=available_stock+?,
+                   locked_stock=MAX(locked_stock-?,0),
+                   updated_at=CURRENT_TIMESTAMP
+               WHERE id=(SELECT id FROM inventory WHERE pet_id=? ORDER BY sku_id IS NULL,id LIMIT 1)`,
+            ).run(canRestock ? item.quantity || 1 : 0, item.quantity || 1, item.pet_id);
+          }
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      logAdmin(admin, req, "resolve", "after_sales", id, {
+        status,
+        order_id: current.order_id,
+      });
+      return json(res, 200, {
+        ok: true,
+        status,
+        order: db.prepare("SELECT * FROM orders WHERE id=?").get(current.order_id),
+      });
     }
     const logistics = path.match(/^\/api\/admin\/orders\/(\d+)\/logistics$/);
     if (logistics && method === "PUT") {
@@ -1045,9 +1297,16 @@ createServer(async (req, res) => {
           "UPDATE orders SET status='pending_receive',updated_at=CURRENT_TIMESTAMP WHERE id=?",
         ).run(orderId);
       if (d.status === "delivered")
-        db.prepare(
-          "UPDATE orders SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        ).run(orderId);
+        db.exec(`
+          UPDATE orders SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=${orderId};
+          UPDATE inventory
+          SET locked_stock=MAX(
+                locked_stock-COALESCE((SELECT SUM(oi.quantity) FROM order_items oi WHERE oi.order_id=${orderId} AND oi.pet_id=inventory.pet_id),0),
+                0
+              ),
+              updated_at=CURRENT_TIMESTAMP
+          WHERE pet_id IN (SELECT pet_id FROM order_items WHERE order_id=${orderId});
+        `);
       logAdmin(admin, req, "update", "logistics", logisticsRow.id, {
         order_id: orderId,
         status: d.status || "pending",
@@ -1272,13 +1531,42 @@ createServer(async (req, res) => {
         throw e;
       }
     }
+    const userOrderRoute = path.match(/^\/api\/orders\/(\d+)$/);
+    if (userOrderRoute && method === "GET") {
+      const userId = Number(url.searchParams.get("user_id") || 0);
+      const order = db
+        .prepare(
+          `SELECT o.*,l.company AS logistics_company,l.tracking_no,l.status AS logistics_status,l.progress AS logistics_progress
+           FROM orders o LEFT JOIN logistics l ON l.order_id=o.id
+           WHERE o.id=? AND o.user_id=?`,
+        )
+        .get(Number(userOrderRoute[1]), userId);
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      return json(res, 200, {
+        ...order,
+        items: rows("SELECT * FROM order_items WHERE order_id=?", order.id),
+        payments: rows(
+          "SELECT id,payment_no,channel,amount,status,paid_at,created_at FROM payments WHERE order_id=? ORDER BY id DESC",
+          order.id,
+        ),
+        logistics_events: rows(
+          "SELECT progress_percent,status,note,created_at FROM logistics_events WHERE order_id=? ORDER BY id",
+          order.id,
+        ),
+        after_sales: rows(
+          "SELECT id,type,reason,amount,result,status,created_at FROM after_sales WHERE order_id=? AND user_id=? ORDER BY id DESC",
+          order.id,
+          userId,
+        ),
+      });
+    }
     if (path === "/api/orders" && method === "GET") {
       const userId = Number(url.searchParams.get("user_id") || 1);
       return json(
         res,
         200,
         rows(
-          `SELECT o.*,oi.pet_snapshot,oi.price,
+          `SELECT o.*,oi.pet_id,oi.pet_snapshot,oi.price,
                   l.company AS logistics_company,l.tracking_no,l.status AS logistics_status,l.progress AS logistics_progress,
                   COALESCE((SELECT progress_percent FROM logistics_events le WHERE le.order_id=o.id ORDER BY le.id DESC LIMIT 1),0) AS logistics_percent
            FROM orders o
@@ -1288,6 +1576,64 @@ createServer(async (req, res) => {
           userId,
         ),
       );
+    }
+    if (path === "/api/after-sales" && method === "POST") {
+      const d = await body(req);
+      const order = db
+        .prepare("SELECT * FROM orders WHERE id=? AND user_id=?")
+        .get(Number(d.order_id), Number(d.user_id));
+      if (!order) return json(res, 404, { message: "订单不存在" });
+      if (order.payment_status !== "paid")
+        return json(res, 409, { message: "未付款订单无需申请售后" });
+      const existing = db
+        .prepare(
+          "SELECT id FROM after_sales WHERE order_id=? AND user_id=? AND status IN ('pending','processing') LIMIT 1",
+        )
+        .get(order.id, order.user_id);
+      if (existing)
+        return json(res, 409, { message: "该订单已有处理中售后申请" });
+      const reason = String(d.reason || "").trim();
+      if (!reason) return json(res, 400, { message: "请填写售后原因" });
+      const result = db
+        .prepare(
+          "INSERT INTO after_sales(order_id,user_id,type,reason,amount,status) VALUES(?,?,?,?,?,?)",
+        )
+        .run(
+          order.id,
+          order.user_id,
+          d.type || "refund",
+          reason,
+          Math.min(Number(d.amount || order.total_amount), order.total_amount),
+          "pending",
+        );
+      db.prepare(
+        "UPDATE orders SET status='after_sale',refund_status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(order.id);
+      return json(res, 201, { id: result.lastInsertRowid, status: "pending" });
+    }
+    if (path === "/api/complaints" && method === "POST") {
+      const d = await body(req);
+      const order = d.order_id
+        ? db
+            .prepare("SELECT id FROM orders WHERE id=? AND user_id=?")
+            .get(Number(d.order_id), Number(d.user_id))
+        : null;
+      if (d.order_id && !order)
+        return json(res, 404, { message: "关联订单不存在" });
+      if (!String(d.title || "").trim() || !String(d.content || "").trim())
+        return json(res, 400, { message: "请填写投诉标题和内容" });
+      const result = db
+        .prepare(
+          "INSERT INTO complaints(user_id,order_id,title,content,status) VALUES(?,?,?,?,?)",
+        )
+        .run(
+          Number(d.user_id),
+          d.order_id || null,
+          String(d.title).trim(),
+          String(d.content).trim(),
+          "pending",
+        );
+      return json(res, 201, { id: result.lastInsertRowid, status: "pending" });
     }
     if (path === "/api/messages" && method === "GET") {
       const sessionId = url.searchParams.get("session_id");
@@ -1581,12 +1927,21 @@ createServer(async (req, res) => {
       if (!result.changes) return json(res, 404, { message: "地址不存在" });
       return json(res, 200, { ok: true });
     }
-    if (path === "/api/coupons" && method === "GET")
+    if (path === "/api/coupons" && method === "GET") {
+      const userId = Number(url.searchParams.get("user_id") || 0);
       return json(
         res,
         200,
-        rows("SELECT * FROM coupons WHERE status=?", "active"),
+        userId
+          ? rows(
+              `SELECT c.*,uc.status AS user_status
+               FROM user_coupons uc JOIN coupons c ON c.id=uc.coupon_id
+               WHERE uc.user_id=? ORDER BY c.id DESC`,
+              userId,
+            )
+          : rows("SELECT * FROM coupons WHERE status=?", "active"),
       );
+    }
     const skuRoute = path.match(/^\/api\/admin\/pets\/(\d+)\/skus$/);
     if (skuRoute && method === "GET")
       return json(
@@ -1644,6 +1999,12 @@ createServer(async (req, res) => {
       if (!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))
         return json(res, 404, { message: "宠物不存在，不能关联媒体" });
       if (!d.url) return json(res, 400, { message: "媒体地址不能为空" });
+      const mediaTable = mediaRoute[2] === "images" ? "pet_images" : "pet_videos";
+      const existingMedia = db
+        .prepare(`SELECT id FROM ${mediaTable} WHERE pet_id=? AND url=? LIMIT 1`)
+        .get(petId, d.url);
+      if (existingMedia)
+        return json(res, 200, { id: existingMedia.id, deduplicated: true });
       if (mediaRoute[2] === "images") {
         const r = db
           .prepare(
@@ -1692,6 +2053,22 @@ createServer(async (req, res) => {
       const orderId = Number(orderRoute[1]);
       const existing = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
       if (!existing) return json(res, 404, { message: "订单不存在" });
+      const allowedStatuses = [
+        "pending_payment",
+        "pending_confirm",
+        "pending_ship",
+        "pending_receive",
+        "completed",
+        "cancelled",
+        "after_sale",
+      ];
+      if (d.status && !allowedStatuses.includes(d.status))
+        return json(res, 400, { message: "订单状态不合法" });
+      const nextPaymentStatus = d.payment_status || existing.payment_status;
+      if (["pending_ship", "pending_receive", "completed"].includes(d.status) && nextPaymentStatus !== "paid")
+        return json(res, 409, { message: "未付款订单不能进入发货或完成状态" });
+      if (existing.payment_status === "paid" && d.payment_status === "unpaid")
+        return json(res, 409, { message: "已付款订单不能改回未付款" });
       db.exec("BEGIN");
       try {
         if (d.payment_status === "paid" && existing.payment_status !== "paid") {
@@ -1750,12 +2127,33 @@ createServer(async (req, res) => {
           : { message: "用户不存在" },
       );
     }
+    if (userRoute && method === "PATCH") {
+      const d = await body(req);
+      if (!['active', 'disabled', 'guest'].includes(d.status))
+        return json(res, 400, { message: "用户状态不合法" });
+      db.prepare(
+        "UPDATE users SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(d.status, Number(userRoute[1]));
+      logAdmin(admin, req, "update_status", "users", userRoute[1], d);
+      return json(res, 200, { ok: true, status: d.status });
+    }
     for (const resource of ["banners", "categories"]) {
       if (path === `/api/admin/${resource}` && method === "GET")
         return json(
           res,
           200,
-          rows(`SELECT * FROM ${resource} ORDER BY id DESC`),
+          resource === "categories"
+            ? rows(
+                `SELECT * FROM categories
+                 WHERE name NOT IN ('猫猫馆','狗狗馆','鸟类馆','水族馆','奇宠馆','更多馆')
+                    OR id IN (
+                      SELECT MIN(id) FROM categories
+                      WHERE name IN ('猫猫馆','狗狗馆','鸟类馆','水族馆','奇宠馆','更多馆')
+                      GROUP BY name
+                    )
+                 ORDER BY id DESC`,
+              )
+            : rows(`SELECT * FROM ${resource} ORDER BY id DESC`),
         );
       if (path === `/api/admin/${resource}` && method === "POST") {
         const d = await body(req);
@@ -1786,6 +2184,99 @@ createServer(async (req, res) => {
           );
         return json(res, 201, { id: r.lastInsertRowid });
       }
+    }
+    const contentItem = path.match(/^\/api\/admin\/(banners|categories)\/(\d+)$/);
+    if (contentItem && method === "PATCH") {
+      const [, resource, rawId] = contentItem;
+      const d = await body(req);
+      const allowed =
+        resource === "banners"
+          ? ["title", "image", "link", "sort_order", "status"]
+          : ["name", "parent_id", "image", "sort_order", "status"];
+      const entries = Object.entries(d).filter(([key]) => allowed.includes(key));
+      if (!entries.length) return json(res, 400, { message: "没有可更新字段" });
+      db.prepare(
+        `UPDATE ${resource} SET ${entries.map(([key]) => `${key}=?`).join(",")} WHERE id=?`,
+      ).run(...entries.map(([, value]) => value), Number(rawId));
+      logAdmin(admin, req, "update", resource, rawId, d);
+      return json(res, 200, { ok: true });
+    }
+    if (contentItem && method === "DELETE") {
+      const [, resource, rawId] = contentItem;
+      if (resource === "categories") {
+        const used = db
+          .prepare("SELECT COUNT(*) AS count FROM pets WHERE category_id=?")
+          .get(Number(rawId));
+        if (used.count)
+          db.prepare("UPDATE categories SET status='inactive' WHERE id=?").run(
+            Number(rawId),
+          );
+        else db.prepare("DELETE FROM categories WHERE id=?").run(Number(rawId));
+      } else db.prepare("DELETE FROM banners WHERE id=?").run(Number(rawId));
+      logAdmin(admin, req, "delete", resource, rawId);
+      return json(res, 200, { ok: true });
+    }
+    if (path === "/api/admin/coupons" && method === "GET")
+      return json(
+        res,
+        200,
+        rows(
+          `SELECT c.*,
+                  (SELECT COUNT(*) FROM user_coupons uc WHERE uc.coupon_id=c.id) AS issued_count,
+                  (SELECT COUNT(*) FROM user_coupons uc WHERE uc.coupon_id=c.id AND uc.status='used') AS used_count
+           FROM coupons c ORDER BY c.id DESC`,
+        ),
+      );
+    if (path === "/api/admin/coupons" && method === "POST") {
+      const d = await body(req);
+      if (!String(d.title || "").trim() || Number(d.amount) <= 0)
+        return json(res, 400, { message: "请填写优惠券名称和有效面额" });
+      const result = db
+        .prepare(
+          "INSERT INTO coupons(title,amount,threshold,expires_at,status) VALUES(?,?,?,?,?)",
+        )
+        .run(
+          String(d.title).trim(),
+          Number(d.amount),
+          Math.max(0, Number(d.threshold || 0)),
+          d.expires_at || null,
+          d.status || "active",
+        );
+      logAdmin(admin, req, "create", "coupons", result.lastInsertRowid, d);
+      return json(res, 201, { id: result.lastInsertRowid });
+    }
+    const couponRoute = path.match(/^\/api\/admin\/coupons\/(\d+)$/);
+    if (couponRoute && method === "PATCH") {
+      const d = await body(req);
+      const allowed = ["title", "amount", "threshold", "expires_at", "status"];
+      const entries = Object.entries(d).filter(([key]) => allowed.includes(key));
+      if (!entries.length) return json(res, 400, { message: "没有可更新字段" });
+      db.prepare(
+        `UPDATE coupons SET ${entries.map(([key]) => `${key}=?`).join(",")} WHERE id=?`,
+      ).run(...entries.map(([, value]) => value), Number(couponRoute[1]));
+      logAdmin(admin, req, "update", "coupons", couponRoute[1], d);
+      return json(res, 200, { ok: true });
+    }
+    const issueCouponRoute = path.match(/^\/api\/admin\/coupons\/(\d+)\/issue$/);
+    if (issueCouponRoute && method === "POST") {
+      const d = await body(req);
+      const couponId = Number(issueCouponRoute[1]);
+      const coupon = db
+        .prepare("SELECT id FROM coupons WHERE id=? AND status='active'")
+        .get(couponId);
+      const user = db.prepare("SELECT id FROM users WHERE id=?").get(Number(d.user_id));
+      if (!coupon || !user)
+        return json(res, 404, { message: "优惠券或用户不存在/不可用" });
+      const existing = db
+        .prepare("SELECT id FROM user_coupons WHERE user_id=? AND coupon_id=?")
+        .get(user.id, coupon.id);
+      if (existing)
+        return json(res, 200, { id: existing.id, duplicated: true });
+      const result = db
+        .prepare("INSERT INTO user_coupons(user_id,coupon_id,status) VALUES(?,?,?)")
+        .run(user.id, coupon.id, "available");
+      logAdmin(admin, req, "issue", "coupons", couponId, { user_id: user.id });
+      return json(res, 201, { id: result.lastInsertRowid, duplicated: false });
     }
     if (path === "/api/admin/feishu/configs" && method === "GET")
       return json(

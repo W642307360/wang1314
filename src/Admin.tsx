@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useState } from "react";
 import { halls } from "./catalog";
 import "./Admin.css";
 import "./AdminLogin.css";
 import "./Feishu.css";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 
 type AdminTab =
   | "dashboard"
@@ -66,7 +67,7 @@ export default function AdminApp() {
       setChecking(false);
       return;
     }
-    fetch("http://127.0.0.1:3001/api/admin/stats", {
+    fetch(`${API_BASE}/api/admin/stats`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then((response) => {
@@ -106,7 +107,7 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
     e.preventDefault();
     setError("");
     try {
-      const r = await fetch("http://127.0.0.1:3001/api/admin/login", {
+      const r = await fetch(`${API_BASE}/api/admin/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -149,12 +150,14 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
 function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
   const [showForm, setShowForm] = useState(false);
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [form, setForm] = useState<ProductForm>(emptyProduct);
+  const [formError, setFormError] = useState("");
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/pets", {
+    fetch(`${API_BASE}/api/admin/pets`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then(async (r) => {
@@ -171,8 +174,75 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
   );
   const update = (key: keyof ProductForm, value: string) =>
     setForm((v) => ({ ...v, [key]: value }));
+  const uploadMedia = async (file: File, key: "images" | "videos") => {
+    setFormError("");
+    if (file.size > 10 * 1024 * 1024)
+      return setFormError("单个文件不能超过 10MB");
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("文件读取失败"));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch(`${API_BASE}/api/admin/uploads`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        fileName: file.name,
+        type: file.type,
+        data: dataUrl.split(",")[1] || "",
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) return setFormError(result.message || "文件上传失败");
+    setForm((current) => ({
+      ...current,
+      [key]: [current[key], result.url].filter(Boolean).join(","),
+    }));
+  };
+  const openNewProduct = () => {
+    setEditingProductId(null);
+    setForm(emptyProduct);
+    setFormError("");
+    setShowForm(true);
+  };
+  const openEditProduct = async (product: any) => {
+    setFormError("");
+    const headers = { authorization: `Bearer ${token}` };
+    const [detailResponse, inventoryResponse] = await Promise.all([
+      fetch(`${API_BASE}/api/admin/pets/${product.id}`, { headers }),
+      fetch(`${API_BASE}/api/admin/pets/${product.id}/inventory`, { headers }),
+    ]);
+    const detail = await detailResponse.json();
+    const inventory = await inventoryResponse.json();
+    if (!detailResponse.ok) return setProductsError(detail.message || "商品详情加载失败");
+    setEditingProductId(product.id);
+    setForm({
+      name: detail.name || "",
+      hall: halls[Math.max(0, Number(detail.category_id || 1) - 1)]?.key || "cats",
+      breed: detail.breed || "",
+      price: String(detail.price || ""),
+      gender: detail.gender || "female",
+      age: String(detail.age_months || ""),
+      color: detail.color || "",
+      bodyType: detail.body_type || "",
+      personality: detail.personality || "",
+      health: detail.health_status || "",
+      vaccine: detail.vaccine_record || "",
+      father: detail.father_info || "",
+      mother: detail.mother_info || "",
+      growth: detail.growth_profile || "1个月,2个月,3个月,6个月,1岁,2岁",
+      images: Array.isArray(detail.images) ? detail.images.map((item: any) => item.url).join(",") : "",
+      videos: Array.isArray(detail.videos) ? detail.videos.map((item: any) => item.url).join(",") : "",
+      seller: detail.seller_name || "",
+      stock: String(Array.isArray(inventory) ? inventory.reduce((sum: number, item: any) => sum + Number(item.total_stock || 0), 0) : 0),
+      status: detail.status || "draft",
+    });
+    setShowForm(true);
+  };
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError("");
     const payload = {
       name: form.name,
       category_id: halls.findIndex((h) => h.key === form.hall) + 1,
@@ -190,20 +260,45 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
       description: "管理员后台同步商品",
       seller_name: form.seller,
       status: form.status,
+      stock: Number(form.stock || 0),
     };
-    const r = await fetch("http://127.0.0.1:3001/api/admin/pets", {
-      method: "POST",
+    const r = await fetch(
+      `${API_BASE}/api/admin/pets${editingProductId ? `/${editingProductId}` : ""}`,
+      {
+      method: editingProductId ? "PATCH" : "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
-    });
+      },
+    );
     if (r.ok) {
       const saved = await r.json();
-      setProducts((v) => [saved, ...v]);
+      const productId = Number(saved.id || editingProductId);
+      if (editingProductId) {
+        await fetch(`${API_BASE}/api/admin/pets/${productId}/inventory`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify({ total_stock: Number(form.stock || 0) }),
+        });
+      }
+      const mediaHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
+      for (const url of form.images.split(",").map((item) => item.trim()).filter(Boolean))
+        await fetch(`${API_BASE}/api/admin/pets/${productId}/images`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url }) });
+      for (const url of form.videos.split(",").map((item) => item.trim()).filter(Boolean))
+        await fetch(`${API_BASE}/api/admin/pets/${productId}/videos`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url }) });
+      setProducts((v) =>
+        editingProductId
+          ? v.map((item) => (item.id === productId ? { ...item, ...saved } : item))
+          : [saved, ...v],
+      );
       setShowForm(false);
       setForm(emptyProduct);
+      setEditingProductId(null);
+    } else {
+      const error = await r.json().catch(() => ({}));
+      setFormError(error.message || "商品保存失败");
     }
   };
   return (
@@ -212,7 +307,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         <div className="admin-brand">
           <b>福</b>
           <span>
-            福宠运营后台<small>FUCHONG ADMIN</small>
+            福宠运营后台<small>运营管理中心</small>
           </span>
         </div>
         {(
@@ -242,7 +337,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
       <main>
         <header>
           <div>
-            <small>2026年7月9日 · 星期四</small>
+            <small>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "full" }).format(new Date())}</small>
             <h1>
               {
                 {
@@ -268,7 +363,8 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         {tab === "products" && (
           productsLoading ? <div className="admin-state">商品数据加载中…</div> : productsError ? <div className="admin-state error">{productsError}</div> : <Products
               products={products}
-              open={() => setShowForm(true)}
+              open={openNewProduct}
+              edit={openEditProduct}
               token={token}
               update={(id, patch) =>
                 setProducts((v) =>
@@ -276,7 +372,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                 )
               }
               remove={async (id) => {
-                await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
+                await fetch(`${API_BASE}/api/admin/pets/${id}`, {
                   method: "DELETE",
                   headers: { authorization: `Bearer ${token}` },
                 });
@@ -297,8 +393,8 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
           <form onSubmit={save}>
             <header>
               <div>
-                <small>PRODUCT PROFILE</small>
-                <h2>新增宠物商品</h2>
+                <small>宠物商品资料</small>
+                <h2>{editingProductId ? "编辑宠物商品" : "新增宠物商品"}</h2>
               </div>
               <button type="button" onClick={() => setShowForm(false)}>
                 ×
@@ -401,11 +497,19 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                 value={form.images}
                 set={(v) => update("images", v)}
               />
+              <label>
+                上传商品图片
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => e.target.files?.[0] && uploadMedia(e.target.files[0], "images")} />
+              </label>
               <Field
                 label="视频地址（逗号分隔）"
                 value={form.videos}
                 set={(v) => update("videos", v)}
               />
+              <label>
+                上传商品视频
+                <input type="file" accept="video/mp4" onChange={(e) => e.target.files?.[0] && uploadMedia(e.target.files[0], "videos")} />
+              </label>
               <Field
                 label="所属商家"
                 value={form.seller}
@@ -424,9 +528,12 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                 >
                   <option value="draft">保存草稿</option>
                   <option value="published">立即上架</option>
+                  <option value="offline">下架</option>
+                  <option value="sold">已售出</option>
                 </select>
               </label>
             </div>
+            {formError && <p className="admin-form-error">{formError}</p>}
             <footer>
               <button type="button" onClick={() => setShowForm(false)}>
                 取消
@@ -458,7 +565,7 @@ function Field({
 function Dashboard({ token }: { token: string }) {
   const [stats, setStats] = useState<any>(null);
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/stats", {
+    fetch(`${API_BASE}/api/admin/stats`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -470,6 +577,8 @@ function Dashboard({ token }: { token: string }) {
     ["成交金额", `¥${stats?.orders?.revenue ?? 0}`, "真实支付订单"],
     ["用户总数", stats?.users?.total ?? "—", `访客 ${stats?.users?.visitors ?? 0}`],
   ];
+  const trend = Array.isArray(stats?.trends) ? stats.trends : [];
+  const maxTrend = Math.max(1, ...trend.map((item: any) => Number(item.orders || 0)));
   return (
     <>
       <section className="admin-stats">
@@ -485,10 +594,11 @@ function Dashboard({ token }: { token: string }) {
         <article>
           <h3>订单趋势</h3>
           <div className="chart">
-            {[35, 52, 42, 68, 62, 85, 76, 92, 70, 95, 88, 100].map((x, i) => (
-              <i style={{ height: `${x}%` }} key={i} />
-            ))}
+            {trend.length ? trend.map((item: any) => (
+              <i title={`${item.day}：${item.orders}单`} style={{ height: `${Math.max(8, (Number(item.orders || 0) / maxTrend) * 100)}%` }} key={item.day} />
+            )) : <span>暂无订单趋势数据</span>}
           </div>
+          <p className="chart-summary">7日活跃用户 {trend.reduce((sum: number, item: any) => sum + Number(item.active_users || 0), 0)} · 浏览 {trend.reduce((sum: number, item: any) => sum + Number(item.views || 0), 0)}</p>
         </article>
         <article>
           <h3>待处理事项</h3>
@@ -511,12 +621,14 @@ function Dashboard({ token }: { token: string }) {
 function Products({
   products,
   open,
+  edit,
   remove,
   update,
   token,
 }: {
   products: any[];
   open: () => void;
+  edit: (product: any) => void;
   remove: (id: number) => void;
   update: (id: number, patch: any) => void;
   token: string;
@@ -527,22 +639,18 @@ function Products({
     "content-type": "application/json",
   };
   const patch = async (id: number, data: any) => {
-    const r = await fetch(`http://127.0.0.1:3001/api/admin/pets/${id}`, {
+    const r = await fetch(`${API_BASE}/api/admin/pets/${id}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify(data),
     });
     if (r.ok) update(id, data);
   };
-  const edit = async (p: any) => {
-    const price = prompt("修改商品价格", String(p.price));
-    if (price) await patch(p.id, { price: Number(price) });
-  };
   const sku = async (p: any) => {
     const name = prompt("SKU 名称", "标准档案");
     const stock = prompt("库存数量", "1");
     if (name && stock)
-      await fetch(`http://127.0.0.1:3001/api/admin/pets/${p.id}/skus`, {
+      await fetch(`${API_BASE}/api/admin/pets/${p.id}/skus`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -555,7 +663,7 @@ function Products({
   const media = async (p: any, type: "images" | "videos") => {
     const url = prompt(type === "images" ? "图片地址" : "视频地址");
     if (url)
-      await fetch(`http://127.0.0.1:3001/api/admin/pets/${p.id}/${type}`, {
+      await fetch(`${API_BASE}/api/admin/pets/${p.id}/${type}`, {
         method: "POST",
         headers,
         body: JSON.stringify({ url }),
@@ -571,7 +679,7 @@ function Products({
     try {
       const list = JSON.parse(text);
       for (const item of list) {
-        await fetch("http://127.0.0.1:3001/api/admin/pets", {
+        await fetch(`${API_BASE}/api/admin/pets`, {
           method: "POST",
           headers,
           body: JSON.stringify(item),
@@ -629,7 +737,7 @@ function Products({
                 <span>{p.status}</span>
               </td>
               <td>
-                <button onClick={() => edit(p)}>编辑价格</button>
+                <button onClick={() => edit(p)}>编辑资料</button>
                 <button
                   onClick={() =>
                     patch(p.id, {
@@ -704,7 +812,7 @@ function Transactions({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/payments", {
+    fetch(`${API_BASE}/api/admin/payments`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then(async (response) => {
@@ -745,7 +853,6 @@ function Transactions({ token }: { token: string }) {
     </>
   );
 }
-
 function UsersManager({ token }: { token: string }) {
   const [users, setUsers] = useState<any[]>([]),
     [detail, setDetail] = useState<any>(null);
@@ -754,16 +861,32 @@ function UsersManager({ token }: { token: string }) {
     [token],
   );
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/users", { headers })
+    fetch(`${API_BASE}/api/admin/users`, { headers })
       .then((r) => r.json())
       .then(setUsers);
   }, [headers]);
   const open = async (id: number) =>
     setDetail(
-      await fetch(`http://127.0.0.1:3001/api/admin/users/${id}`, {
+      await fetch(`${API_BASE}/api/admin/users/${id}`, {
         headers,
       }).then((r) => r.json()),
     );
+  const toggleStatus = async (user: any) => {
+    const status = user.status === "disabled" ? "active" : "disabled";
+    const response = await fetch(
+      `${API_BASE}/api/admin/users/${user.id}`,
+      {
+        method: "PATCH",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ status }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) return alert(result.message || "用户状态更新失败");
+    setUsers((current) =>
+      current.map((item) => (item.id === user.id ? { ...item, status } : item)),
+    );
+  };
   return (
     <section className="admin-table">
       <div>
@@ -789,6 +912,7 @@ function UsersManager({ token }: { token: string }) {
               <td>{u.created_at}</td>
               <td>
                 <button onClick={() => open(u.id)}>查看详情</button>
+                <button onClick={() => toggleStatus(u)}>{u.status === "disabled" ? "启用" : "停用"}</button>
               </td>
             </tr>
           ))}
@@ -815,7 +939,7 @@ function OrdersManager({ token }: { token: string }) {
     [token],
   );
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
+    fetch(`${API_BASE}/api/admin/orders`, { headers })
       .then((r) => r.json())
       .then(setOrders);
   }, [headers]);
@@ -823,16 +947,18 @@ function OrdersManager({ token }: { token: string }) {
     id: number,
     patch: { status?: string; payment_status?: string },
   ) => {
-    await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
+    const response = await fetch(`${API_BASE}/api/admin/orders/${id}`, {
       method: "PATCH",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify(patch),
     });
+    const result = await response.json();
+    if (!response.ok) return alert(result.message || "订单更新失败");
     setOrders((v) => v.map((o) => (o.id === id ? { ...o, ...patch } : o)));
   };
   const open = async (id: number) =>
     setDetail(
-      await fetch(`http://127.0.0.1:3001/api/admin/orders/${id}`, {
+      await fetch(`${API_BASE}/api/admin/orders/${id}`, {
         headers,
       }).then((r) => r.json()),
     );
@@ -928,13 +1054,13 @@ function Logistics({ token }: { token: string }) {
     [token],
   );
   useEffect(() => {
-    fetch("http://127.0.0.1:3001/api/admin/orders", { headers })
+    fetch(`${API_BASE}/api/admin/orders`, { headers })
       .then((r) => r.json())
       .then(setOrders);
   }, [headers]);
   const update = async (id: number) => {
     const response = await fetch(
-      `http://127.0.0.1:3001/api/admin/orders/${id}/logistics`,
+      `${API_BASE}/api/admin/orders/${id}/logistics`,
       {
       method: "PUT",
       headers,
@@ -1018,7 +1144,7 @@ function AfterSales({ token }: { token: string }) {
     () =>
       Promise.all(
         ["complaints", "after-sales"].map((x) =>
-          fetch(`http://127.0.0.1:3001/api/admin/${x}`, { headers }).then((r) =>
+          fetch(`${API_BASE}/api/admin/${x}`, { headers }).then((r) =>
             r.json(),
           ),
         ),
@@ -1033,22 +1159,24 @@ function AfterSales({ token }: { token: string }) {
   useEffect(() => {
     void load();
   }, [load]);
-  const resolve = async (x: any) => {
+  const resolve = async (x: any, status: "processing" | "rejected" | "completed") => {
     const result = prompt(
       x.kind === "投诉" ? "回复客户" : "填写处理结果",
-      "已处理完成",
+      status === "processing" ? "已受理，正在核实" : status === "rejected" ? "申请资料不符合退款条件" : "已处理完成",
     );
     if (!result) return;
     const resource = x.kind === "投诉" ? "complaints" : "after-sales";
-    await fetch(`http://127.0.0.1:3001/api/admin/${resource}/${x.id}`, {
+    const response = await fetch(`${API_BASE}/api/admin/${resource}/${x.id}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify(
         x.kind === "投诉"
           ? { reply: result, status: "completed" }
-          : { result, status: "completed" },
+          : { result, status },
       ),
     });
+    const payload = await response.json();
+    if (!response.ok) return alert(payload.message || "处理失败");
     load();
   };
   return (
@@ -1075,7 +1203,9 @@ function AfterSales({ token }: { token: string }) {
               <td>{x.reason || x.content}</td>
               <td>{x.status}</td>
               <td>
-                <button onClick={() => resolve(x)}>回复并完成</button>
+                {x.kind === "售后" && x.status !== "completed" && <button onClick={() => resolve(x, "processing")}>受理</button>}
+                {x.kind === "售后" && x.status !== "completed" && <button onClick={() => resolve(x, "rejected")}>驳回</button>}
+                <button onClick={() => resolve(x, "completed")}>回复并完成</button>
               </td>
             </tr>
           ))}
@@ -1086,11 +1216,16 @@ function AfterSales({ token }: { token: string }) {
 }
 function ContentManager({ token }: { token: string }) {
   const [banners, setBanners] = useState<any[]>([]),
-    [categories, setCategories] = useState<any[]>([]);
+    [categories, setCategories] = useState<any[]>([]),
+    [coupons, setCoupons] = useState<any[]>([]);
   const [bannerTitle, setBannerTitle] = useState("");
   const [bannerImage, setBannerImage] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [categoryImage, setCategoryImage] = useState("");
+  const [couponTitle, setCouponTitle] = useState("");
+  const [couponAmount, setCouponAmount] = useState("");
+  const [couponThreshold, setCouponThreshold] = useState("");
+  const [couponExpires, setCouponExpires] = useState("");
   const headers = useMemo(
     () => ({
       authorization: `Bearer ${token}`,
@@ -1099,19 +1234,22 @@ function ContentManager({ token }: { token: string }) {
     [token],
   );
   const load = useCallback(() => {
-    fetch("http://127.0.0.1:3001/api/admin/banners", { headers })
+    fetch(`${API_BASE}/api/admin/banners`, { headers })
       .then((r) => r.json())
       .then(setBanners);
-    fetch("http://127.0.0.1:3001/api/admin/categories", { headers })
+    fetch(`${API_BASE}/api/admin/categories`, { headers })
       .then((r) => r.json())
       .then(setCategories);
+    fetch(`${API_BASE}/api/admin/coupons`, { headers })
+      .then((r) => r.json())
+      .then(setCoupons);
   }, [headers]);
   useEffect(() => {
     load();
   }, [load]);
   const addBanner = async () => {
     if (!bannerTitle || !bannerImage) return alert("请填写 Banner 标题和图片");
-    await fetch("http://127.0.0.1:3001/api/admin/banners", {
+    await fetch(`${API_BASE}/api/admin/banners`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1128,7 +1266,7 @@ function ContentManager({ token }: { token: string }) {
   };
   const addCategory = async () => {
     if (!categoryName) return alert("请填写分类名称");
-    await fetch("http://127.0.0.1:3001/api/admin/categories", {
+    await fetch(`${API_BASE}/api/admin/categories`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1140,6 +1278,70 @@ function ContentManager({ token }: { token: string }) {
     });
     setCategoryName("");
     setCategoryImage("");
+    load();
+  };
+  const addCoupon = async () => {
+    if (!couponTitle || Number(couponAmount) <= 0)
+      return alert("请填写优惠券名称和有效面额");
+    const response = await fetch(`${API_BASE}/api/admin/coupons`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        title: couponTitle,
+        amount: Number(couponAmount),
+        threshold: Number(couponThreshold || 0),
+        expires_at: couponExpires || null,
+        status: "active",
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) return alert(result.message || "新增优惠券失败");
+    setCouponTitle("");
+    setCouponAmount("");
+    setCouponThreshold("");
+    setCouponExpires("");
+    load();
+  };
+  const couponAction = async (item: any, action: "toggle" | "issue") => {
+    if (action === "issue") {
+      const userId = prompt("请输入领取用户 ID");
+      if (!userId) return;
+      const response = await fetch(`${API_BASE}/api/admin/coupons/${item.id}/issue`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ user_id: Number(userId) }),
+      });
+      const result = await response.json();
+      if (!response.ok) return alert(result.message || "发放失败");
+      alert(result.duplicated ? "该用户已领取此券" : "优惠券已发放");
+    } else {
+      await fetch(`${API_BASE}/api/admin/coupons/${item.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ status: item.status === "active" ? "inactive" : "active" }),
+      });
+    }
+    load();
+  };
+  const contentAction = async (
+    resource: "banners" | "categories",
+    item: any,
+    action: "toggle" | "delete",
+  ) => {
+    if (action === "delete" && !confirm("确认删除或停用这条内容吗？")) return;
+    const response = await fetch(
+      `${API_BASE}/api/admin/${resource}/${item.id}`,
+      {
+        method: action === "delete" ? "DELETE" : "PATCH",
+        headers,
+        body:
+          action === "toggle"
+            ? JSON.stringify({ status: item.status === "active" ? "inactive" : "active" })
+            : undefined,
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) return alert(result.message || "操作失败");
     load();
   };
   return (
@@ -1173,6 +1375,28 @@ function ContentManager({ token }: { token: string }) {
         />
         <button onClick={addCategory}>新增分类</button>
       </div>
+      <div className="content-subtitle">优惠券运营</div>
+      <div className="feishu-form coupon-form">
+        <input value={couponTitle} onChange={(e) => setCouponTitle(e.target.value)} placeholder="优惠券名称" />
+        <input type="number" min="1" value={couponAmount} onChange={(e) => setCouponAmount(e.target.value)} placeholder="面额" />
+        <input type="number" min="0" value={couponThreshold} onChange={(e) => setCouponThreshold(e.target.value)} placeholder="使用门槛" />
+        <input type="date" value={couponExpires} onChange={(e) => setCouponExpires(e.target.value)} />
+        <button onClick={addCoupon}>新增优惠券</button>
+      </div>
+      <table>
+        <thead><tr><th>优惠券</th><th>面额/门槛</th><th>有效期</th><th>发放/使用</th><th>操作</th></tr></thead>
+        <tbody>
+          {!coupons.length && <EmptyRow cols={5} text="暂无优惠券" />}
+          {coupons.map((x) => (
+            <tr key={`coupon-${x.id}`}>
+              <td>{x.title}</td><td>¥{x.amount} / 满{x.threshold || 0}</td>
+              <td>{x.expires_at || "长期有效"}</td><td>{x.issued_count || 0} / {x.used_count || 0}</td>
+              <td><button onClick={() => couponAction(x, "issue")}>发放</button><button onClick={() => couponAction(x, "toggle")}>{x.status === "active" ? "停用" : "启用"}</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="content-subtitle">Banner 与场馆分类</div>
       <table>
         <thead>
           <tr>
@@ -1180,6 +1404,7 @@ function ContentManager({ token }: { token: string }) {
             <th>标题</th>
             <th>排序</th>
             <th>状态</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -1189,6 +1414,7 @@ function ContentManager({ token }: { token: string }) {
               <td>{x.title}</td>
               <td>{x.sort_order}</td>
               <td>{x.status}</td>
+              <td><button onClick={() => contentAction("banners", x, "toggle")}>{x.status === "active" ? "停用" : "启用"}</button><button onClick={() => contentAction("banners", x, "delete")}>删除</button></td>
             </tr>
           ))}
           {categories.map((x) => (
@@ -1197,6 +1423,7 @@ function ContentManager({ token }: { token: string }) {
               <td>{x.name}</td>
               <td>{x.sort_order}</td>
               <td>{x.status}</td>
+              <td><button onClick={() => contentAction("categories", x, "toggle")}>{x.status === "active" ? "停用" : "启用"}</button><button onClick={() => contentAction("categories", x, "delete")}>删除</button></td>
             </tr>
           ))}
         </tbody>
@@ -1221,10 +1448,10 @@ function FeishuManager({ token }: { token: string }) {
     [token],
   );
   const load = useCallback(() => {
-    fetch("http://127.0.0.1:3001/api/admin/feishu/configs", { headers })
+    fetch(`${API_BASE}/api/admin/feishu/configs`, { headers })
       .then((r) => r.json())
       .then(setConfigs);
-    fetch("http://127.0.0.1:3001/api/admin/feishu/tasks", { headers })
+    fetch(`${API_BASE}/api/admin/feishu/tasks`, { headers })
       .then((r) => r.json())
       .then(setTasks);
   }, [headers]);
@@ -1233,7 +1460,7 @@ function FeishuManager({ token }: { token: string }) {
   }, [load]);
   const save = async () => {
     setNotice("");
-    const response = await fetch("http://127.0.0.1:3001/api/admin/feishu/configs", {
+    const response = await fetch(`${API_BASE}/api/admin/feishu/configs`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1259,7 +1486,7 @@ function FeishuManager({ token }: { token: string }) {
   };
   const sync = async (id: number) => {
     setNotice("正在创建真实飞书读取任务…");
-    const response = await fetch("http://127.0.0.1:3001/api/admin/feishu/sync", {
+    const response = await fetch(`${API_BASE}/api/admin/feishu/sync`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -1279,7 +1506,7 @@ function FeishuManager({ token }: { token: string }) {
     action: "pause" | "resume" | "retry",
   ) => {
     await fetch(
-      `http://127.0.0.1:3001/api/admin/feishu/tasks/${id}/${action}`,
+      `${API_BASE}/api/admin/feishu/tasks/${id}/${action}`,
       {
         method: "POST",
         headers,
