@@ -68,11 +68,15 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 - `GET/PATCH /api/admin/complaints/:id`、`GET/PATCH /api/admin/after-sales/:id`
 - `GET/POST/PATCH/DELETE /api/admin/banners`、`/categories`
 - `GET/POST/PATCH /api/admin/coupons`、`POST /api/admin/coupons/:id/issue`
-- 飞书配置、同步、暂停、继续、重试、错误明细接口
+- 飞书配置、测试预览、确认提交、同步进度、暂停、继续、重试、错误明细接口
 
 ## 飞书同步
 
-后台可保存多维表格 App ID、Base 链接、Table ID 和字段映射。任务执行流程为：鉴权 → 分页读取 → 字段校验/标准品种匹配 → 每批最多 500 条写入宠物、库存、图片和视频 → 记录成功数与逐行错误。缺少 `FEISHU_APP_SECRET` 时远程任务会明确失败，不会伪造同步成功；测试数据模式仍可验证完整队列。
+后台可保存多维表格 App ID、Base 链接、Table ID 和字段映射。固定流程为：测试读取 → 字段与媒体检测 → 新增/更新/重复/异常预览 → 管理员确认 → 默认每批 100 条写入宠物、库存、图片和视频 → 显示进度与逐行错误。预览存入 `feishu_sync_previews`，确认前不会改正式商品；同一 `record_id` 使用幂等更新，空字段不会覆盖已有正确资料。缺少 `FEISHU_APP_SECRET` 时远程任务会明确失败，不会伪造同步成功。
+
+飞书附件下载接口需要服务端授权，前端不会直接暴露密钥。`GET /api/media/feishu` 会校验飞书媒体域名、附加访问令牌并支持 HTTP Range，商品列表、详情轮播和视频播放器因此可以直接读取数据库内的真实附件 URL。
+
+商品详情从 `pet_images`、`pet_videos`、`breeds` 和 `product_reviews` 异步读取真实数据，支持图片/视频轮播、触摸滑动、高清切换、生活影像、起源地图、特征数据卡与购买评价。订单状态通过 `order_status_history` 保留完整变化记录，支付和物流更新会同步用户端。
 
 当前表格配置基准：App ID `cli_a902ca6a2cb85cc0`，Table ID `tblUaCqyE3xkk1Bj`。已完成真实远程读取验证；场馆名称会转换为本地分类，中文商品状态会转换为本地状态，同一飞书 `record_id` 再次同步时会更新原商品。商品表建议使用“商品名称、场馆、品种、性别、价格、详细介绍、主图文件、视频文件、年龄（月）、毛色、体型、性格、健康状态、疫苗记录、父亲信息、母亲信息、商家名称、商品状态、库存、宠物识别码”等字段。真实运行仍必须通过服务端环境变量提供 App Secret，并授予多维表格读取权限，密钥不得写入源码或提交 Git。
 

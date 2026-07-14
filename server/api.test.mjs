@@ -107,6 +107,20 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(pet.response.status, 201);
   assert.ok(pet.payload.id);
+  const firstImage = await request(`/api/admin/pets/${pet.payload.id}/images`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ url: "https://example.com/first.webp", type: "main", sort_order: 0 }),
+  });
+  assert.equal(firstImage.response.status, 201);
+  const replacedImage = await request(`/api/admin/pets/${pet.payload.id}/images`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ url: "https://example.com/latest.webp", replace_main: true }),
+  });
+  assert.equal(replacedImage.payload.replaced, true);
+  const productMedia = await request(`/api/pets/${pet.payload.id}`);
+  assert.equal(productMedia.payload.images[0].url, "https://example.com/latest.webp");
   const productEdit = await request(`/api/admin/pets/${pet.payload.id}`, {
     method: "PATCH",
     headers: adminHeaders,
@@ -209,7 +223,26 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(orderDetail.payload.logistics_events.length, 1);
   const userSummary = await request("/api/users/1/summary");
   assert.equal(userSummary.response.status, 200);
-  assert.equal(userSummary.payload.orders.pending_receive, 1);
+  assert.equal(userSummary.payload.orders.shipped, 1);
+  assert.ok(orderDetail.payload.status_history.length >= 2);
+  const review = await request(`/api/pets/${pet.payload.id}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: 1,
+      rating: 5,
+      content: "商品资料真实，购买和饲养指导都很清楚。",
+      images: ["https://example.com/review.webp"],
+    }),
+  });
+  assert.equal(review.response.status, 201);
+  assert.equal(review.payload.verified, true);
+  const likedReview = await request(`/api/reviews/${review.payload.id}/like`, {
+    method: "POST",
+  });
+  assert.equal(likedReview.payload.likes, 1);
+  const reviewedPet = await request(`/api/pets/${pet.payload.id}`);
+  assert.equal(reviewedPet.payload.reviews.length, 1);
   const afterSale = await request("/api/after-sales", {
     method: "POST",
     headers: { "content-type": "application/json" },

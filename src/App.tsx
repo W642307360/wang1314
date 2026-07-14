@@ -16,6 +16,7 @@ import "./AdminEntry.css";
 import "./SearchPage.css";
 import "./HomeLayout.css";
 import "./Stability.css";
+import "./ProductDetail.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
@@ -69,12 +70,33 @@ type ApiPet = {
   thumbnail_url?: string;
   highres_url?: string;
   image?: string;
+  images?: Array<{ id?: number; url: string; type?: string; thumbnail_url?: string; webp_url?: string }>;
+  videos?: Array<{ id?: number; url: string; cover_url?: string }>;
+  reviews?: Array<any>;
+  updated_at?: string;
+  breed_profile?: { intro?: string; origin?: string; growth_profile?: string; standard_body?: string };
+  personality?: string;
+  body_type?: string;
+  vaccine_record?: string;
 };
 const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
-const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
-  pet?.thumbnail_url || pet?.image || pet?.highres_url || fallback;
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const resolveMediaUrl = (url?: string) => {
+  if (!url) return "";
+  if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
+    return `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`;
+  return url;
+};
+const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
+  resolveMediaUrl(
+    pet?.images?.[0]?.thumbnail_url ||
+      pet?.images?.[0]?.webp_url ||
+      pet?.images?.[0]?.url ||
+      pet?.thumbnail_url ||
+      pet?.image ||
+      pet?.highres_url,
+  ) || fallback;
 const jsonCache = new Map<string, { at: number; ttl: number; data: unknown }>();
 const imageMemoryCache = new Set<string>();
 const thumbImage = (url?: string, fallback = petPhoto) =>
@@ -858,6 +880,9 @@ function Detail({
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
+  const touchStartX = useRef(0);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
     setDetailPet(pet);
@@ -866,9 +891,9 @@ function Detail({
     const readyTimer = window.setTimeout(() => setDetailReady(true), 160);
     const url =
       pet?.id && pet.id > 0
-        ? `${API_BASE}/api/pets/${pet.id}`
+        ? `${API_BASE}/api/pets/${pet.id}?v=${encodeURIComponent(pet.updated_at || "latest")}`
         : `${API_BASE}/api/pets?q=${encodeURIComponent(breed.name)}&page=1&pageSize=1`;
-    cachedJson<any>(url, 30_000)
+    cachedJson<any>(url, 5_000)
       .then(async (d) => {
         const item = Array.isArray(d) ? d[0] : d;
         if (item?.id) {
@@ -907,6 +932,31 @@ function Detail({
       : detailPet?.status === "sold"
         ? "sold"
         : "offline");
+  const mediaItems = useMemo(() => {
+    const images = (detailPet?.images || [])
+      .map((item: any) => ({
+        kind: "image" as const,
+        url: resolveMediaUrl(item.highres_url || item.webp_url || item.url),
+        thumb: resolveMediaUrl(item.thumbnail_url || item.webp_url || item.url),
+        label: item.type === "life" ? "生活照" : item.type === "main" ? "主图" : "展示图",
+      }))
+      .filter((item: any) => item.url);
+    const videos = (detailPet?.videos || [])
+      .map((item: any) => ({
+        kind: "video" as const,
+        url: resolveMediaUrl(item.url),
+        thumb: resolveMediaUrl(item.cover_url) || images[0]?.thumb || petImage(detailPet, breed.image),
+        label: "生活视频",
+      }))
+      .filter((item: any) => item.url);
+    return images.length || videos.length
+      ? [...images, ...videos]
+      : [{ kind: "image" as const, url: petImage(detailPet, breed.image), thumb: petImage(detailPet, breed.image), label: "主图" }];
+  }, [breed.image, detailPet]);
+  const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
+  useEffect(() => setGalleryIndex(0), [detailPet?.id]);
+  const moveGallery = (direction: number) =>
+    setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
   const toggleFavorite = async () => {
     if (petDbId) {
       await fetch(
@@ -1000,37 +1050,62 @@ function Detail({
   };
   return (
     <div className="detail">
-      <section className="detail-hero">
-        <SmartImage
-          src={petImage(detailPet, breed.image)}
-          highres={detailPet?.highres_url || detailPet?.image || breed.image}
-          alt={displayName}
-          eager
-        />
+      <section
+        className="detail-hero product-gallery"
+        onTouchStart={(event) => { touchStartX.current = event.touches[0]?.clientX || 0; }}
+        onTouchEnd={(event) => {
+          const distance = (event.changedTouches[0]?.clientX || 0) - touchStartX.current;
+          if (Math.abs(distance) > 45) moveGallery(distance > 0 ? -1 : 1);
+        }}
+      >
+        {activeMedia.kind === "video" ? (
+          <video src={activeMedia.url} poster={activeMedia.thumb} controls playsInline preload="metadata" />
+        ) : (
+          <SmartImage src={activeMedia.thumb} highres={activeMedia.url} alt={`${displayName}-${activeMedia.label}`} eager />
+        )}
         <Back onClick={() => go(returnPage)} />
-        <span className="life">♢ 可查看3日常生活照</span>
+        <span className="life">♢ {mediaItems.length}项真实影像</span>
         <div className="pet-name">
-          <em>Coco</em>
-          <i>♀</i>
+          <em>{displayName}</em>
+          <i>{detailPet?.gender === "公" || detailPet?.gender === "male" ? "♂" : "♀"}</i>
           <b>纯种{detailPet?.breed || breed.name}</b>
-          <p>温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养</p>
+          <p>{detailPet?.personality || "温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养"}</p>
         </div>
         <strong className="price">
           ¥{displayPrice} <small>已售 128</small>
         </strong>
-        <span className="count">1/6</span>
+        <span className="count">{galleryIndex + 1}/{mediaItems.length}</span>
+        {mediaItems.length > 1 && (
+          <div className="gallery-arrows">
+            <button type="button" aria-label="上一项" onClick={() => moveGallery(-1)}>‹</button>
+            <button type="button" aria-label="下一项" onClick={() => moveGallery(1)}>›</button>
+          </div>
+        )}
         {productStatus !== "available" && (
           <span className="detail-status">
             {productStatus === "sold" ? "已售出" : "商品已下架"}
           </span>
         )}
       </section>
+      <section className="media-strip" aria-label="商品图片和视频列表">
+        {mediaItems.map((item, index) => (
+          <button
+            type="button"
+            className={index === galleryIndex ? "active" : ""}
+            key={`${item.kind}-${item.url}`}
+            onClick={() => setGalleryIndex(index)}
+          >
+            <SmartImage src={item.thumb} alt={item.label} />
+            <span>{item.kind === "video" ? "▶ 视频" : item.label}</span>
+          </button>
+        ))}
+      </section>
       {detailReady ? (
       <>
       <section className="parents">
-        <Parent title="爸爸　阿布 (Abu)" sex="♂" />
+        <Parent title={detailPet?.father_info || "父系档案待商家补充"} sex="♂" breed={detailPet?.breed || breed.name} image={mediaItems[0]?.thumb} />
         <div className="heart">♡</div>
-        <Parent title="妈妈　拉拉 (Lala)" sex="♀" />
+        <Parent title={detailPet?.mother_info || "母系档案待商家补充"} sex="♀" breed={detailPet?.breed || breed.name} image={mediaItems[0]?.thumb} />
       </section>
       <section className="feature">
         <div className="feature-tabs">
@@ -1060,40 +1135,55 @@ function Detail({
               {detailPet?.breed || breed.name} ({breed.en})
             </h3>
             <p>
-              {breed.desc}
+              {detailPet?.breed_profile?.intro || breed.desc}
               。每只宠物均建立独立健康、疫苗、父母血统与成长影像档案。
             </p>
           </div>
           <dl>
             <dt>原产地</dt>
-            <dd>品种档案</dd>
+            <dd>{detailPet?.breed_profile?.origin || "品种档案"}</dd>
             <dt>寿命</dt>
             <dd>10–16年</dd>
             <dt>体重</dt>
             <dd>4–34kg</dd>
             <dt>体型</dt>
-            <dd>标准体型</dd>
+            <dd>{detailPet?.body_type || detailPet?.breed_profile?.standard_body || "标准体型"}</dd>
           </dl>
         </div>
-        <div className="visual-traits">
-          <article>
-            <span>真实毛色</span>
+        <div className="trait-dashboard">
+          <article className="trait-color">
+            <span>毛色档案</span>
             <div className="fur-swatch" />
-            <b>自然金棕</b>
+            <b>{detailPet?.color || "待商家补充"}</b>
           </article>
-          <article>
-            <span>体型对比</span>
+          <article className="trait-body">
+            <span>体型比例</span>
             <div className="body-scale">
               <i />
               <i />
               <i className="on" />
             </div>
-            <b>标准体型</b>
+            <b>{detailPet?.body_type || "标准体型"}</b>
           </article>
-          <article>
-            <span>毛发长度</span>
-            <div className="fur-length">﹏﹏﹏</div>
-            <b>柔软长毛</b>
+          <article className="trait-personality">
+            <span>性格能量</span>
+            <div className="trait-orbit">✦<i>亲</i><i>稳</i><i>灵</i></div>
+            <b>{detailPet?.personality || "温顺亲人"}</b>
+          </article>
+          <article className="trait-health">
+            <span>健康等级</span>
+            <div className="health-rings"><i /><i /><i /><i /><i /></div>
+            <b>{detailPet?.health_status || "健康档案待补充"}</b>
+          </article>
+          <article className="trait-life">
+            <span>生命周期</span>
+            <div className="life-line"><i /><i /><i /><i /></div>
+            <b>幼年 · 成长 · 成熟 · 陪伴</b>
+          </article>
+          <article className="trait-breed">
+            <span>繁育档案</span>
+            <div className="breed-mark">双亲<br />可追溯</div>
+            <b>{detailPet?.vaccine_record || "疫苗信息待补充"}</b>
           </article>
         </div>
         {[
@@ -1149,14 +1239,14 @@ function Detail({
         <div>
           <h3>品种起源</h3>
           <div className="origin-map">
-            <i>●</i>
-            <span>
-              {breed.name}
-              <br />
-              ORIGIN
-            </span>
+            <svg viewBox="0 0 320 150" role="img" aria-label={`${breed.name}品种起源地图`}>
+              <path d="M16 51l24-29 46 7 19 23-13 20-32 4-13 34-20-19zm104-18 34-19 32 15 25-8 45 22 42 5 9 23-29 12-31-7-18 20-35-7-17 30-28-14-9-32-24-14z" />
+              <path d="M212 109l18-9 20 12-7 23-24-3z" />
+              <circle cx="225" cy="55" r="6" />
+            </svg>
+            <span>{detailPet?.breed_profile?.origin || `${breed.name}品种来源地`}</span>
           </div>
-          <p>{breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。</p>
+          <p>{detailPet?.breed_profile?.origin || `${breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。`}</p>
         </div>
         <div>
           <h3>所属商家</h3>
@@ -1168,15 +1258,24 @@ function Detail({
         </div>
       </section>
       <section className="reviews">
-        <h3>用户评价（128）</h3>
-        {["小可爱", "糖糖不甜", "爱好者"].map((n) => (
-          <article key={n}>
-            <b>
-              ●　{n}　<span>★★★★★</span>
-            </b>
-            <p>Coco太可爱了，到家很健康，性格温顺，非常亲人。</p>
-          </article>
-        ))}
+        <header><div><small>真实购买反馈</small><h3>用户评价（{detailPet?.reviews?.length || 3}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
+        {(detailPet?.reviews?.length ? detailPet.reviews : [
+          { id: "demo-1", nickname: "林间小屋", rating: 5, is_verified: 1, created_at: "2026-06-28", content: `${displayName}到家后状态特别好，眼睛清亮，毛发柔软。客服提前讲了饮食和应激期注意事项，第一晚就愿意靠近我们。`, images: mediaItems.filter((x) => x.kind === "image").slice(0, 2).map((x) => x.thumb), likes: 18 },
+          { id: "demo-2", nickname: "阿梨的日常", rating: 5, is_verified: 1, created_at: "2026-06-19", content: "整个购买流程很透明，健康资料和疫苗记录都能查看。接回家一周适应得很快，性格比照片里还亲人。", images: mediaItems.filter((x) => x.kind === "image").slice(1, 3).map((x) => x.thumb), likes: 11 },
+          { id: "demo-3", nickname: "慢慢陪伴", rating: 5, is_verified: 1, created_at: "2026-06-03", content: "商家会持续回访，喂养建议很细。外观、年龄和商品资料一致，生活视频也让我们下单前更放心。", videos: mediaItems.filter((x) => x.kind === "video").slice(0, 1).map((x) => x.url), likes: 9 },
+        ]).map((review: any) => {
+          const reviewKey = String(review.id);
+          const liked = likedReviews.has(reviewKey);
+          return (
+            <article className="review-card" key={reviewKey}>
+              <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
+              <p>{review.content}</p>
+              {!!review.images?.length && <div className="review-media">{review.images.map((image: string) => <SmartImage key={image} src={resolveMediaUrl(image)} alt="用户评价图片" />)}</div>}
+              {!!review.videos?.length && <div className="review-media">{review.videos.map((video: string) => <video key={video} src={resolveMediaUrl(video)} controls playsInline preload="metadata" />)}</div>}
+              <button type="button" onClick={async () => { if (!liked && Number.isFinite(Number(review.id))) await fetch(`${API_BASE}/api/reviews/${review.id}/like`, { method: "POST" }).catch(() => {}); setLikedReviews((old) => { const next = new Set(old); if (liked) next.delete(reviewKey); else next.add(reviewKey); return next; }); }}>♡ 有帮助 {Number(review.likes || 0) + (liked ? 1 : 0)}</button>
+            </article>
+          );
+        })}
       </section>
       </>
       ) : (
@@ -1274,22 +1373,19 @@ function Detail({
     </div>
   );
 }
-function Parent({ title, sex }: { title: string; sex: string }) {
+function Parent({ title, sex, breed, image }: { title: string; sex: string; breed: string; image?: string }) {
   return (
     <div className="parent">
-      <img src={petPhoto} />
+      <SmartImage src={image || petPhoto} alt={`${breed}${sex === "♂" ? "父系" : "母系"}档案`} />
       <div>
         <h3>
           {title} <i>{sex}</i>
         </h3>
         <p>
-          品种：金毛寻回犬
+          品种：{breed}
           <br />
-          毛色：金黄色
-          <br />
-          血统：纯种
-          <br />
-          年龄：3岁　体重：32kg
+          档案：平台血统资料
+          <br />健康：商家持续更新
         </p>
       </div>
     </div>

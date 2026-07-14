@@ -46,6 +46,10 @@ const ORDER_STATUS_LABEL: Record<string, string> = {
   pending_payment: "待付款",
   pending_confirm: "待确认",
   pending_ship: "待发货",
+  packed: "打包中",
+  shipped: "已发货",
+  in_transit: "运输中",
+  delivering: "配送中",
   pending_receive: "待收货",
   completed: "已完成",
   cancelled: "已取消",
@@ -766,6 +770,12 @@ export function OrdersPage({
               <dt>收货地址</dt><dd>{(() => { try { const address = JSON.parse(detail.address_snapshot || "{}"); return `${address.name || ""} ${address.phone || ""} ${address.detail || ""}`; } catch { return "地址信息异常"; } })()}</dd>
               <dt>物流单号</dt><dd>{detail.tracking_no || "待发货"}</dd>
             </dl>
+            <h3>订单处理记录</h3>
+            <div className="logistics-timeline order-status-timeline">
+              {detail.status_history?.length ? detail.status_history.map((event: any, index: number) => (
+                <p key={`status-${index}`}><b>✓</b><span>{ORDER_STATUS_LABEL[event.to_status] || event.to_status}<small>{event.created_at} · {event.note || "状态已更新"}</small></span></p>
+              )) : <p>订单状态记录正在生成</p>}
+            </div>
             <h3>物流进度</h3>
             <div className="logistics-timeline">
               {detail.logistics_events?.length ? detail.logistics_events.map((event: any, index: number) => (

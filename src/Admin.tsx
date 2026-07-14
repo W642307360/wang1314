@@ -4,6 +4,10 @@ import "./Admin.css";
 import "./AdminLogin.css";
 import "./Feishu.css";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const adminMediaUrl = (url?: string) =>
+  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
+    ? `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`
+    : url || "";
 
 type AdminTab =
   | "dashboard"
@@ -284,10 +288,10 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         });
       }
       const mediaHeaders = { "content-type": "application/json", authorization: `Bearer ${token}` };
-      for (const url of form.images.split(",").map((item) => item.trim()).filter(Boolean))
-        await fetch(`${API_BASE}/api/admin/pets/${productId}/images`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url }) });
-      for (const url of form.videos.split(",").map((item) => item.trim()).filter(Boolean))
-        await fetch(`${API_BASE}/api/admin/pets/${productId}/videos`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url }) });
+      for (const [index, url] of form.images.split(",").map((item) => item.trim()).filter(Boolean).entries())
+        await fetch(`${API_BASE}/api/admin/pets/${productId}/images`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url, type: index === 0 ? "main" : "gallery", sort_order: index, replace_main: Boolean(editingProductId && index === 0) }) });
+      for (const [index, url] of form.videos.split(",").map((item) => item.trim()).filter(Boolean).entries())
+        await fetch(`${API_BASE}/api/admin/pets/${productId}/videos`, { method: "POST", headers: mediaHeaders, body: JSON.stringify({ url, replace_main: Boolean(editingProductId && index === 0) }) });
       setProducts((v) =>
         editingProductId
           ? v.map((item) => (item.id === productId ? { ...item, ...saved } : item))
@@ -704,7 +708,7 @@ function Products({
       <table>
         <thead>
           <tr>
-            {["选择", "商品ID", "宠物名称", "品种", "售价", "状态", "操作"].map(
+            {["选择", "商品ID", "媒体", "宠物名称", "品种", "售价", "状态", "操作"].map(
               (x) => (
                 <th key={x}>{x}</th>
               ),
@@ -728,6 +732,7 @@ function Products({
                 />
               </td>
               <td>{p.id}</td>
+              <td>{p.image ? <div className="admin-product-media"><img src={adminMediaUrl(p.image)} alt={p.name} loading="lazy" /><small>{p.image_count || 0}图 · {p.video_count || 0}视频</small></div> : <span>待上传</span>}</td>
               <td>
                 <b>{p.name}</b>
               </td>
@@ -938,6 +943,17 @@ function OrdersManager({ token }: { token: string }) {
     () => ({ authorization: `Bearer ${token}` }),
     [token],
   );
+  const statusOptions = [
+    ["pending_payment", "待付款"],
+    ["pending_confirm", "已付款/待处理"],
+    ["packed", "打包中"],
+    ["shipped", "已发货"],
+    ["in_transit", "运输中"],
+    ["delivering", "配送中"],
+    ["completed", "已完成"],
+    ["cancelled", "已取消"],
+    ["after_sale", "售后"],
+  ];
   useEffect(() => {
     fetch(`${API_BASE}/api/admin/orders`, { headers })
       .then((r) => r.json())
@@ -995,16 +1011,16 @@ function OrdersManager({ token }: { token: string }) {
                   disabled={o.payment_status === "paid"}
                   onClick={() =>
                     update(o.id, {
-                      status: "pending_ship",
+                      status: "pending_confirm",
                       payment_status: "paid",
                     })
                   }
                 >
                   确认付款
                 </button>
-                <button onClick={() => update(o.id, { status: "completed" })}>
-                  完成
-                </button>
+                <select value={o.status} onChange={(event) => update(o.id, { status: event.target.value })}>
+                  {statusOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+                </select>
                 <button
                   onClick={() =>
                     alert(`联系买家：${o.phone || "未绑定手机号"}`)
@@ -1028,6 +1044,7 @@ function OrdersManager({ token }: { token: string }) {
             {detail.payment_status} · 物流：
             {detail.logistics?.status || "待发货"}
           </p>
+          {!!detail.status_history?.length && <div className="order-history"><b>订单状态记录</b>{detail.status_history.map((event: any) => <p key={event.id}>{event.created_at}　{event.from_status || "创建"} → {event.to_status}</p>)}</div>}
           <button onClick={() => setDetail(null)}>关闭详情</button>
         </div>
       )}
@@ -1435,6 +1452,9 @@ function ContentManager({ token }: { token: string }) {
 function FeishuManager({ token }: { token: string }) {
   const [configs, setConfigs] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
+  const [previews, setPreviews] = useState<any[]>([]);
+  const [activePreview, setActivePreview] = useState<any>(null);
+  const [syncing, setSyncing] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [appId, setAppId] = useState("cli_a902ca6a2cb85cc0");
@@ -1447,6 +1467,11 @@ function FeishuManager({ token }: { token: string }) {
     }),
     [token],
   );
+  const connected = configs.some(
+    (config) =>
+      config.status === "active" &&
+      String(config.document_url || "").includes("/base/"),
+  );
   const load = useCallback(() => {
     fetch(`${API_BASE}/api/admin/feishu/configs`, { headers })
       .then((r) => r.json())
@@ -1454,6 +1479,9 @@ function FeishuManager({ token }: { token: string }) {
     fetch(`${API_BASE}/api/admin/feishu/tasks`, { headers })
       .then((r) => r.json())
       .then(setTasks);
+    fetch(`${API_BASE}/api/admin/feishu/previews`, { headers })
+      .then((r) => r.json())
+      .then(setPreviews);
   }, [headers]);
   useEffect(() => {
     void load();
@@ -1469,11 +1497,23 @@ function FeishuManager({ token }: { token: string }) {
         app_id: appId,
         table_id: tableId,
         field_mapping: {
-          name: "宠物名称",
+          name: "商品名称",
+          category_id: "场馆",
           breed: "品种",
+          gender: "性别",
           price: "价格",
-          images: "图片",
-          videos: "视频",
+          description: "详细介绍",
+          images: "主图文件",
+          videos: "视频文件",
+          age_months: "年龄（月）",
+          color: "毛色",
+          body_type: "体型",
+          personality: "性格",
+          health_status: "健康状态",
+          vaccine_record: "疫苗记录",
+          seller_name: "商家名称",
+          status: "商品状态",
+          stock: "库存",
         },
       }),
     });
@@ -1484,22 +1524,37 @@ function FeishuManager({ token }: { token: string }) {
     load();
     setNotice("飞书连接配置已保存；真实读取还需要服务端 FEISHU_APP_SECRET。 ");
   };
-  const sync = async (id: number) => {
-    setNotice("正在创建真实飞书读取任务…");
-    const response = await fetch(`${API_BASE}/api/admin/feishu/sync`, {
+  const preview = async (id: number) => {
+    setSyncing(true);
+    setNotice("正在读取飞书并检测数据，不会写入正式数据库…");
+    const response = await fetch(`${API_BASE}/api/admin/feishu/preview`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         config_id: id,
-        mode: "incremental",
-        read_remote: true,
-        batch_size: 500,
       }),
     });
     const result = await response.json();
-    if (!response.ok) return setNotice(result.message || "同步任务创建失败");
-    setNotice(`任务 #${result.taskId} 已创建，请点击“刷新任务”查看真实结果。`);
-    window.setTimeout(load, 800);
+    setSyncing(false);
+    if (!response.ok) return setNotice(result.message || "测试同步失败");
+    setActivePreview(result);
+    setNotice(`预览 #${result.id} 已完成：发现 ${result.stats.products} 条，确认后才会写入数据库。`);
+    load();
+  };
+  const commitPreview = async (id: number) => {
+    setSyncing(true);
+    setNotice("正在提交确认后的数据，每批处理 100 条…");
+    const response = await fetch(`${API_BASE}/api/admin/feishu/previews/${id}/commit`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ batch_size: 100 }),
+    });
+    const result = await response.json();
+    setSyncing(false);
+    if (!response.ok) return setNotice(result.message || "正式同步提交失败");
+    setActivePreview(null);
+    setNotice(`正式任务 #${result.taskId} 已进入队列，共 ${result.total} 条。`);
+    window.setTimeout(load, 500);
   };
   const taskAction = async (
     id: number,
@@ -1535,6 +1590,10 @@ function FeishuManager({ token }: { token: string }) {
         <button onClick={save}>保存连接</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
+      <div className="sync-connection">
+        <span className={connected ? "online" : "offline"}>{connected ? "● 已连接" : "● 未连接"}</span>
+        <p>固定流程：测试读取 → 数据检测 → 管理员确认 → 分批写入 → 前台自动更新</p>
+      </div>
       <table>
         <thead>
           <tr>
@@ -1548,16 +1607,34 @@ function FeishuManager({ token }: { token: string }) {
           {!configs.length && <EmptyRow cols={4} text="暂无飞书数据源，请先填写上方连接信息" />}
           {configs.map((c) => (
             <tr key={c.id}>
-              <td>{c.name}</td>
+              <td>{c.name || "未命名数据源"}<small>{c.status === "active" ? "已启用" : "已停用"}</small></td>
               <td>{c.document_url}</td>
               <td>名称、品种、价格、媒体</td>
               <td>
-                <button onClick={() => sync(c.id)}>增量同步</button>
+                <button disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>{syncing ? "检测中…" : "测试同步"}</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {activePreview && (
+        <section className="sync-preview-panel">
+          <header><div><small>同步预览 #{activePreview.id}</small><h3>请确认本次数据变化</h3></div><button onClick={() => setActivePreview(null)}>×</button></header>
+          <div className="sync-stat-grid">
+            <article><span>发现商品</span><b>{activePreview.stats.products}</b></article>
+            <article><span>主图/图片</span><b>{activePreview.stats.images}</b></article>
+            <article><span>视频</span><b>{activePreview.stats.videos}</b></article>
+            <article><span>新增</span><b>{activePreview.stats.additions}</b></article>
+            <article><span>更新</span><b>{activePreview.stats.updates}</b></article>
+            <article><span>重复</span><b>{activePreview.stats.duplicates}</b></article>
+            <article><span>异常</span><b>{activePreview.stats.errors}</b></article>
+          </div>
+          {!!activePreview.sample?.length && <div className="sync-sample">{activePreview.sample.slice(0, 8).map((item: any) => <p key={item.external_id}><b>{item.name}</b><span>{item.breed} · ¥{item.price} · 图片 {item.images?.length || 0} · 视频 {item.videos?.length || 0}</span></p>)}</div>}
+          {!!activePreview.errors?.length && <div className="sync-preview-errors">{activePreview.errors.slice(0, 10).map((error: any) => <p key={`${error.row}-${error.external_id}`}>第 {error.row} 行：{error.error}</p>)}</div>}
+          <footer><button onClick={() => setActivePreview(null)}>取消</button><button disabled={syncing || !activePreview.stats.valid} onClick={() => commitPreview(activePreview.id)}>确认并正式同步</button></footer>
+        </section>
+      )}
+      {!!previews.length && <p className="sync-history">最近预览：{previews.slice(0, 3).map((p) => `#${p.id} ${p.status === "confirmed" ? "已提交" : "待确认"}`).join("　")}</p>}
       <div>
         <h3>同步任务队列</h3>
         <button onClick={load}>刷新任务</button>
@@ -1580,7 +1657,8 @@ function FeishuManager({ token }: { token: string }) {
               <td>#{t.id}</td>
               <td>{t.status}</td>
               <td>
-                {t.processed || 0}/{t.total || 0}
+                <div className="sync-progress"><i style={{ width: `${t.total ? Math.min(100, Math.round((t.processed || 0) / t.total * 100)) : 0}%` }} /><span>{t.total ? Math.round((t.processed || 0) / t.total * 100) : 0}%</span></div>
+                <small>{t.processed || 0}/{t.total || 0}</small>
               </td>
               <td>
                 {t.success || 0}/{t.failed || 0}
