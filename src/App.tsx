@@ -119,6 +119,41 @@ const breedOriginStory = (name: string, origin: string) => {
 };
 const stableSeed = (value: string | number) =>
   String(value).split("").reduce((sum, char, index) => (sum + char.charCodeAt(0) * (index + 11)) % 100003, 37);
+const breedDimensionProfile = (breed: BreedItem) => {
+  const seed = stableSeed(`${breed.id}-${breed.name}`);
+  const hall = breed.id.split("-")[0] as HallKey;
+  const values = (offset: number, floor = 42) => `${floor + ((seed + offset * 17) % (97 - floor))}%`;
+  const profiles: Record<string, { body: string[]; life: string[]; nature: string[]; care: string[]; traits: string[] }> = {
+    cats: { body: ["小型猫", "中型猫", "中大型猫"], life: ["12–15年", "13–17年", "14–18年"], nature: ["温柔亲人", "安静敏锐", "活泼好奇"], care: ["容易", "中等", "需细致护理"], traits: ["亲人程度", "活跃程度", "毛发护理", "独处适应"] },
+    dogs: { body: ["小型犬", "中型犬", "大型犬"], life: ["9–12年", "10–14年", "12–16年"], nature: ["友善忠诚", "聪敏活跃", "沉稳勇敢"], care: ["容易", "中等", "运动需求较高"], traits: ["亲人程度", "运动需求", "训练配合", "毛发护理"] },
+    birds: { body: ["小型鸟", "中型鸟", "大型鸟"], life: ["6–10年", "10–18年", "20年以上"], nature: ["灵动亲人", "善于互动", "安静观察"], care: ["容易", "中等", "需稳定陪伴"], traits: ["互动程度", "鸣叫频率", "活动需求", "学习能力"] },
+    aquatic: { body: ["小型鱼", "中型鱼", "大型鱼"], life: ["2–5年", "5–10年", "10年以上"], nature: ["温和群游", "独立沉稳", "灵动好奇"], care: ["容易", "中等", "水质要求较高"], traits: ["观赏表现", "水质敏感", "混养适应", "饲养难度"] },
+    exotic: { body: ["迷你体型", "中等体型", "大型体型"], life: ["3–6年", "6–12年", "12年以上"], nature: ["温和慢热", "好奇活跃", "安静独立"], care: ["容易", "中等", "环境要求较高"], traits: ["互动程度", "环境敏感", "活动需求", "上手难度"] },
+    more: { body: ["小型", "中型", "大型"], life: ["5–8年", "8–15年", "15年以上"], nature: ["温和亲人", "活跃好奇", "沉稳独立"], care: ["容易", "中等", "需专业照护"], traits: ["亲和程度", "环境适应", "活动需求", "照护难度"] },
+  };
+  const profile = profiles[hall] || profiles.more;
+  return {
+    body: profile.body[seed % profile.body.length],
+    life: profile.life[(seed >> 1) % profile.life.length],
+    nature: profile.nature[(seed >> 2) % profile.nature.length],
+    care: profile.care[(seed >> 3) % profile.care.length],
+    traits: profile.traits.map((label, index) => ({ label, value: values(index + 1, index === 3 ? 30 : 48) })),
+  };
+};
+const merchantTrustProfile = (merchant: any, pet: any, mediaCount: number) => {
+  const seed = stableSeed(merchant?.id || pet?.seller_id || pet?.seller_name || 1);
+  const dimensions = [
+    { label: "实拍一致度", value: mediaCount > 1 ? 98 : 94 },
+    { label: "健康档案", value: pet?.vaccine_record ? 98 : 92 },
+    { label: "历史履约", value: 94 + (seed % 5) },
+    { label: "售后响应", value: 93 + ((seed + 2) % 6) },
+    { label: "线下核验", value: merchant?.offline_store ? 99 : 91 },
+  ];
+  return {
+    score: Math.round(dimensions.reduce((sum, item) => sum + item.value, 0) / dimensions.length),
+    dimensions,
+  };
+};
 const zodiacFor = (month: number, day: number) => {
   const edge = [20, 19, 21, 20, 21, 22, 23, 23, 23, 24, 23, 22];
   const signs = ["摩羯座", "水瓶座", "双鱼座", "白羊座", "金牛座", "双子座", "巨蟹座", "狮子座", "处女座", "天秤座", "天蝎座", "射手座", "摩羯座"];
@@ -137,6 +172,9 @@ const petArchiveMeta = (pet: any, fallbackName: string) => {
   const lifeCopy = age <= 4 ? "遇到刚好的你" : age <= 12 ? "一起长成更好的我们" : age <= 84 ? "日常就是最长情的陪伴" : "慢一点，也一直在身边";
   return {
     personalityType: seed % 2 ? "E人" : "I人",
+    personalityMarks: seed % 2
+      ? [{ icon: "亲", label: "亲和" }, { icon: "活", label: "活力" }, { icon: "探", label: "探索" }]
+      : [{ icon: "静", label: "安静" }, { icon: "稳", label: "稳定" }, { icon: "察", label: "观察" }],
     dateLabel: `${String(month).padStart(2, "0")}月${String(day).padStart(2, "0")}日`,
     zodiac: zodiacFor(month, day),
     lifeStage,
@@ -697,6 +735,7 @@ function Breed({
   openPet: (pet: ApiPet, breed?: BreedItem) => void;
 }) {
   const b = breed;
+  const dimensions = useMemo(() => breedDimensionProfile(b), [b]);
   const [pets, setPets] = useState<ApiPet[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -743,7 +782,7 @@ function Breed({
         <Back onClick={() => go("hall")} />
         <div>
           <small>BREED PROFILE</small>
-          <h2>犬种资料</h2>
+          <h2>品种资料</h2>
         </div>
         <button>♡</button>
       </div>
@@ -760,37 +799,32 @@ function Breed({
         </p>
         <div className="metric">
           <div>
-            <b>大型犬</b>
+            <b>{dimensions.body}</b>
             <small>体型</small>
           </div>
           <div>
-            <b>10–12年</b>
+            <b>{dimensions.life}</b>
             <small>寿命</small>
           </div>
           <div>
-            <b>友善</b>
+            <b>{dimensions.nature}</b>
             <small>性格</small>
           </div>
           <div>
-            <b>中等</b>
+            <b>{dimensions.care}</b>
             <small>饲养难度</small>
           </div>
         </div>
       </section>
       <section className="trait-card">
-        <h3>犬种特征</h3>
-        {[
-          ["亲人程度", "95%"],
-          ["运动需求", "85%"],
-          ["掉毛程度", "70%"],
-          ["训练难度", "30%"],
-        ].map((x) => (
-          <div className="trait" key={x[0]}>
-            <span>{x[0]}</span>
+        <h3>品种特征</h3>
+        {dimensions.traits.map((dimension) => (
+          <div className="trait" key={dimension.label}>
+            <span>{dimension.label}</span>
             <i>
-              <b style={{ width: x[1] }} />
+              <b style={{ width: dimension.value }} />
             </i>
-            <small>{x[1]}</small>
+            <small>{dimension.value}</small>
           </div>
         ))}
       </section>
@@ -1101,6 +1135,7 @@ function Detail({
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
   const archiveMeta = petArchiveMeta(detailPet, displayName);
   const merchant = sellerDetail || sellerProfile;
+  const merchantTrust = merchantTrustProfile(merchant, detailPet, mediaItems.length);
   const sellerLogoStyle = { "--seller-hue": `${((Number(sellerProfile?.id || detailPet?.seller_id || 1) * 47) % 360)}deg` } as CSSProperties;
   useEffect(() => {
     setGalleryIndex(0);
@@ -1399,7 +1434,10 @@ function Detail({
           </article>
           <article className="trait-personality">
             <span>性格能量</span>
-            <div className="trait-orbit">{archiveMeta.personalityType}<i>亲</i><i>稳</i><i>灵</i></div>
+            <div className="personality-energy">
+              <strong>{archiveMeta.personalityType}<small>能量倾向</small></strong>
+              <div>{archiveMeta.personalityMarks.map((mark) => <i key={mark.label}>{mark.icon}<small>{mark.label}</small></i>)}</div>
+            </div>
             <b>{archiveMeta.dateLabel} · {archiveMeta.zodiac}</b>
             <small className="trait-caption">{detailPet?.personality || "温顺亲人"}</small>
           </article>
@@ -1502,7 +1540,7 @@ function Detail({
           <div className="seller-metrics">
             <span><b>{sellerProfile?.rating || 4.9}</b>综合评分</span>
             <span><b>{sellerProfile?.sales || 3289}</b>累计销量</span>
-            <span><b>{sellerProfile?.review_count || 862}</b>真实评价</span>
+            <span><b>{merchantTrust.score}</b>信任指数</span>
           </div>
           <button className="seller-follow" onClick={toggleFollow}>
             {following ? "已关注商家" : "＋ 关注商家"}
@@ -1515,6 +1553,11 @@ function Detail({
             <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
             <header><i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i><div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
             <div className="seller-sheet-metrics"><span><b>{merchant?.sales || 3289}</b>累计销量</span><span><b>{merchant?.review_total || merchant?.review_count || 24}</b>用户评价</span><span><b>98%</b>满意度</span></div>
+            <section className="seller-trust-card">
+              <header><div><small>平台多维资料核验</small><h3>商家信任度</h3></div><b>{merchantTrust.score}<small>/100</small></b></header>
+              <div>{merchantTrust.dimensions.map((item) => <span key={item.label}><em>{item.label}</em><i><b style={{ width: `${item.value}%` }} /></i><small>{item.value}</small></span>)}</div>
+              <p>结合商品实拍资料、健康档案完整度、历史履约、服务响应和线下门店信息综合计算。</p>
+            </section>
             <article><small>线下门店</small><h3>{merchant?.offline_store || `${displaySeller}线下体验店`}</h3><p>{merchant?.city || "本地"} · {merchant?.address || "具体地址请咨询商家"}</p></article>
             <article className="seller-real-promise"><small>影像与档案承诺</small><h3>{merchant?.specialty || "家庭适养评估与长期健康回访"}</h3><p>商品上传的图片、生活照片与视频均为对应宠物实拍；健康档案、接种凭证和线下核验信息支持逐项查看。</p><div><span>实拍影像</span><span>档案核验</span><span>到店可查</span><span>长期回访</span></div></article>
             <section className="seller-review-section">
