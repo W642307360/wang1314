@@ -758,3 +758,30 @@
   font-size: 9px;
   line-height: 1.7;
 }
+
+/* 猫馆、狗馆品种图保持原图纯净：不叠加渐变、投影蒙层或混合模式。 */
+.hall-grid-cats .headshot,
+.hall-grid-dogs .headshot,
+.hall-grid-cats .headshot .smart-image,
+.hall-grid-dogs .headshot .smart-image {
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+.hall-grid-cats .headshot::after,
+.hall-grid-dogs .headshot::after,
+.hall-grid-cats .headshot .smart-image::after,
+.hall-grid-dogs .headshot .smart-image::after {
+  content: none !important;
+  display: none !important;
+}
+
+.hall-grid-cats .headshot img,
+.hall-grid-dogs .headshot img {
+  opacity: 1 !important;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+  transform: none !important;
+  object-fit: cover !important;
+  object-position: center center !important;
+}

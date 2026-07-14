@@ -1514,6 +1514,7 @@ function FeishuManager({ token }: { token: string }) {
   const [activePreview, setActivePreview] = useState<any>(null);
   const [connectionTest, setConnectionTest] = useState<any>(null);
   const [syncing, setSyncing] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [appId, setAppId] = useState("cli_a902ca6a2cb85cc0");
@@ -1547,15 +1548,21 @@ function FeishuManager({ token }: { token: string }) {
   }, [load]);
   const save = async () => {
     setNotice("");
-    const response = await fetch(`${API_BASE}/api/admin/feishu/configs`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        name,
-        document_url: url,
-        app_id: appId,
-        table_id: tableId,
-        field_mapping: {
+    if (!name.trim() || !url.trim() || !appId.trim() || !tableId.trim()) {
+      setNotice("请完整填写数据源名称、飞书链接、App ID 和数据表 ID。");
+      return;
+    }
+    setSavingConfig(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/feishu/configs`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          name: name.trim(),
+          document_url: url.trim(),
+          app_id: appId.trim(),
+          table_id: tableId.trim(),
+          field_mapping: {
           name: "商品名称",
           category_id: "场馆",
           breed: "品种",
@@ -1576,43 +1583,66 @@ function FeishuManager({ token }: { token: string }) {
           seller_name: "商家名称",
           status: "商品状态",
           stock: "库存",
-        },
-      }),
-    });
-    const result = await response.json();
-    if (!response.ok) return setNotice(result.message || "保存失败");
-    setName("");
-    setUrl("");
-    load();
-    setNotice("飞书连接配置已保存；真实读取还需要服务端 FEISHU_APP_SECRET。 ");
+          },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "保存失败");
+      setName("");
+      setUrl("");
+      load();
+      setNotice("同步配置已保存到后台。现在可直接执行“测试连接”和“同步预览”。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "保存同步配置失败");
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+  const editConfig = (config: any) => {
+    setName(config.name || "");
+    setUrl(config.document_url || "");
+    setAppId(config.app_id || "");
+    setTableId(config.table_id || "");
+    setNotice("已载入该连接，可修改后保存；密钥仍由服务端安全保管，不会显示在页面中。");
   };
   const preview = async (id: number) => {
     setSyncing(true);
     setNotice("正在读取飞书并检测数据，不会写入正式数据库…");
-    const response = await fetch(`${API_BASE}/api/admin/feishu/preview`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        config_id: id,
-      }),
-    });
-    const result = await response.json();
-    setSyncing(false);
-    if (!response.ok) return setNotice(result.message || "测试同步失败");
-    setActivePreview(result);
-    setNotice(`预览 #${result.id} 已完成：发现 ${result.stats.products} 条，确认后才会写入数据库。`);
-    load();
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/feishu/preview`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ config_id: id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "同步预览失败");
+      setActivePreview(result);
+      setNotice(`预览 #${result.id} 已完成：发现 ${result.stats.products} 条，确认后才会写入数据库。`);
+      load();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "同步预览失败，请稍后重试");
+    } finally {
+      setSyncing(false);
+    }
   };
   const testConnection = async (id: number) => {
     setSyncing(true);
     setNotice("正在测试授权、数据表和字段访问，不会写入商品数据库…");
-    const response = await fetch(`${API_BASE}/api/admin/feishu/test-connection`, {
-      method: "POST", headers, body: JSON.stringify({ config_id: id }),
-    });
-    const result = await response.json();
-    setSyncing(false);
-    setConnectionTest(result);
-    setNotice(response.ok ? result.message : `连接失败：${result.message || "请检查配置"}`);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/feishu/test-connection`, {
+        method: "POST", headers, body: JSON.stringify({ config_id: id }),
+      });
+      const result = await response.json();
+      setConnectionTest(result);
+      if (!response.ok) throw new Error(result.message || "请检查配置");
+      setNotice(result.message || "连接测试通过");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "请检查配置";
+      setConnectionTest({ connected: false, message });
+      setNotice(`连接失败：${message}`);
+    } finally {
+      setSyncing(false);
+    }
   };
   const commitPreview = async (id: number) => {
     setSyncing(true);
@@ -1646,6 +1676,7 @@ function FeishuManager({ token }: { token: string }) {
     <section className="admin-table">
       <div>
         <h3>飞书同步配置</h3>
+        <p className="feishu-guide">配置保存在系统后台。先保存，再测试授权和数据表，最后生成不写库的同步预览。</p>
       </div>
       <div className="feishu-form">
         <input
@@ -1660,7 +1691,7 @@ function FeishuManager({ token }: { token: string }) {
         />
         <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="飞书 App ID" />
         <input value={tableId} onChange={(e) => setTableId(e.target.value)} placeholder="数据表 Table ID" />
-        <button onClick={save}>保存同步配置</button>
+        <button onClick={save} disabled={savingConfig}>{savingConfig ? "保存中…" : "保存同步配置"}</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
       <div className="sync-connection">
@@ -1688,8 +1719,11 @@ function FeishuManager({ token }: { token: string }) {
               <td>{c.document_url}</td>
               <td>App ID：{c.app_id}<small>Table：{c.table_id} · 密钥：{c.secret_configured ? "环境变量已配置" : "未配置"}</small></td>
               <td>
-                <button disabled={syncing || c.status !== "active"} onClick={() => testConnection(c.id)}>{syncing ? "测试中…" : "测试连接"}</button>
-                <button disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>同步预览</button>
+                <div className="sync-actions">
+                  <button className="edit" disabled={syncing} onClick={() => editConfig(c)}>编辑配置</button>
+                  <button className="test" disabled={syncing || c.status !== "active"} onClick={() => testConnection(c.id)}>{syncing ? "测试中…" : "测试连接"}</button>
+                  <button className="preview" disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>同步预览</button>
+                </div>
               </td>
             </tr>
           ))}

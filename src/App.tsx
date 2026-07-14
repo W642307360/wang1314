@@ -926,7 +926,7 @@ function Detail({
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
-  const [visibleMediaCount, setVisibleMediaCount] = useState(12);
+  const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
@@ -1012,7 +1012,10 @@ function Detail({
       : [{ kind: "image" as const, url: petImage(detailPet, breed.image), thumb: petImage(detailPet, breed.image), label: "主图" }];
   }, [breed.image, detailPet]);
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
-  useEffect(() => { setGalleryIndex(0); setVisibleMediaCount(12); }, [detailPet?.id]);
+  useEffect(() => {
+    setGalleryIndex(0);
+    setMediaViewerOpen(false);
+  }, [detailPet?.id]);
   const moveGallery = (direction: number) =>
     setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
   const toggleFavorite = async () => {
@@ -1149,25 +1152,49 @@ function Detail({
             {productStatus === "sold" ? "已售出" : "商品已下架"}
           </span>
         )}
-      </section>
-      <section className="media-strip" aria-label="商品图片和视频列表">
-        {mediaItems.slice(0, visibleMediaCount).map((item, index) => (
+        <button
+          type="button"
+          className="media-expand"
+          onClick={() => setMediaViewerOpen(true)}
+          aria-label={activeMedia.kind === "video" ? "放大播放视频" : "查看高清大图"}
+        >
+          <span>⛶</span>{activeMedia.kind === "video" ? "放大视频" : "查看大图"}
+        </button>
+        <div className="media-indicator" aria-label="商品图片和视频列表">
+        {mediaItems.slice(0, 5).map((item, index) => (
           <button
             type="button"
             className={index === galleryIndex ? "active" : ""}
             key={`${item.kind}-${item.url}`}
             onClick={() => setGalleryIndex(index)}
+            aria-label={`查看${item.label}`}
           >
             <SmartImage src={item.thumb} alt={item.label} />
-            <span>{item.kind === "video" ? "▶ 视频" : item.label}</span>
+            {item.kind === "video" && <span className="media-kind">▶</span>}
           </button>
         ))}
-        {visibleMediaCount < mediaItems.length && (
-          <button className="media-more" type="button" onClick={() => setVisibleMediaCount((count) => count + 12)}>
-            <b>＋{mediaItems.length - visibleMediaCount}</b><span>更多影像</span>
+        {mediaItems.length > 5 && (
+          <button className="media-more" type="button" onClick={() => setMediaViewerOpen(true)} aria-label="查看全部影像">
+            <b>＋{mediaItems.length - 5}</b>
           </button>
         )}
+        </div>
       </section>
+      {mediaViewerOpen && (
+        <div className="media-viewer" role="dialog" aria-modal="true" aria-label="商品高清影像浏览" onClick={() => setMediaViewerOpen(false)}>
+          <button type="button" className="media-viewer-close" onClick={() => setMediaViewerOpen(false)} aria-label="关闭">×</button>
+          {mediaItems.length > 1 && <button type="button" className="media-viewer-prev" onClick={(event) => { event.stopPropagation(); moveGallery(-1); }} aria-label="上一张">‹</button>}
+          <div className="media-viewer-stage" onClick={(event) => event.stopPropagation()}>
+            {activeMedia.kind === "video" ? (
+              <video src={activeMedia.url} poster={activeMedia.thumb} controls autoPlay playsInline preload="auto" />
+            ) : (
+              <SmartImage src={activeMedia.thumb} highres={activeMedia.url} alt={`${displayName}-${activeMedia.label}-高清图`} eager />
+            )}
+            <span>{galleryIndex + 1} / {mediaItems.length} · {activeMedia.label}</span>
+          </div>
+          {mediaItems.length > 1 && <button type="button" className="media-viewer-next" onClick={(event) => { event.stopPropagation(); moveGallery(1); }} aria-label="下一张">›</button>}
+        </div>
+      )}
       <section className="detail-summary">
         <div className="pet-name">
           <div><em>{displayName}</em><i>{detailPet?.gender === "公" || detailPet?.gender === "male" ? "♂" : "♀"}</i></div>
