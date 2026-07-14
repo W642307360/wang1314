@@ -234,7 +234,7 @@ const createGeneratedReviews = (petId, requestedCount) => {
 const petDetail = (id) => {
   const pet = db
     .prepare(
-      `SELECT p.*,b.id AS breed_profile_id,b.intro AS breed_intro,b.origin AS breed_origin,
+      `SELECT p.*,b.id AS breed_profile_id,b.intro AS breed_intro,b.origin AS breed_origin,b.alias AS breed_alias,b.evolution AS breed_evolution,
               b.growth_profile,b.standard_body,
               pp.id AS product_id,pp.status AS product_status
        FROM pets p
@@ -259,6 +259,8 @@ const petDetail = (id) => {
       name: pet.breed,
       intro: pet.breed_intro,
       origin: pet.breed_origin,
+      alias: pet.breed_alias,
+      evolution: pet.breed_evolution,
       growth_profile: pet.growth_profile,
       standard_body: pet.standard_body,
     },
@@ -576,6 +578,20 @@ const feishuProductStatus = (value) => {
   if (["offline", "下架", "已下架"].includes(status)) return "offline";
   return "draft";
 };
+const feishuMediaList = (record, fieldNames) => {
+  const urls = [];
+  for (const name of [...new Set(fieldNames.filter(Boolean))]) {
+    const value = feishuValue(record.fields?.[name]);
+    const items = Array.isArray(value) ? value : value ? [value] : [];
+    for (const item of items) {
+      for (const candidate of String(item).split(/[\n，,]/)) {
+        const clean = candidate.trim();
+        if (/^https?:\/\//.test(clean)) urls.push(clean);
+      }
+    }
+  }
+  return [...new Set(urls)];
+};
 const feishuItems = async (config) => {
   const appId = config.app_id || process.env.FEISHU_APP_ID;
   const appSecret = process.env.FEISHU_APP_SECRET;
@@ -613,8 +629,12 @@ const feishuItems = async (config) => {
     pageToken = data.data.page_token;
   }
   return records.map((record) => {
-    const images = field(record, "images", "图片");
-    const videos = field(record, "videos", "视频");
+    const images = feishuMediaList(record, [
+      mapping.images, "主图文件", "主图", "图片", "商品图片", "展示图片", "生活照片", "详情图片",
+    ]).slice(0, 60);
+    const videos = feishuMediaList(record, [
+      mapping.videos, "视频文件", "视频", "商品视频", "生活视频", "详情视频",
+    ]).slice(0, 12);
     return {
       name: field(record, "name", "宠物名称"),
       category_id: feishuCategoryId(
@@ -630,14 +650,17 @@ const feishuItems = async (config) => {
       health_status: field(record, "health_status", "健康状态"),
       vaccine_record: field(record, "vaccine_record", "疫苗记录"),
       description: field(record, "description", "商品详情"),
+      breed_origin: field(record, "breed_origin", "品种起源") || field(record, "breed_origin", "原产地"),
+      breed_alias: field(record, "breed_alias", "品种别称"),
+      breed_evolution: field(record, "breed_evolution", "品种演化"),
       price: Number(field(record, "price", "价格") || 0),
       seller_name: field(record, "seller_name", "商家名称"),
       status: feishuProductStatus(field(record, "status", "商品状态")),
       source: "feishu",
       external_id: record.record_id,
       stock: Number(field(record, "stock", "库存") || 1),
-      images: Array.isArray(images) ? images : images ? [images] : [],
-      videos: Array.isArray(videos) ? videos : videos ? [videos] : [],
+      images,
+      videos,
     };
   });
 };
@@ -717,18 +740,24 @@ const processSyncTask = (taskId, items) => {
         if (!breedId) {
           const createdBreed = db
             .prepare(
-              "INSERT INTO breeds(name,category_id,intro,origin,growth_profile,standard_body) VALUES(?,?,?,?,?,?)",
+              "INSERT INTO breeds(name,category_id,intro,origin,growth_profile,standard_body,alias,evolution) VALUES(?,?,?,?,?,?,?,?)",
             )
             .run(
               item.breed,
               item.category_id || 1,
               `${item.breed}标准品种档案`,
-              "待运营补充",
+              item.breed_origin || "中国及国际登记繁育体系",
               "待运营补充",
               item.body_type || "待运营补充",
+              item.breed_alias || `${item.breed}标准品种`,
+              item.breed_evolution || `${item.breed}经长期自然适应与规范繁育，逐步形成稳定品种特征。`,
             );
           breedId = createdBreed.lastInsertRowid;
         }
+        if (breedId && (item.breed_origin || item.breed_alias || item.breed_evolution))
+          db.prepare(
+            "UPDATE breeds SET origin=COALESCE(?,origin),alias=COALESCE(?,alias),evolution=COALESCE(?,evolution) WHERE id=?",
+          ).run(item.breed_origin || null, item.breed_alias || null, item.breed_evolution || null, breedId);
         if (petId)
           db.prepare("UPDATE pets SET breed_id=? WHERE id=?").run(breedId, petId);
         if (petId)

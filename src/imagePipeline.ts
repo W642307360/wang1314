@@ -27,6 +27,7 @@ export const optimizePetImage = (
 ) => {
   const source = url || fallback;
   if (!source || !source.startsWith("http")) return source;
+  if (source.includes("/api/media/feishu")) return source;
   const { width, quality } = variantSize[variant];
 
   // 飞书、多维表格或后台同步过来的图片链接不改颜色，只补充“尺寸/格式/质量”参数。

@@ -75,7 +75,7 @@ type ApiPet = {
   reviews?: Array<any>;
   review_count?: number;
   updated_at?: string;
-  breed_profile?: { intro?: string; origin?: string; growth_profile?: string; standard_body?: string };
+  breed_profile?: { intro?: string; origin?: string; alias?: string; evolution?: string; growth_profile?: string; standard_body?: string };
   personality?: string;
   body_type?: string;
   vaccine_record?: string;
@@ -190,15 +190,17 @@ function SmartImage({
   const initialLoaded = imageMemoryCache.has(small);
   const [loaded, setLoaded] = useState(initialLoaded);
   const [error, setError] = useState(false);
+  const [highresFailed, setHighresFailed] = useState(false);
   const [current, setCurrent] = useState(small);
   useEffect(() => {
     const next = thumbImage(src);
     setCurrent(next);
     setLoaded(imageMemoryCache.has(next));
     setError(false);
+    setHighresFailed(false);
   }, [src]);
   useEffect(() => {
-    if (!large || current === large || !loaded) return;
+    if (!large || current === large || !loaded || highresFailed) return;
     let cancelled = false;
     const img = new Image();
     img.decoding = "async";
@@ -212,7 +214,7 @@ function SmartImage({
     return () => {
       cancelled = true;
     };
-  }, [large, current, loaded]);
+  }, [large, current, loaded, highresFailed]);
   return (
     <span
       className={`smart-image ${loaded ? "loaded" : ""} ${error ? "error" : ""} ${className || ""}`}
@@ -232,7 +234,14 @@ function SmartImage({
             imageMemoryCache.add(current);
             setLoaded(true);
           }}
-          onError={() => setError(true)}
+          onError={() => {
+            if (current !== small) {
+              setHighresFailed(true);
+              setCurrent(small);
+              return;
+            }
+            setError(true);
+          }}
         />
       )}
     </span>
@@ -391,16 +400,16 @@ function Home({
         </div>
       </section>
       <section className="care-gateway">
-        <div className="care-orbit">
-          <i>食</i>
-          <i>洁</i>
-          <i>训</i>
-          <i>医</i>
-          <b>养</b>
+        <div className="care-compass" aria-label="宠物照护四个方向">
+          <b>宠<small>照护坐标</small></b>
+          <i><span>食</span><small>营养</small></i>
+          <i><span>净</span><small>清洁</small></i>
+          <i><span>习</span><small>训练</small></i>
+          <i><span>安</span><small>健康</small></i>
         </div>
         <div className="care-copy">
-          <small>照护星图</small>
-          <h2>生命照护地图</h2>
+          <small>陪伴坐标</small>
+          <h2>养宠照护地图</h2>
           <p>从猫狗到水族、鸟类、奇宠，把喂养、清洁、训练、健康和到家适应做成一张可查的生命手册。</p>
           <button onClick={() => go("care")}>进入照护地图　›</button>
         </div>
@@ -917,6 +926,7 @@ function Detail({
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
+  const [visibleMediaCount, setVisibleMediaCount] = useState(12);
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
@@ -1002,7 +1012,7 @@ function Detail({
       : [{ kind: "image" as const, url: petImage(detailPet, breed.image), thumb: petImage(detailPet, breed.image), label: "主图" }];
   }, [breed.image, detailPet]);
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
-  useEffect(() => setGalleryIndex(0), [detailPet?.id]);
+  useEffect(() => { setGalleryIndex(0); setVisibleMediaCount(12); }, [detailPet?.id]);
   const moveGallery = (direction: number) =>
     setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
   const toggleFavorite = async () => {
@@ -1116,6 +1126,8 @@ function Detail({
     detailPet?.breed || breed.name,
     detailPet?.breed_profile?.origin || "品种登记地",
   );
+  const originAlias = detailPet?.breed_profile?.alias || originStory.alias;
+  const originEvolution = detailPet?.breed_profile?.evolution || originStory.evolution;
   return (
     <div className="detail">
       <section
@@ -1139,7 +1151,7 @@ function Detail({
         )}
       </section>
       <section className="media-strip" aria-label="商品图片和视频列表">
-        {mediaItems.map((item, index) => (
+        {mediaItems.slice(0, visibleMediaCount).map((item, index) => (
           <button
             type="button"
             className={index === galleryIndex ? "active" : ""}
@@ -1150,6 +1162,11 @@ function Detail({
             <span>{item.kind === "video" ? "▶ 视频" : item.label}</span>
           </button>
         ))}
+        {visibleMediaCount < mediaItems.length && (
+          <button className="media-more" type="button" onClick={() => setVisibleMediaCount((count) => count + 12)}>
+            <b>＋{mediaItems.length - visibleMediaCount}</b><span>更多影像</span>
+          </button>
+        )}
       </section>
       <section className="detail-summary">
         <div className="pet-name">
@@ -1307,8 +1324,8 @@ function Detail({
             <span>{detailPet?.breed_profile?.origin || `${breed.name}品种来源地`}</span>
           </div>
           <p>{detailPet?.breed_profile?.origin || `${breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。`}</p>
-          <b className="origin-alias">别称：{originStory.alias}</b>
-          <p>{originStory.evolution}</p>
+          <b className="origin-alias">别称：{originAlias}</b>
+          <p>{originEvolution}</p>
         </div>
         <div>
           <h3>所属商家</h3>
@@ -1648,13 +1665,13 @@ function CareManual({ go }: { go: (p: Page) => void }) {
         <Back onClick={() => go("home")} />
         <div>
           <small>照护地图</small>
-          <h2>生命照护地图</h2>
+          <h2>养宠照护地图</h2>
         </div>
         <button>⌕</button>
       </div>
       <section className="care-hero">
         <div>
-          <small>生命照护手册</small>
+          <small>养宠照护手册</small>
           <h1>把“怎么养”做成一张可以翻阅的地图</h1>
           <p>后续接入飞书或后台数据后，每个品种都能拥有自己的喂养、训练、健康和成长图片手册。</p>
         </div>

@@ -343,24 +343,46 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     headers: adminHeaders,
     body: JSON.stringify({
       config_id: feishuConfig.payload.id,
-      batch_size: 500,
-      items: [
-        { external_id: "test-1", name: "飞书测试布偶猫", breed: "布偶猫", category_id: 1, price: 6800, stock: 1 },
-        { external_id: "test-2", name: "飞书测试缅因猫", breed: "缅因猫", category_id: 1, price: 7200, stock: 1 },
-      ],
+      batch_size: 100,
+      total: 1000,
     }),
   });
   assert.equal(sync.response.status, 202);
   let syncTask;
-  for (let i = 0; i < 30; i += 1) {
+  for (let i = 0; i < 120; i += 1) {
     const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
     syncTask = tasks.payload.find((item) => item.id === sync.payload.taskId);
     if (["completed", "failed"].includes(syncTask?.status)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(syncTask.status, "completed");
-  assert.equal(syncTask.success, 2);
+  assert.equal(syncTask.success, 1000);
   assert.equal(syncTask.failed, 0);
+  const mediaSync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 100,
+      items: [{
+        external_id: "multi-media-1", name: "飞书多媒体测试宠物", breed: "布偶猫", category_id: 1,
+        price: 6900, stock: 1,
+        images: ["https://example.com/1.jpg", "https://example.com/2.jpg", "https://example.com/3.jpg", "https://example.com/4.jpg"],
+        videos: ["https://example.com/1.mp4", "https://example.com/2.mp4"],
+      }],
+    }),
+  });
+  for (let i = 0; i < 40; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    const task = tasks.payload.find((item) => item.id === mediaSync.payload.taskId);
+    if (task?.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const syncedPets = await request("/api/admin/pets", { headers: adminHeaders });
+  const syncedMediaPet = syncedPets.payload.find((item) => item.external_id === "multi-media-1");
+  const syncedMediaDetail = await request(`/api/pets/${syncedMediaPet.id}`);
+  assert.equal(syncedMediaDetail.payload.images.length, 4);
+  assert.equal(syncedMediaDetail.payload.videos.length, 2);
 
   const banner = await request("/api/admin/banners", {
     method: "POST",

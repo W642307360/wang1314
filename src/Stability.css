@@ -553,6 +553,21 @@
 .care-orbit i:nth-child(3) { right: 6px; top: 38px; }
 .care-orbit i:nth-child(4) { left: 38px; bottom: 6px; }
 
+.care-compass {
+  position: relative;
+  width: 112px;
+  height: 112px;
+  border-radius: 34px;
+  background:
+    linear-gradient(#ffffffc9,#ffffffc9) padding-box,
+    conic-gradient(from 25deg,#d08b4e,#f1d4aa,#7f9477,#d08b4e) border-box;
+  border: 8px solid transparent;
+  box-shadow: 0 16px 34px #714a2426, inset 0 0 0 1px #d6b28a55;
+}
+.care-compass::before,.care-compass::after{content:"";position:absolute;background:#c9ae9055}.care-compass::before{left:50%;top:9px;bottom:9px;width:1px}.care-compass::after{top:50%;left:9px;right:9px;height:1px}
+.care-compass>b{position:absolute;z-index:4;inset:31px;display:grid;place-items:center;border-radius:22px;background:linear-gradient(145deg,#4b443b,#756657);color:#fff;font:700 19px "Noto Serif SC";box-shadow:0 9px 20px #3d2c1d30}.care-compass>b small{display:block;margin-top:-9px;font:5px "Noto Sans SC";letter-spacing:1px;color:#ffffffb8}
+.care-compass>i{position:absolute;z-index:3;width:37px;height:37px;display:grid;place-items:center;border-radius:14px;background:#fff;color:#8b623f;box-shadow:0 7px 17px #67452120;font-style:normal}.care-compass>i span{font:700 11px "Noto Serif SC"}.care-compass>i small{margin-top:-8px;font-size:5px;color:#a39487}.care-compass>i:nth-of-type(1){left:-7px;top:30px}.care-compass>i:nth-of-type(2){left:30px;top:-7px}.care-compass>i:nth-of-type(3){right:-7px;top:30px}.care-compass>i:nth-of-type(4){left:30px;bottom:-7px}
+
 .care-copy small,
 .care-hero small {
   color: #b47a46;

@@ -1562,6 +1562,9 @@ function FeishuManager({ token }: { token: string }) {
           gender: "性别",
           price: "价格",
           description: "详细介绍",
+          breed_origin: "品种起源",
+          breed_alias: "品种别称",
+          breed_evolution: "品种演化",
           images: "主图文件",
           videos: "视频文件",
           age_months: "年龄（月）",
@@ -1642,7 +1645,7 @@ function FeishuManager({ token }: { token: string }) {
   return (
     <section className="admin-table">
       <div>
-        <h3>飞书数据源</h3>
+        <h3>飞书同步配置</h3>
       </div>
       <div className="feishu-form">
         <input
@@ -1657,7 +1660,7 @@ function FeishuManager({ token }: { token: string }) {
         />
         <input value={appId} onChange={(e) => setAppId(e.target.value)} placeholder="飞书 App ID" />
         <input value={tableId} onChange={(e) => setTableId(e.target.value)} placeholder="数据表 Table ID" />
-        <button onClick={save}>保存连接</button>
+        <button onClick={save}>保存同步配置</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
       <div className="sync-connection">
