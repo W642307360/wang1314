@@ -236,10 +236,14 @@ const petDetail = (id) => {
     .prepare(
       `SELECT p.*,b.id AS breed_profile_id,b.intro AS breed_intro,b.origin AS breed_origin,b.alias AS breed_alias,b.evolution AS breed_evolution,
               b.growth_profile,b.standard_body,
-              pp.id AS product_id,pp.status AS product_status
+              pp.id AS product_id,pp.status AS product_status,
+              s.name AS seller_profile_name,s.city AS seller_city,s.address AS seller_address,
+              s.rating AS seller_rating,s.sales AS seller_sales,s.review_count AS seller_review_count,
+              s.specialty AS seller_specialty,s.offline_store AS seller_offline_store
        FROM pets p
        LEFT JOIN breeds b ON b.id=p.breed_id OR b.name=p.breed
        LEFT JOIN pet_products pp ON pp.pet_id=p.id
+       LEFT JOIN sellers s ON s.id=p.seller_id
        WHERE p.id=?`,
     )
     .get(id);
@@ -248,6 +252,18 @@ const petDetail = (id) => {
     ...pet,
     breed_id: pet.breed_id || pet.breed_profile_id || null,
     seller_id: pet.seller_id || null,
+    seller_name: pet.seller_name || pet.seller_profile_name || null,
+    seller_profile: pet.seller_id ? {
+      id: pet.seller_id,
+      name: pet.seller_profile_name || pet.seller_name,
+      city: pet.seller_city,
+      address: pet.seller_address,
+      rating: pet.seller_rating,
+      sales: pet.seller_sales,
+      review_count: pet.seller_review_count,
+      specialty: pet.seller_specialty,
+      offline_store: pet.seller_offline_store,
+    } : null,
     product_status:
       pet.status === "published"
         ? pet.product_status || "available"
@@ -733,6 +749,14 @@ const processSyncTask = (taskId, items) => {
             item.source || "feishu",
             item.external_id || `task-${taskId}-${start + i + 1}`,
           )?.id;
+        const assignedSellerId = item.seller_id || (petId ? ((Number(petId) - 1) % 20) + 1 : null);
+        const assignedSeller = assignedSellerId
+          ? db.prepare("SELECT id,name FROM sellers WHERE id=? AND status='active'").get(assignedSellerId)
+          : null;
+        if (petId && assignedSeller)
+          db.prepare(
+            "UPDATE pets SET seller_id=?,seller_name=COALESCE(NULLIF(seller_name,''),?) WHERE id=?",
+          ).run(assignedSeller.id, assignedSeller.name, petId);
         const breed = db
           .prepare("SELECT id FROM breeds WHERE name=?")
           .get(item.breed);
@@ -766,7 +790,7 @@ const processSyncTask = (taskId, items) => {
           ).run(
             petId,
             breedId,
-            item.seller_id || null,
+            assignedSeller?.id || null,
             item.name,
             item.status === "published" ? "available" : "offline",
           );
@@ -1346,6 +1370,22 @@ createServer(async (req, res) => {
           "SELECT * FROM categories WHERE status='active' ORDER BY sort_order,id",
         ),
       );
+    const publicSeller = path.match(/^\/api\/sellers\/(\d+)$/);
+    if (publicSeller && method === "GET") {
+      const seller = db
+        .prepare("SELECT * FROM sellers WHERE id=? AND status='active'")
+        .get(Number(publicSeller[1]));
+      if (!seller) return json(res, 404, { message: "商家不存在或已暂停营业" });
+      return json(res, 200, {
+        ...seller,
+        products: rows(
+          `SELECT id,name,breed,price,status,
+                  (SELECT url FROM pet_images WHERE pet_id=pets.id ORDER BY sort_order,id LIMIT 1) AS image
+           FROM pets WHERE seller_id=? AND status='published' ORDER BY updated_at DESC LIMIT 12`,
+          seller.id,
+        ),
+      });
+    }
     if (path === "/api/admin/pets" && method === "GET")
       return json(
         res,

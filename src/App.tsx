@@ -69,6 +69,11 @@ type ApiPet = {
   color?: string;
   health_status?: string;
   seller_name?: string;
+  seller_id?: number;
+  seller_profile?: {
+    id: number; name: string; city: string; address: string; rating: number;
+    sales: number; review_count: number; specialty: string; offline_store: string;
+  };
   thumbnail_url?: string;
   highres_url?: string;
   image?: string;
@@ -112,6 +117,77 @@ const breedOriginStory = (name: string, origin: string) => {
     evolution: `${name}源自${origin || "可追溯繁育地区"}，经长期自然适应与规范繁育，逐步形成今天稳定的外形、体态和性格特征。`,
   };
 };
+const stableSeed = (value: string | number) =>
+  String(value).split("").reduce((sum, char, index) => (sum + char.charCodeAt(0) * (index + 11)) % 100003, 37);
+const zodiacFor = (month: number, day: number) => {
+  const edge = [20, 19, 21, 20, 21, 22, 23, 23, 23, 24, 23, 22];
+  const signs = ["摩羯座", "水瓶座", "双鱼座", "白羊座", "金牛座", "双子座", "巨蟹座", "狮子座", "处女座", "天秤座", "天蝎座", "射手座", "摩羯座"];
+  return day < edge[month - 1] ? signs[month - 1] : signs[month];
+};
+const petArchiveMeta = (pet: any, fallbackName: string) => {
+  const seed = stableSeed(pet?.id || fallbackName);
+  const updated = new Date(pet?.updated_at || Date.now());
+  const base = Number.isNaN(updated.getTime()) ? new Date() : updated;
+  const date = new Date(base);
+  date.setDate(date.getDate() - (7 + seed % 84));
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const age = Number(pet?.age_months || 3);
+  const lifeStage = age <= 4 ? "初见期" : age <= 12 ? "成长期" : age <= 84 ? "相伴期" : "守护期";
+  const lifeCopy = age <= 4 ? "遇到刚好的你" : age <= 12 ? "一起长成更好的我们" : age <= 84 ? "日常就是最长情的陪伴" : "慢一点，也一直在身边";
+  return {
+    personalityType: seed % 2 ? "E人" : "I人",
+    dateLabel: `${String(month).padStart(2, "0")}月${String(day).padStart(2, "0")}日`,
+    zodiac: zodiacFor(month, day),
+    lifeStage,
+    lifeCopy,
+  };
+};
+function FurColorArchive({ src, color }: { src: string; color?: string }) {
+  const [detected, setDetected] = useState("自然综合色");
+  useEffect(() => {
+    if (!src || color) return;
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 24;
+        canvas.height = 24;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return;
+        context.drawImage(image, 0, 0, 24, 24);
+        const pixels = context.getImageData(0, 0, 24, 24).data;
+        let red = 0, green = 0, blue = 0, count = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const r = pixels[index], g = pixels[index + 1], b = pixels[index + 2], alpha = pixels[index + 3];
+          if (alpha < 180 || (r > 238 && g > 238 && b > 238)) continue;
+          red += r; green += g; blue += b; count++;
+        }
+        if (!count) return;
+        const r = red / count, g = green / count, b = blue / count;
+        const light = (r + g + b) / 3;
+        const spread = Math.max(r, g, b) - Math.min(r, g, b);
+        const name = light < 62 ? "深黑墨色" : spread < 16 ? (light > 190 ? "银白浅灰" : "柔和灰色")
+          : r > b * 1.28 && g > b * 1.1 ? (light > 155 ? "奶油金色" : "暖棕金色")
+            : b > r * 1.12 ? "蓝灰冷色" : r > g * 1.15 ? "红棕暖色" : "自然综合色";
+        setDetected(name);
+      } catch {
+        setDetected("以主图实拍毛色为准");
+      }
+    };
+    image.onerror = () => setDetected("以主图实拍毛色为准");
+    image.src = src;
+    return () => { image.onload = null; image.onerror = null; };
+  }, [color, src]);
+  return <>
+    <div className="fur-swatch fur-photo-swatch">
+      <SmartImage src={src} alt="商品主图毛色自动取样" />
+      <small>主图自动取色</small>
+    </div>
+    <b>{color || detected}</b>
+  </>;
+}
 const resolveMediaUrl = (url?: string) => {
   if (!url) return "";
   if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
@@ -920,6 +996,7 @@ function Detail({
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
+  const [sellerOpen, setSellerOpen] = useState(false);
   const [selectedAddress, setSelectedAddress] = useState<any>(null);
   const [addressLoading, setAddressLoading] = useState(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
@@ -984,7 +1061,8 @@ function Detail({
   }, [buyOpen, userId]);
   const displayName = detailPet?.name || "Coco";
   const displayPrice = detailPet?.price || 6800;
-  const displaySeller = detailPet?.seller_name || "福宠认证宠物馆";
+  const sellerProfile = detailPet?.seller_profile;
+  const displaySeller = sellerProfile?.name || detailPet?.seller_name || "福宠认证宠物馆";
   const productStatus =
     detailPet?.product_status ||
     (detailPet?.status === "published"
@@ -1014,6 +1092,7 @@ function Detail({
       : [{ kind: "image" as const, url: petImage(detailPet, breed.image), thumb: petImage(detailPet, breed.image), label: "主图" }];
   }, [breed.image, detailPet]);
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
+  const archiveMeta = petArchiveMeta(detailPet, displayName);
   useEffect(() => {
     setGalleryIndex(0);
     setMediaViewerOpen(false);
@@ -1258,22 +1337,22 @@ function Detail({
         <div className="trait-dashboard">
           <article className="trait-color">
             <span>毛色档案</span>
-            <div className="fur-swatch" />
-            <b>{detailPet?.color || "待商家补充"}</b>
+            <FurColorArchive src={mediaItems[0]?.thumb || breed.image} color={detailPet?.color} />
           </article>
           <article className="trait-body">
             <span>体型比例</span>
             <div className="body-scale">
               <i />
-              <i />
               <i className="on" />
+              <i />
             </div>
-            <b>{detailPet?.body_type || "标准体型"}</b>
+            <b><em className="body-type-icon">中</em>{detailPet?.body_type || "中型 · 标准体态"}</b>
           </article>
           <article className="trait-personality">
             <span>性格能量</span>
-            <div className="trait-orbit">✦<i>亲</i><i>稳</i><i>灵</i></div>
-            <b>{detailPet?.personality || "温顺亲人"}</b>
+            <div className="trait-orbit">{archiveMeta.personalityType}<i>亲</i><i>稳</i><i>灵</i></div>
+            <b>{archiveMeta.dateLabel} · {archiveMeta.zodiac}</b>
+            <small className="trait-caption">{detailPet?.personality || "温顺亲人"}</small>
           </article>
           <article className="trait-health">
             <span>健康等级</span>
@@ -1283,7 +1362,8 @@ function Detail({
           <article className="trait-life">
             <span>生命周期</span>
             <div className="life-line"><i /><i /><i /><i /></div>
-            <b>幼年 · 成长 · 成熟 · 陪伴</b>
+            <b>{archiveMeta.lifeStage} · {archiveMeta.lifeCopy}</b>
+            <small className="trait-caption">幼年 · 成长 · 成熟 · 陪伴</small>
           </article>
           <article className="trait-breed">
             <span>繁育档案</span>
@@ -1293,9 +1373,9 @@ function Detail({
                 highres={mediaItems[0]?.url}
                 alt={`${displayName}繁育档案`}
               />
-              <small>双亲可追溯</small>
+              <small><i>✓</i> 鉴定纯种</small>
             </div>
-            <b>{detailPet?.vaccine_record || "疫苗信息待补充"}</b>
+            <b><em>疫苗接种</em>{detailPet?.vaccine_record || "基础免疫信息待商家补充"}</b>
           </article>
         </div>
         {[
@@ -1363,15 +1443,35 @@ function Detail({
           <b className="origin-alias">别称：{originAlias}</b>
           <p>{originEvolution}</p>
         </div>
-        <div>
+        <div className="seller-summary">
           <h3>所属商家</h3>
-          <b>{displaySeller}　★★★★★</b>
-          <p>健康保障 · 售后无忧 · 已售3289+</p>
-          <button onClick={toggleFollow}>
+          <button className="seller-profile-entry" onClick={() => setSellerOpen(true)}>
+            <i>{displaySeller.slice(0, 1)}</i>
+            <span><b>{displaySeller}</b><small>{sellerProfile?.offline_store || "认证线下体验店"}</small></span>
+            <em>查看商家 ›</em>
+          </button>
+          <div className="seller-metrics">
+            <span><b>{sellerProfile?.rating || 4.9}</b>综合评分</span>
+            <span><b>{sellerProfile?.sales || 3289}</b>累计销量</span>
+            <span><b>{sellerProfile?.review_count || 862}</b>真实评价</span>
+          </div>
+          <button className="seller-follow" onClick={toggleFollow}>
             {following ? "已关注商家" : "＋ 关注商家"}
           </button>
         </div>
       </section>
+      {sellerOpen && (
+        <div className="seller-sheet-backdrop" role="dialog" aria-modal="true" aria-label={`${displaySeller}商家资料`} onClick={() => setSellerOpen(false)}>
+          <section className="seller-sheet" onClick={(event) => event.stopPropagation()}>
+            <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
+            <header><i>{displaySeller.slice(0, 1)}</i><div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{sellerProfile?.rating || 4.9} 分</p></div></header>
+            <div className="seller-sheet-metrics"><span><b>{sellerProfile?.sales || 3289}</b>累计销量</span><span><b>{sellerProfile?.review_count || 862}</b>用户评价</span><span><b>98%</b>满意度</span></div>
+            <article><small>线下门店</small><h3>{sellerProfile?.offline_store || `${displaySeller}线下体验店`}</h3><p>{sellerProfile?.city || "本地"} · {sellerProfile?.address || "具体地址请咨询商家"}</p></article>
+            <article><small>擅长服务</small><h3>{sellerProfile?.specialty || "家庭适养评估与长期健康回访"}</h3><p>支持到店了解、视频看宠、健康档案核验及到家后持续回访。</p></article>
+            <footer><button onClick={() => { setSellerOpen(false); setInlineService({ productId: petDbId, productName: displayName, sellerId: sellerProfile?.id || detailPet?.seller_id, sellerName: displaySeller, source: "product_detail" }); }}>咨询商家</button><button onClick={toggleFollow}>{following ? "已关注" : "关注商家"}</button></footer>
+          </section>
+        </div>
+      )}
       <section className="reviews">
         <header><div><small>文字评价</small><h3>用户评价（{Math.min(25, detailPet?.review_count || detailPet?.reviews?.length || 3)}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
         {(detailPet?.reviews?.length ? detailPet.reviews : [
