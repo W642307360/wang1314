@@ -97,10 +97,29 @@ const originMapPoint = (origin = "") => {
   const match = points.find(([keywords]) => keywords.some((keyword) => origin.includes(keyword)));
   return match ? { x: match[1], y: match[2] } : { x: 212, y: 70 };
 };
+const breedOriginStory = (name: string, origin: string) => {
+  const aliases: Record<string, string> = {
+    布偶猫: "仙女猫", 缅因猫: "温柔巨人", 英短蓝猫: "英国蓝", 银渐层: "银色渐层猫",
+    金渐层: "金色渐层猫", 暹罗猫: "月亮钻石", 德文卷毛: "精灵猫", 斯芬克斯: "加拿大无毛猫",
+    金毛: "黄金猎犬", 拉布拉多: "拉布拉多寻回犬", 柯基: "威尔士短腿犬", 边牧: "边境牧羊犬",
+    虎皮鹦鹉: "彩羽小鹦鹉", 玄凤鹦鹉: "鸡尾鹦鹉", 锦鲤: "观赏鲤", 龙鱼: "美丽硬仆骨舌鱼",
+    垂耳兔: "折耳兔", 龙猫: "毛丝鼠", 蜜袋鼯: "糖袋鼯",
+  };
+  return {
+    alias: aliases[name] || `${name}标准品种`,
+    evolution: `${name}源自${origin || "可追溯繁育地区"}，经长期自然适应与规范繁育，逐步形成今天稳定的外形、体态和性格特征。`,
+  };
+};
 const resolveMediaUrl = (url?: string) => {
   if (!url) return "";
   if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
     return `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`;
+  return url;
+};
+const resolveVideoUrl = (url?: string) => {
+  if (!url) return "";
+  if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
+    return `${API_BASE}/api/media/feishu?format=h264&url=${encodeURIComponent(url)}`;
   return url;
 };
 const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
@@ -973,7 +992,7 @@ function Detail({
     const videos = (detailPet?.videos || [])
       .map((item: any) => ({
         kind: "video" as const,
-        url: resolveMediaUrl(item.url),
+        url: resolveVideoUrl(item.url),
         thumb: resolveMediaUrl(item.cover_url) || images[0]?.thumb || petImage(detailPet, breed.image),
         label: "生活视频",
       }))
@@ -1093,6 +1112,10 @@ function Detail({
     setCart(true);
   };
   const originPoint = originMapPoint(detailPet?.breed_profile?.origin || "");
+  const originStory = breedOriginStory(
+    detailPet?.breed || breed.name,
+    detailPet?.breed_profile?.origin || "品种登记地",
+  );
   return (
     <div className="detail">
       <section
@@ -1109,14 +1132,6 @@ function Detail({
           <SmartImage src={activeMedia.thumb} highres={activeMedia.url} alt={`${displayName}-${activeMedia.label}`} eager />
         )}
         <Back onClick={() => go(returnPage)} />
-        <span className="life">♢ {mediaItems.length}项真实影像</span>
-        <span className="count">{galleryIndex + 1}/{mediaItems.length}</span>
-        {mediaItems.length > 1 && (
-          <div className="gallery-arrows">
-            <button type="button" aria-label="上一项" onClick={() => moveGallery(-1)}>‹</button>
-            <button type="button" aria-label="下一项" onClick={() => moveGallery(1)}>›</button>
-          </div>
-        )}
         {productStatus !== "available" && (
           <span className="detail-status">
             {productStatus === "sold" ? "已售出" : "商品已下架"}
@@ -1286,11 +1301,14 @@ function Detail({
             <svg viewBox="0 0 320 150" role="img" aria-label={`${breed.name}品种起源地图`}>
               <path d="M16 51l24-29 46 7 19 23-13 20-32 4-13 34-20-19zm104-18 34-19 32 15 25-8 45 22 42 5 9 23-29 12-31-7-18 20-35-7-17 30-28-14-9-32-24-14z" />
               <path d="M212 109l18-9 20 12-7 23-24-3z" />
+              <circle className="origin-range" cx={originPoint.x} cy={originPoint.y} r="15" />
               <circle cx={originPoint.x} cy={originPoint.y} r="6" />
             </svg>
             <span>{detailPet?.breed_profile?.origin || `${breed.name}品种来源地`}</span>
           </div>
           <p>{detailPet?.breed_profile?.origin || `${breed.name}拥有完整的标准化品种起源、历史与遗传特征档案。`}</p>
+          <b className="origin-alias">别称：{originStory.alias}</b>
+          <p>{originStory.evolution}</p>
         </div>
         <div>
           <h3>所属商家</h3>
@@ -1302,7 +1320,7 @@ function Detail({
         </div>
       </section>
       <section className="reviews">
-        <header><div><small>真实购买反馈</small><h3>用户评价（{detailPet?.review_count || detailPet?.reviews?.length || 3}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
+        <header><div><small>文字评价</small><h3>用户评价（{Math.min(25, detailPet?.review_count || detailPet?.reviews?.length || 3)}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
         {(detailPet?.reviews?.length ? detailPet.reviews : [
           { id: "demo-1", nickname: "林间小屋", rating: 5, is_verified: 1, created_at: "2026-06-28", content: `${displayName}到家后状态特别好，眼睛清亮，毛发柔软。客服提前讲了饮食和应激期注意事项，第一晚就愿意靠近我们。`, images: mediaItems.filter((x) => x.kind === "image").slice(0, 2).map((x) => x.thumb), likes: 18 },
           { id: "demo-2", nickname: "阿梨的日常", rating: 5, is_verified: 1, created_at: "2026-06-19", content: "整个购买流程很透明，健康资料和疫苗记录都能查看。接回家一周适应得很快，性格比照片里还亲人。", images: mediaItems.filter((x) => x.kind === "image").slice(1, 3).map((x) => x.thumb), likes: 11 },
@@ -1314,8 +1332,6 @@ function Detail({
             <article className="review-card" key={reviewKey}>
               <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.source === "generated" ? "平台体验样本" : review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
               <p>{review.content}</p>
-              {!!review.images?.length && <div className="review-media">{review.images.map((image: string) => <SmartImage key={image} src={resolveMediaUrl(image)} alt="用户评价图片" />)}</div>}
-              {!!review.videos?.length && <div className="review-media">{review.videos.map((video: string) => <video key={video} src={resolveMediaUrl(video)} controls playsInline preload="metadata" />)}</div>}
               <button type="button" onClick={async () => { if (!liked && Number.isFinite(Number(review.id))) await fetch(`${API_BASE}/api/reviews/${review.id}/like`, { method: "POST" }).catch(() => {}); setLikedReviews((old) => { const next = new Set(old); if (liked) next.delete(reviewKey); else next.add(reviewKey); return next; }); }}>♡ 有帮助 {Number(review.likes || 0) + (liked ? 1 : 0)}</button>
             </article>
           );

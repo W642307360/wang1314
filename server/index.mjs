@@ -5,9 +5,12 @@ import {
   mkdirSync,
   existsSync,
   writeFileSync,
+  unlinkSync,
   readdirSync,
   statSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
+import ffmpegPath from "ffmpeg-static";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,11 +21,14 @@ import {
   sign as rsaSign,
   verify as rsaVerify,
   createDecipheriv,
+  createHash,
 } from "node:crypto";
 
 const root = dirname(fileURLToPath(import.meta.url));
 mkdirSync(join(root, "data"), { recursive: true });
 mkdirSync(join(root, "uploads"), { recursive: true });
+const compatibleMediaDir = join(root, "data", "compatible-media");
+mkdirSync(compatibleMediaDir, { recursive: true });
 const dbPath = process.env.DB_PATH || join(root, "data", "fuchong.db");
 const backupDir = join(root, "backups");
 mkdirSync(backupDir, { recursive: true });
@@ -177,22 +183,42 @@ const reviewEndings = [
   "目前吃饭、睡觉都很规律。", "家人都很喜欢，会继续认真陪伴。", "这次体验值得肯定。",
   "希望它健康长大。", "已经成为家里很重要的新成员。", "后续有变化还会继续记录。",
 ];
-const generatedReviewCount = (petId) => 12 + ((Number(petId) * 37) % 109);
+const reviewMoments = [
+  "刚到家时会先安静观察", "现在已经熟悉家里的声音", "吃饭和饮水都很规律", "每天会主动来门口迎接",
+  "第一次体检过程很顺利", "换粮过渡没有明显不适", "晚上休息得很安稳", "很快学会了使用自己的用品",
+  "对家里的新环境很好奇", "梳毛和清洁时也很配合", "最近互动比刚来时更多", "会自己寻找舒服的位置休息",
+  "对家人说话的声音有回应", "玩耍之后能够安静下来", "外出检查时情绪比较稳定", "日常作息正在慢慢固定",
+  "适应期比我们预想得更短", "对新玩具保持着好奇心", "最近食欲和精神都很稳定", "已经记住了家里的活动路线",
+  "在熟悉的人身边会更放松", "洗护之后毛发状态很自然", "每天的变化都值得记录", "现在已经愿意主动亲近家人",
+  "整体状态持续稳定",
+];
+const generatedReviewCount = (petId) => 10 + ((Number(petId) * 37) % 16);
 const createGeneratedReviews = (petId, requestedCount) => {
   const pet = db.prepare("SELECT id,name,breed FROM pets WHERE id=?").get(Number(petId));
   if (!pet) return { created: 0, count: 0 };
-  const count = Math.min(150, Math.max(1, Number(requestedCount || generatedReviewCount(pet.id))));
-  const existing = db
+  const desiredTotal = Math.min(25, Math.max(10, Number(requestedCount || generatedReviewCount(pet.id))));
+  const realCount = Number(db
+    .prepare("SELECT COUNT(*) AS count FROM product_reviews WHERE pet_id=? AND source<>'generated'")
+    .get(pet.id).count);
+  const desiredGenerated = Math.max(0, desiredTotal - realCount);
+  let existing = Number(db
     .prepare("SELECT COUNT(*) AS count FROM product_reviews WHERE pet_id=? AND source='generated'")
-    .get(pet.id).count;
+    .get(pet.id).count);
+  if (existing > desiredGenerated) {
+    db.prepare(
+      `DELETE FROM product_reviews WHERE pet_id=? AND source='generated' AND id NOT IN
+       (SELECT id FROM product_reviews WHERE pet_id=? AND source='generated' ORDER BY id DESC LIMIT ?)`,
+    ).run(pet.id, pet.id, desiredGenerated);
+    existing = desiredGenerated;
+  }
   const insert = db.prepare(
     `INSERT INTO product_reviews
       (pet_id,nickname,rating,content,images_json,videos_json,is_verified,likes,source,status,created_at)
      VALUES(?,?,?,?, '[]','[]',0,?,'generated','published',datetime('now',?))`,
   );
   let created = 0;
-  for (let i = Number(existing); i < count; i++) {
-    const content = `${reviewOpenings[(pet.id + i) % reviewOpenings.length]}。${pet.name || pet.breed} ${reviewDetails[(pet.id * 3 + i) % reviewDetails.length]}，${reviewEndings[(pet.id * 7 + i) % reviewEndings.length]}`;
+  for (let i = existing; i < desiredGenerated; i++) {
+    const content = `${reviewOpenings[(pet.id + i) % reviewOpenings.length]}。${pet.name || pet.breed} ${reviewDetails[(pet.id * 3 + i) % reviewDetails.length]}，${reviewMoments[i % reviewMoments.length]}，${reviewEndings[(pet.id * 7 + i) % reviewEndings.length]}`;
     insert.run(
       pet.id,
       reviewNicknames[(pet.id + i * 5) % reviewNicknames.length],
@@ -203,7 +229,7 @@ const createGeneratedReviews = (petId, requestedCount) => {
     );
     created++;
   }
-  return { created, count: Math.max(Number(existing), count) };
+  return { created, count: realCount + desiredGenerated };
 };
 const petDetail = (id) => {
   const pet = db
@@ -244,10 +270,10 @@ const petDetail = (id) => {
     videos: rows("SELECT * FROM pet_videos WHERE pet_id=?", id),
     inventory: rows("SELECT * FROM inventory WHERE pet_id=?", id),
     review_count: db
-      .prepare("SELECT COUNT(*) AS count FROM product_reviews WHERE pet_id=? AND status='published'")
+      .prepare("SELECT MIN(25,COUNT(*)) AS count FROM product_reviews WHERE pet_id=? AND status='published'")
       .get(id).count,
     reviews: rows(
-      "SELECT * FROM product_reviews WHERE pet_id=? AND status='published' ORDER BY created_at DESC,id DESC LIMIT 50",
+      "SELECT * FROM product_reviews WHERE pet_id=? AND status='published' ORDER BY created_at DESC,id DESC LIMIT 25",
       id,
     ).map((review) => ({
       ...review,
@@ -433,6 +459,67 @@ const getFeishuAccess = async (config = {}) => {
     expiresAt: Date.now() + Math.max(60, Number(data.expire || 7200) - 120) * 1000,
   });
   return data.tenant_access_token;
+};
+const compatibleVideoTasks = new Map();
+const ensureCompatibleVideo = async (mediaUrl, accessToken) => {
+  const key = createHash("sha256").update(mediaUrl).digest("hex");
+  const target = join(compatibleMediaDir, `${key}.mp4`);
+  if (existsSync(target) && statSync(target).size > 1024) return target;
+  if (compatibleVideoTasks.has(key)) return compatibleVideoTasks.get(key);
+  const task = (async () => {
+    const source = join(compatibleMediaDir, `${key}.source.mp4`);
+    const response = await fetch(mediaUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) throw new Error("飞书视频下载失败");
+    writeFileSync(source, Buffer.from(await response.arrayBuffer()));
+    await new Promise((resolve, reject) => {
+      const process = spawn(
+        ffmpegPath,
+        [
+          "-y", "-i", source,
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+          "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+          "-movflags", "+faststart", target,
+        ],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      process.once("error", reject);
+      process.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`视频兼容转换失败（${code}）`)),
+      );
+    });
+    if (existsSync(source)) unlinkSync(source);
+    return target;
+  })().finally(() => compatibleVideoTasks.delete(key));
+  compatibleVideoTasks.set(key, task);
+  return task;
+};
+const serveRangeFile = (req, res, file, contentType) => {
+  const size = statSync(file).size;
+  const range = String(req.headers.range || "").match(/bytes=(\d*)-(\d*)/);
+  if (!range) {
+    res.writeHead(200, {
+      "content-type": contentType,
+      "content-length": size,
+      "accept-ranges": "bytes",
+      "cache-control": "public,max-age=31536000,immutable",
+      "access-control-allow-origin": "*",
+    });
+    return res.end(readFileSync(file));
+  }
+  const start = Math.max(0, Number(range[1] || 0));
+  const end = Math.min(size - 1, Number(range[2] || Math.min(size - 1, start + 1024 * 1024 - 1)));
+  const data = readFileSync(file).subarray(start, end + 1);
+  res.writeHead(206, {
+    "content-type": contentType,
+    "content-length": data.length,
+    "content-range": `bytes ${start}-${end}/${size}`,
+    "accept-ranges": "bytes",
+    "cache-control": "public,max-age=31536000,immutable",
+    "access-control-allow-origin": "*",
+  });
+  return res.end(data);
 };
 const generateSyncItems = (total = 500) =>
   Array.from({ length: total }, (_, i) => ({
@@ -740,6 +827,10 @@ createServer(async (req, res) => {
           .prepare("SELECT * FROM feishu_sync_configs WHERE status='active' ORDER BY id DESC LIMIT 1")
           .get() || {};
         const accessToken = await getFeishuAccess(config);
+        if (url.searchParams.get("format") === "h264") {
+          const compatibleFile = await ensureCompatibleVideo(mediaUrl.toString(), accessToken);
+          return serveRangeFile(req, res, compatibleFile, "video/mp4");
+        }
         const upstream = await fetch(mediaUrl, {
           headers: {
             Authorization: `Bearer ${accessToken}`,

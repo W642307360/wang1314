@@ -276,9 +276,10 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     body: JSON.stringify({ pet_id: pet.payload.id, count: 42 }),
   });
   assert.equal(generatedReviews.response.status, 201);
-  assert.equal(generatedReviews.payload.count, 42);
+  assert.equal(generatedReviews.payload.count, 25);
   const petWithGeneratedReviews = await request(`/api/pets/${pet.payload.id}`);
-  assert.equal(petWithGeneratedReviews.payload.review_count, 43);
+  assert.equal(petWithGeneratedReviews.payload.review_count, 25);
+  assert.equal(petWithGeneratedReviews.payload.reviews.length, 25);
   assert.equal(petWithGeneratedReviews.payload.reviews.some((item) => item.source === "generated"), true);
   const afterSale = await request("/api/after-sales", {
     method: "POST",

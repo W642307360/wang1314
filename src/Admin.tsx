@@ -1460,7 +1460,7 @@ function ContentManager({ token }: { token: string }) {
 
 function ReviewsManager({ token, products }: { token: string; products: any[] }) {
   const [petId, setPetId] = useState("");
-  const [count, setCount] = useState("36");
+  const [count, setCount] = useState("18");
   const [reviews, setReviews] = useState<any[]>([]);
   const [notice, setNotice] = useState("");
   const headers = useMemo(() => ({ authorization: `Bearer ${token}`, "content-type": "application/json" }), [token]);
@@ -1487,13 +1487,13 @@ function ReviewsManager({ token, products }: { token: string; products: any[] })
   };
   return (
     <section className="admin-table">
-      <div><h3>评价内容库</h3><p>按商品生成 10–150 条不重复的纯文字候选评价，可逐条隐藏或启用。</p></div>
+      <div><h3>评价内容库</h3><p>按商品分配 10–25 条不重复的纯文字候选评价，可逐条隐藏或启用。</p></div>
       <div className="feishu-form">
         <select value={petId} onChange={(event) => { setPetId(event.target.value); void load(event.target.value); }}>
           <option value="">选择宠物商品</option>
           {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.breed}</option>)}
         </select>
-        <input type="number" min="10" max="150" value={count} onChange={(event) => setCount(event.target.value)} placeholder="生成数量" />
+        <input type="number" min="10" max="25" value={count} onChange={(event) => setCount(event.target.value)} placeholder="生成数量" />
         <button onClick={generate}>生成候选评价</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
