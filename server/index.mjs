@@ -784,8 +784,9 @@ const processSyncTask = (taskId, items) => {
             .prepare("SELECT id FROM pet_images WHERE pet_id=? AND sort_order=? ORDER BY id LIMIT 1")
             .get(petId, imageIndex);
           if (existingImage)
-            db.prepare("UPDATE pet_images SET url=? WHERE id=?").run(
+            db.prepare("UPDATE pet_images SET url=?,type=? WHERE id=?").run(
               String(imageUrl),
+              imageIndex === 0 ? "main" : "gallery",
               existingImage.id,
             );
           else
@@ -2951,7 +2952,11 @@ createServer(async (req, res) => {
       if (preview.status !== "ready")
         return json(res, 409, { message: "该预览已提交或不可用" });
       const d = await body(req);
-      const items = JSON.parse(preview.items_json || "[]");
+      const previewItems = JSON.parse(preview.items_json || "[]");
+      const publishAfterSync = Boolean(d.publish_after_sync);
+      const items = publishAfterSync
+        ? previewItems.map((item) => ({ ...item, status: "published" }))
+        : previewItems;
       const created = db
         .prepare(
           "INSERT INTO feishu_sync_tasks(config_id,mode,status,total,batch_size) VALUES(?,?,'pending',?,?)",
@@ -2971,8 +2976,9 @@ createServer(async (req, res) => {
       logAdmin(admin, req, "commit_preview", "feishu_sync_tasks", taskId, {
         preview_id: preview.id,
         total: items.length,
+        publish_after_sync: publishAfterSync,
       });
-      return json(res, 202, { taskId, total: items.length, status: "pending" });
+      return json(res, 202, { taskId, total: items.length, status: "pending", publish_after_sync: publishAfterSync });
     }
     if (path === "/api/admin/feishu/sync" && method === "POST") {
       const d = await body(req);

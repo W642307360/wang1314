@@ -17,6 +17,7 @@ import "./SearchPage.css";
 import "./HomeLayout.css";
 import "./Stability.css";
 import "./ProductDetail.css";
+import "./Charity.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
@@ -46,6 +47,7 @@ type Page =
   | "service"
   | "me"
   | "care"
+  | "charity"
   | "login"
   | "orders"
   | "favorites"
@@ -380,12 +382,12 @@ function Home({
       </div>
       <section className="charity-section">
         <div>
-          <small>福宠公益基金</small>
+          <small>福宠公益</small>
           <h2>让每一种生命，都被温柔接住</h2>
           <p>
             平台每完成一笔交易，将按比例投入流浪动物救助、绝育、医疗和领养回访。
           </p>
-          <button>了解公益计划　›</button>
+          <button onClick={() => go("charity")}>走进福宠公益　›</button>
         </div>
         <div className="charity-stats">
           <span>
@@ -1285,7 +1287,14 @@ function Detail({
           </article>
           <article className="trait-breed">
             <span>繁育档案</span>
-            <div className="breed-mark">双亲<br />可追溯</div>
+            <div className="trait-breed-media">
+              <SmartImage
+                src={mediaItems[0]?.thumb || breed.image}
+                highres={mediaItems[0]?.url}
+                alt={`${displayName}繁育档案`}
+              />
+              <small>双亲可追溯</small>
+            </div>
             <b>{detailPet?.vaccine_record || "疫苗信息待补充"}</b>
           </article>
         </div>
@@ -1735,6 +1744,60 @@ function CareManual({ go }: { go: (p: Page) => void }) {
   );
 }
 
+function Charity({ go }: { go: (p: Page) => void }) {
+  const projects = [
+    { icon: "医", title: "生命急救站", text: "为流浪与受伤动物提供紧急检查、治疗和康复支持。", stat: "本月救助 126 只" },
+    { icon: "家", title: "回家计划", text: "完成健康评估、性格观察、领养匹配与长期回访。", stat: "持续回访 365 天" },
+    { icon: "伴", title: "社区共护", text: "连接医院、救助机构、志愿者和负责任的养宠家庭。", stat: "86 家伙伴同行" },
+  ];
+  return (
+    <div className="charity-page">
+      <section className="charity-hero">
+        <Back onClick={() => go("home")} />
+        <div className="charity-orbit" aria-hidden="true"><i /><i /><i /><b>福</b></div>
+        <small>福宠公益</small>
+        <h1>让一次遇见，<br />成为一生的安稳</h1>
+        <p>尊重生命不是一句口号。我们把救助、医疗、领养与回访放进同一条可追溯的公益链路。</p>
+        <div className="charity-hero-stats">
+          <span><b>2,386</b>累计救助</span>
+          <span><b>1,129</b>温暖回家</span>
+          <span><b>98.6%</b>回访完成</span>
+        </div>
+      </section>
+      <section className="charity-manifesto">
+        <small>我们相信</small>
+        <h2>被认真记录的善意，才会走得更远</h2>
+        <p>每个公益项目都记录来源、执行节点与结果。用户可以看见帮助去了哪里，也能选择适合自己的参与方式。</p>
+        <div className="charity-path"><i>发现</i><em /><i>救助</i><em /><i>康复</i><em /><i>回家</i><em /><i>回访</i></div>
+      </section>
+      <section className="charity-projects">
+        <header><small>正在发生</small><h2>三条生命守护线</h2></header>
+        {projects.map((project, index) => (
+          <article key={project.title} className={index === 0 ? "featured" : ""}>
+            <i>{project.icon}</i>
+            <div><h3>{project.title}</h3><p>{project.text}</p><b>{project.stat}</b></div>
+          </article>
+        ))}
+      </section>
+      <section className="charity-ledger">
+        <div><small>透明行动账本</small><h2>每一份善意，都有回声</h2></div>
+        <span>最近更新　今天 09:30</span>
+        <ul>
+          <li><b>医疗援助</b><i /><em>¥ 286,400</em></li>
+          <li><b>绝育防疫</b><i /><em>¥ 174,800</em></li>
+          <li><b>领养回访</b><i /><em>¥ 96,200</em></li>
+        </ul>
+      </section>
+      <section className="charity-join">
+        <small>一起参与</small>
+        <h2>不必宏大，也能改变一个生命</h2>
+        <div><button onClick={() => go("service")}>联系公益顾问</button><button onClick={() => go("home")}>浏览公益伙伴</button></div>
+        <p>领养代替购买 · 文明养宠 · 不遗弃 · 为每次选择负责</p>
+      </section>
+    </div>
+  );
+}
+
 function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about" | "agreement" | "privacy"; go: (p: Page) => void }) {
   const [orderNotice, setOrderNotice] = useState(
     () => localStorage.getItem("fuchong-order-notice") !== "off",
@@ -1915,6 +1978,7 @@ export default function App() {
         />
       )}{" "}
       {page === "care" && <CareManual go={go} />}{" "}
+      {page === "charity" && <Charity go={go} />}{" "}
       {page === "me" && <Me go={go} user={user} />}
       {page === "login" && (
         <P0LoginPage
@@ -2011,7 +2075,7 @@ export default function App() {
           go={go}
         />
       )}
-      {!["hall", "breed", "detail", "addresses"].includes(page) && (
+      {!["hall", "breed", "detail", "addresses", "charity"].includes(page) && (
         <Nav go={go} page={page} />
       )}
     </main>

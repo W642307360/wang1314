@@ -1532,6 +1532,9 @@ function FeishuManager({ token }: { token: string }) {
       config.status === "active" &&
       String(config.document_url || "").includes("/base/"),
   );
+  const activeConfig = configs.find(
+    (config) => config.status === "active" && String(config.document_url || "").includes("/base/"),
+  ) || configs.find((config) => String(config.document_url || "").includes("/base/"));
   const load = useCallback(() => {
     fetch(`${API_BASE}/api/admin/feishu/configs`, { headers })
       .then((r) => r.json())
@@ -1546,6 +1549,13 @@ function FeishuManager({ token }: { token: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (!activeConfig || name || url) return;
+    setName(activeConfig.name || "福宠商品库");
+    setUrl(activeConfig.document_url || "");
+    setAppId(activeConfig.app_id || appId);
+    setTableId(activeConfig.table_id || tableId);
+  }, [activeConfig, appId, name, tableId, url]);
   const save = async () => {
     setNotice("");
     if (!name.trim() || !url.trim() || !appId.trim() || !tableId.trim()) {
@@ -1644,20 +1654,25 @@ function FeishuManager({ token }: { token: string }) {
       setSyncing(false);
     }
   };
-  const commitPreview = async (id: number) => {
+  const commitPreview = async (id: number, publishAfterSync = false) => {
     setSyncing(true);
-    setNotice("正在提交确认后的数据，每批处理 100 条…");
-    const response = await fetch(`${API_BASE}/api/admin/feishu/previews/${id}/commit`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ batch_size: 100 }),
-    });
-    const result = await response.json();
-    setSyncing(false);
-    if (!response.ok) return setNotice(result.message || "正式同步提交失败");
-    setActivePreview(null);
-    setNotice(`正式任务 #${result.taskId} 已进入队列，共 ${result.total} 条。`);
-    window.setTimeout(load, 500);
+    setNotice(publishAfterSync ? "正在同步并上架商品，每批处理 100 条…" : "正在同步为草稿，每批处理 100 条…");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/feishu/previews/${id}/commit`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ batch_size: 100, publish_after_sync: publishAfterSync }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "正式同步提交失败");
+      setActivePreview(null);
+      setNotice(`正式任务 #${result.taskId} 已进入队列，共 ${result.total} 条${publishAfterSync ? "，完成后自动上架" : "，同步后进入商品管理"}。`);
+      window.setTimeout(load, 500);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "正式同步提交失败");
+    } finally {
+      setSyncing(false);
+    }
   };
   const taskAction = async (
     id: number,
@@ -1698,6 +1713,11 @@ function FeishuManager({ token }: { token: string }) {
         <span className={connected ? "online" : "offline"}>{connected ? "● 已连接" : "● 未连接"}</span>
         <p>已保存连接 {configs.length} 个，启用 {configs.filter((item) => item.status === "active").length} 个。固定流程：测试连接 → 同步预览 → 管理员确认 → 分批写入 → 前台更新</p>
       </div>
+      <section className="sync-command-center">
+        <div><small>管理员同步控制台</small><b>{activeConfig ? activeConfig.name || "已保存飞书连接" : "请先保存同步配置"}</b><span>测试不会写库，预览确认后才会同步商品。</span></div>
+        <button disabled={syncing || !activeConfig} onClick={() => activeConfig && testConnection(activeConfig.id)}>① 测试连接</button>
+        <button disabled={syncing || !activeConfig} onClick={() => activeConfig && preview(activeConfig.id)}>② 同步预览</button>
+      </section>
       {connectionTest && <div className={`connection-result ${connectionTest.connected ? "ok" : "error"}`}>
         <b>{connectionTest.connected ? "连接测试通过" : "连接测试失败"}</b>
         {connectionTest.connected && <p>已保存 {connectionTest.saved_connections} 个连接 · 当前表 {connectionTest.records} 条记录 · {connectionTest.fields} 个字段 · 密钥{connectionTest.secret_configured ? "已安全配置" : "未配置"}</p>}
@@ -1721,8 +1741,8 @@ function FeishuManager({ token }: { token: string }) {
               <td>
                 <div className="sync-actions">
                   <button className="edit" disabled={syncing} onClick={() => editConfig(c)}>编辑配置</button>
-                  <button className="test" disabled={syncing || c.status !== "active"} onClick={() => testConnection(c.id)}>{syncing ? "测试中…" : "测试连接"}</button>
-                  <button className="preview" disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>同步预览</button>
+                  <button className="test" disabled={syncing || !String(c.document_url || "").includes("/base/")} onClick={() => testConnection(c.id)}>{syncing ? "处理中…" : "测试连接"}</button>
+                  <button className="preview" disabled={syncing || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>同步预览</button>
                 </div>
               </td>
             </tr>
@@ -1743,7 +1763,7 @@ function FeishuManager({ token }: { token: string }) {
           </div>
           {!!activePreview.sample?.length && <div className="sync-sample">{activePreview.sample.slice(0, 8).map((item: any) => <p key={item.external_id}><b>{item.name}</b><span>{item.breed} · ¥{item.price} · 图片 {item.images?.length || 0} · 视频 {item.videos?.length || 0}</span></p>)}</div>}
           {!!activePreview.errors?.length && <div className="sync-preview-errors">{activePreview.errors.slice(0, 10).map((error: any) => <p key={`${error.row}-${error.external_id}`}>第 {error.row} 行：{error.error}</p>)}</div>}
-          <footer><button onClick={() => setActivePreview(null)}>取消</button><button disabled={syncing || !activePreview.stats.valid} onClick={() => commitPreview(activePreview.id)}>确认并正式同步</button></footer>
+          <footer className="sync-confirm-actions"><button onClick={() => setActivePreview(null)}>取消</button><button disabled={syncing || !activePreview.stats.valid} onClick={() => commitPreview(activePreview.id, false)}>同步到商品库</button><button disabled={syncing || !activePreview.stats.valid} onClick={() => commitPreview(activePreview.id, true)}>同步并立即上架</button></footer>
         </section>
       )}
       {!!previews.length && <p className="sync-history">最近预览：{previews.slice(0, 3).map((p) => `#${p.id} ${p.status === "confirmed" ? "已提交" : "待确认"}`).join("　")}</p>}
