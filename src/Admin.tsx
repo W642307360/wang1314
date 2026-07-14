@@ -17,6 +17,7 @@ type AdminTab =
   | "transactions"
   | "logistics"
   | "afterSales"
+  | "reviews"
   | "content"
   | "feishu";
 type ProductForm = {
@@ -323,6 +324,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
             ["transactions", "¥", "交易中心"],
             ["logistics", "⌖", "物流管理"],
             ["afterSales", "↻", "客诉售后"],
+            ["reviews", "言", "评价内容"],
             ["content", "▤", "首页内容"],
             ["feishu", "云", "飞书同步"],
           ] as const
@@ -352,6 +354,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                   transactions: "交易中心",
                   logistics: "物流管理",
                   afterSales: "客诉与售后",
+                  reviews: "评价内容",
                   content: "首页内容",
                   feishu: "飞书同步",
                 }[tab]
@@ -389,6 +392,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         {tab === "transactions" && <Transactions token={token} />}
         {tab === "logistics" && <Logistics token={token} />}
         {tab === "afterSales" && <AfterSales token={token} />}
+        {tab === "reviews" && <ReviewsManager token={token} products={products} />}
         {tab === "content" && <ContentManager token={token} />}
         {tab === "feishu" && <FeishuManager token={token} />}
       </main>
@@ -988,22 +992,26 @@ function OrdersManager({ token }: { token: string }) {
           <tr>
             <th>订单号</th>
             <th>买家</th>
+            <th>访问/绑定</th>
             <th>金额</th>
             <th>支付</th>
+            <th>支付时间</th>
             <th>状态</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {!orders.length && <EmptyRow cols={6} text="暂无订单数据" />}
+          {!orders.length && <EmptyRow cols={8} text="暂无订单数据" />}
           {orders.map((o) => (
             <tr key={o.id}>
               <td>{o.order_no}</td>
               <td>
-                {o.nickname} {o.phone}
+                {o.nickname || "访问用户"}
               </td>
+              <td>{o.visitor_sessions ? `访问用户 · ${o.visit_count} 次` : "注册用户"}<small>{o.phone_bound ? `已绑定 ${o.phone}` : "未绑定手机号"}</small></td>
               <td>¥{o.total_amount}</td>
               <td>{o.payment_status}</td>
+              <td>{o.paid_at ? String(o.paid_at).replace("T", " ").slice(0, 19) : "尚未支付"}</td>
               <td>{o.status}</td>
               <td>
                 <button onClick={() => open(o.id)}>详情</button>
@@ -1037,8 +1045,9 @@ function OrdersManager({ token }: { token: string }) {
         <div className="user-detail">
           <h3>订单 {detail.order_no}</h3>
           <p>
-            买家：{detail.nickname} {detail.phone}
+            买家：{detail.nickname || "访问用户"} · {detail.phone_bound ? `手机号 ${detail.phone}` : "手机号未绑定"}
           </p>
+          <p>访问记录：{detail.visit_count || 0} 次 · 支付时间：{detail.paid_at ? String(detail.paid_at).replace("T", " ").slice(0, 19) : "尚未支付"}</p>
           <p>
             商品项目：{detail.items?.length || 0} · 支付：
             {detail.payment_status} · 物流：
@@ -1449,11 +1458,61 @@ function ContentManager({ token }: { token: string }) {
   );
 }
 
+function ReviewsManager({ token, products }: { token: string; products: any[] }) {
+  const [petId, setPetId] = useState("");
+  const [count, setCount] = useState("36");
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [notice, setNotice] = useState("");
+  const headers = useMemo(() => ({ authorization: `Bearer ${token}`, "content-type": "application/json" }), [token]);
+  const load = useCallback(async (selected = petId) => {
+    if (!selected) return setReviews([]);
+    const response = await fetch(`${API_BASE}/api/admin/reviews?pet_id=${selected}&pageSize=150`, { headers });
+    const result = await response.json();
+    setReviews(Array.isArray(result) ? result : []);
+  }, [headers, petId]);
+  const generate = async () => {
+    if (!petId) return setNotice("请先选择具体宠物商品");
+    const response = await fetch(`${API_BASE}/api/admin/reviews/generate`, {
+      method: "POST", headers, body: JSON.stringify({ pet_id: Number(petId), count: Number(count) }),
+    });
+    const result = await response.json();
+    if (!response.ok) return setNotice(result.message || "生成失败");
+    setNotice(`已生成 ${result.created} 条，本商品现有 ${result.count} 条平台候选评价。`);
+    await load(petId);
+  };
+  const moderate = async (review: any) => {
+    const status = review.status === "hidden" ? "published" : "hidden";
+    await fetch(`${API_BASE}/api/admin/reviews/${review.id}`, { method: "PATCH", headers, body: JSON.stringify({ status }) });
+    setReviews((items) => items.map((item) => item.id === review.id ? { ...item, status } : item));
+  };
+  return (
+    <section className="admin-table">
+      <div><h3>评价内容库</h3><p>按商品生成 10–150 条不重复的纯文字候选评价，可逐条隐藏或启用。</p></div>
+      <div className="feishu-form">
+        <select value={petId} onChange={(event) => { setPetId(event.target.value); void load(event.target.value); }}>
+          <option value="">选择宠物商品</option>
+          {products.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.breed}</option>)}
+        </select>
+        <input type="number" min="10" max="150" value={count} onChange={(event) => setCount(event.target.value)} placeholder="生成数量" />
+        <button onClick={generate}>生成候选评价</button>
+      </div>
+      {notice && <p className="feishu-notice">{notice}</p>}
+      <table><thead><tr><th>用户</th><th>商品</th><th>评价内容</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody>
+          {!reviews.length && <EmptyRow cols={5} text="选择商品后查看或生成评价" />}
+          {reviews.map((review) => <tr key={review.id}><td>{review.nickname}<small>{review.created_at?.slice(0, 10)}</small></td><td>{review.pet_name}<small>{review.breed}</small></td><td className="review-admin-content">{review.content}</td><td>{review.status === "hidden" ? "已隐藏" : "展示中"}</td><td><button onClick={() => moderate(review)}>{review.status === "hidden" ? "启用" : "隐藏"}</button></td></tr>)}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 function FeishuManager({ token }: { token: string }) {
   const [configs, setConfigs] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [previews, setPreviews] = useState<any[]>([]);
   const [activePreview, setActivePreview] = useState<any>(null);
+  const [connectionTest, setConnectionTest] = useState<any>(null);
   const [syncing, setSyncing] = useState(false);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -1541,6 +1600,17 @@ function FeishuManager({ token }: { token: string }) {
     setNotice(`预览 #${result.id} 已完成：发现 ${result.stats.products} 条，确认后才会写入数据库。`);
     load();
   };
+  const testConnection = async (id: number) => {
+    setSyncing(true);
+    setNotice("正在测试授权、数据表和字段访问，不会写入商品数据库…");
+    const response = await fetch(`${API_BASE}/api/admin/feishu/test-connection`, {
+      method: "POST", headers, body: JSON.stringify({ config_id: id }),
+    });
+    const result = await response.json();
+    setSyncing(false);
+    setConnectionTest(result);
+    setNotice(response.ok ? result.message : `连接失败：${result.message || "请检查配置"}`);
+  };
   const commitPreview = async (id: number) => {
     setSyncing(true);
     setNotice("正在提交确认后的数据，每批处理 100 条…");
@@ -1592,14 +1662,18 @@ function FeishuManager({ token }: { token: string }) {
       {notice && <p className="feishu-notice">{notice}</p>}
       <div className="sync-connection">
         <span className={connected ? "online" : "offline"}>{connected ? "● 已连接" : "● 未连接"}</span>
-        <p>固定流程：测试读取 → 数据检测 → 管理员确认 → 分批写入 → 前台自动更新</p>
+        <p>已保存连接 {configs.length} 个，启用 {configs.filter((item) => item.status === "active").length} 个。固定流程：测试连接 → 同步预览 → 管理员确认 → 分批写入 → 前台更新</p>
       </div>
+      {connectionTest && <div className={`connection-result ${connectionTest.connected ? "ok" : "error"}`}>
+        <b>{connectionTest.connected ? "连接测试通过" : "连接测试失败"}</b>
+        {connectionTest.connected && <p>已保存 {connectionTest.saved_connections} 个连接 · 当前表 {connectionTest.records} 条记录 · {connectionTest.fields} 个字段 · 密钥{connectionTest.secret_configured ? "已安全配置" : "未配置"}</p>}
+      </div>}
       <table>
         <thead>
           <tr>
             <th>名称</th>
             <th>文档链接</th>
-            <th>字段映射</th>
+            <th>接口与凭据</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -1609,9 +1683,10 @@ function FeishuManager({ token }: { token: string }) {
             <tr key={c.id}>
               <td>{c.name || "未命名数据源"}<small>{c.status === "active" ? "已启用" : "已停用"}</small></td>
               <td>{c.document_url}</td>
-              <td>名称、品种、价格、媒体</td>
+              <td>App ID：{c.app_id}<small>Table：{c.table_id} · 密钥：{c.secret_configured ? "环境变量已配置" : "未配置"}</small></td>
               <td>
-                <button disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>{syncing ? "检测中…" : "测试同步"}</button>
+                <button disabled={syncing || c.status !== "active"} onClick={() => testConnection(c.id)}>{syncing ? "测试中…" : "测试连接"}</button>
+                <button disabled={syncing || c.status !== "active" || !String(c.document_url || "").includes("/base/")} onClick={() => preview(c.id)}>同步预览</button>
               </td>
             </tr>
           ))}

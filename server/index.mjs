@@ -144,6 +144,67 @@ const pageParams = (url, defaults = { pageSize: 12, max: 100 }) => {
   );
   return { page, pageSize, offset: (page - 1) * pageSize };
 };
+const shanghaiDateKey = () =>
+  new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10).replaceAll("-", "");
+const nextOrderNumber = () => {
+  const dateKey = shanghaiDateKey();
+  const sequence = db
+    .prepare(
+      `INSERT INTO daily_order_sequences(sequence_date,last_value,updated_at)
+       VALUES(?,1,CURRENT_TIMESTAMP)
+       ON CONFLICT(sequence_date) DO UPDATE SET
+         last_value=last_value+1,updated_at=CURRENT_TIMESTAMP
+       RETURNING last_value`,
+    )
+    .get(dateKey);
+  return `FC${dateKey}-${String(sequence.last_value).padStart(4, "0")}`;
+};
+const reviewNicknames = [
+  "团子的新家", "小满日记", "林间慢生活", "阿梨和猫", "一颗软糖", "晚风饲养员",
+  "阳台晒太阳", "认真养宠", "栗子妈妈", "小岛来信", "南南的家", "暖冬陪伴",
+];
+const reviewOpenings = [
+  "到家后的状态比预期更稳定", "第一次线上了解宠物，整个过程很安心", "观察了一段时间再来评价",
+  "资料与实际情况一致", "接回家当天精神和食欲都不错", "从咨询到接宠的沟通很细致",
+];
+const reviewDetails = [
+  "性格亲人，适应新环境的速度很快", "毛色自然，眼睛清亮，日常互动很有回应",
+  "健康档案、疫苗记录和喂养建议都交代得很清楚", "客服把换粮、应激和作息注意事项逐项说明了",
+  "生活视频很真实，见到后和页面展示没有落差", "商家回访及时，遇到饲养问题也会认真回复",
+  "家里原有宠物与它磨合顺利，现在已经会一起玩", "体型和年龄描述准确，精神状态也一直很好",
+];
+const reviewEndings = [
+  "目前吃饭、睡觉都很规律。", "家人都很喜欢，会继续认真陪伴。", "这次体验值得肯定。",
+  "希望它健康长大。", "已经成为家里很重要的新成员。", "后续有变化还会继续记录。",
+];
+const generatedReviewCount = (petId) => 12 + ((Number(petId) * 37) % 109);
+const createGeneratedReviews = (petId, requestedCount) => {
+  const pet = db.prepare("SELECT id,name,breed FROM pets WHERE id=?").get(Number(petId));
+  if (!pet) return { created: 0, count: 0 };
+  const count = Math.min(150, Math.max(1, Number(requestedCount || generatedReviewCount(pet.id))));
+  const existing = db
+    .prepare("SELECT COUNT(*) AS count FROM product_reviews WHERE pet_id=? AND source='generated'")
+    .get(pet.id).count;
+  const insert = db.prepare(
+    `INSERT INTO product_reviews
+      (pet_id,nickname,rating,content,images_json,videos_json,is_verified,likes,source,status,created_at)
+     VALUES(?,?,?,?, '[]','[]',0,?,'generated','published',datetime('now',?))`,
+  );
+  let created = 0;
+  for (let i = Number(existing); i < count; i++) {
+    const content = `${reviewOpenings[(pet.id + i) % reviewOpenings.length]}。${pet.name || pet.breed} ${reviewDetails[(pet.id * 3 + i) % reviewDetails.length]}，${reviewEndings[(pet.id * 7 + i) % reviewEndings.length]}`;
+    insert.run(
+      pet.id,
+      reviewNicknames[(pet.id + i * 5) % reviewNicknames.length],
+      i % 11 === 0 ? 4 : 5,
+      content,
+      (pet.id * 13 + i * 7) % 86,
+      `-${i + 2} days`,
+    );
+    created++;
+  }
+  return { created, count: Math.max(Number(existing), count) };
+};
 const petDetail = (id) => {
   const pet = db
     .prepare(
@@ -182,8 +243,11 @@ const petDetail = (id) => {
     ),
     videos: rows("SELECT * FROM pet_videos WHERE pet_id=?", id),
     inventory: rows("SELECT * FROM inventory WHERE pet_id=?", id),
+    review_count: db
+      .prepare("SELECT COUNT(*) AS count FROM product_reviews WHERE pet_id=? AND status='published'")
+      .get(id).count,
     reviews: rows(
-      "SELECT * FROM product_reviews WHERE pet_id=? ORDER BY created_at DESC,id DESC LIMIT 30",
+      "SELECT * FROM product_reviews WHERE pet_id=? AND status='published' ORDER BY created_at DESC,id DESC LIMIT 50",
       id,
     ).map((review) => ({
       ...review,
@@ -1297,7 +1361,11 @@ createServer(async (req, res) => {
         res,
         200,
         rows(
-          "SELECT o.*,u.nickname,u.phone FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC",
+          `SELECT o.*,u.nickname,u.phone,u.login_method,
+                  CASE WHEN NULLIF(TRIM(u.phone),'') IS NULL THEN 0 ELSE 1 END AS phone_bound,
+                  (SELECT COUNT(*) FROM visitors v WHERE v.user_id=o.user_id) AS visitor_sessions,
+                  (SELECT COALESCE(SUM(v.visit_count),0) FROM visitors v WHERE v.user_id=o.user_id) AS visit_count
+           FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC`,
         ),
       );
     if (path === "/api/admin/users")
@@ -1525,9 +1593,9 @@ createServer(async (req, res) => {
         .get(pet.id);
       if (stock && stock.available <= 0)
         return json(res, 409, { message: "库存不足" });
-      const no = `FC${Date.now()}`;
       db.exec("BEGIN");
       try {
+        const no = nextOrderNumber();
         const o = db
           .prepare(
             "INSERT INTO orders(order_no,user_id,total_amount,address_snapshot) VALUES(?,?,?,?)",
@@ -1951,23 +2019,35 @@ createServer(async (req, res) => {
           `SELECT f.*,p.name,p.breed,p.price,p.gender,p.age_months,p.color,p.health_status,p.seller_name,
                   p.status AS pet_status,p.breed_id,p.seller_id,
                   CASE WHEN p.id IS NULL THEN 'missing' WHEN p.status='published' THEN COALESCE(pp.status,'available') WHEN p.status='sold' THEN 'sold' ELSE 'offline' END AS product_status,
-                  COALESCE(p.thumbnail_url,p.highres_url,pi.thumbnail_url,pi.url) AS image
+                  COALESCE(p.thumbnail_url,p.highres_url,
+                    (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
+                  ) AS image
            FROM favorites f
            LEFT JOIN pets p ON p.id=f.pet_id
            LEFT JOIN pet_products pp ON pp.pet_id=p.id
-           LEFT JOIN pet_images pi ON pi.pet_id=p.id
            WHERE f.user_id=?
-           GROUP BY f.id
            ORDER BY f.created_at DESC`,
           Number(url.searchParams.get("user_id") || 1),
         ),
       );
     if (path === "/api/favorites" && method === "POST") {
       const d = await body(req);
+      const userId = Number(d.user_id || 0);
+      const petId = Number(d.pet_id || 0);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
+        return json(res, 400, { message: "用户不存在，请重新登录" });
+      if (!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))
+        return json(res, 404, { message: "商品不存在，暂时不能收藏" });
       db.prepare(
         "INSERT OR IGNORE INTO favorites(user_id,pet_id) VALUES(?,?)",
-      ).run(d.user_id || 1, d.pet_id);
-      return json(res, 201, { ok: true });
+      ).run(userId, petId);
+      const favorite = db
+        .prepare("SELECT * FROM favorites WHERE user_id=? AND pet_id=?")
+        .get(userId, petId);
+      const count = db
+        .prepare("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?")
+        .get(userId).count;
+      return json(res, 201, { ok: true, favorite, count });
     }
     const favorite = path.match(/^\/api\/favorites\/(\d+)$/);
     if (favorite && method === "DELETE") {
@@ -2238,7 +2318,11 @@ createServer(async (req, res) => {
     if (orderRoute && method === "GET") {
       const order = db
         .prepare(
-          "SELECT o.*,u.nickname,u.phone FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?",
+          `SELECT o.*,u.nickname,u.phone,u.login_method,
+                  CASE WHEN NULLIF(TRIM(u.phone),'') IS NULL THEN 0 ELSE 1 END AS phone_bound,
+                  (SELECT COUNT(*) FROM visitors v WHERE v.user_id=o.user_id) AS visitor_sessions,
+                  (SELECT COALESCE(SUM(v.visit_count),0) FROM visitors v WHERE v.user_id=o.user_id) AS visit_count
+           FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?`,
         )
         .get(Number(orderRoute[1]));
       return json(
@@ -2502,6 +2586,42 @@ createServer(async (req, res) => {
       logAdmin(admin, req, "update", "coupons", couponRoute[1], d);
       return json(res, 200, { ok: true });
     }
+    if (path === "/api/admin/reviews" && method === "GET") {
+      const petId = Number(url.searchParams.get("pet_id") || 0);
+      const { pageSize, offset } = pageParams(url, { pageSize: 50, max: 150 });
+      const where = petId ? "WHERE r.pet_id=?" : "";
+      const params = petId ? [petId, pageSize, offset] : [pageSize, offset];
+      return json(
+        res,
+        200,
+        rows(
+          `SELECT r.*,p.name AS pet_name,p.breed FROM product_reviews r
+           JOIN pets p ON p.id=r.pet_id ${where}
+           ORDER BY r.id DESC LIMIT ? OFFSET ?`,
+          ...params,
+        ),
+      );
+    }
+    if (path === "/api/admin/reviews/generate" && method === "POST") {
+      const d = await body(req);
+      const result = createGeneratedReviews(Number(d.pet_id), Number(d.count || 0));
+      if (!result.count) return json(res, 404, { message: "商品不存在" });
+      logAdmin(admin, req, "generate", "product_reviews", d.pet_id, result);
+      return json(res, 201, result);
+    }
+    const adminReviewRoute = path.match(/^\/api\/admin\/reviews\/(\d+)$/);
+    if (adminReviewRoute && method === "PATCH") {
+      const d = await body(req);
+      const status = d.status === "hidden" ? "hidden" : "published";
+      db.prepare("UPDATE product_reviews SET status=? WHERE id=?").run(status, Number(adminReviewRoute[1]));
+      logAdmin(admin, req, "moderate", "product_reviews", adminReviewRoute[1], { status });
+      return json(res, 200, { ok: true, status });
+    }
+    if (adminReviewRoute && method === "DELETE") {
+      db.prepare("DELETE FROM product_reviews WHERE id=? AND source='generated'").run(Number(adminReviewRoute[1]));
+      logAdmin(admin, req, "delete", "product_reviews", adminReviewRoute[1]);
+      return json(res, 200, { ok: true });
+    }
     const issueCouponRoute = path.match(/^\/api\/admin\/coupons\/(\d+)\/issue$/);
     if (issueCouponRoute && method === "POST") {
       const d = await body(req);
@@ -2527,7 +2647,11 @@ createServer(async (req, res) => {
       return json(
         res,
         200,
-        rows("SELECT * FROM feishu_sync_configs ORDER BY id DESC"),
+        rows("SELECT * FROM feishu_sync_configs ORDER BY id DESC").map((config) => ({
+          ...config,
+          secret_configured: Boolean(process.env.FEISHU_APP_SECRET),
+          credential_storage: "environment",
+        })),
       );
     if (path === "/api/admin/feishu/configs" && method === "POST") {
       const d = await body(req);
@@ -2537,21 +2661,86 @@ createServer(async (req, res) => {
         return json(res, 400, { message: "请填写正确的飞书多维表格链接" });
       if (!String(d.app_id || "").trim() || !String(d.table_id || "").trim())
         return json(res, 400, { message: "App ID 和 Table ID 不能为空" });
-      const r = db
-        .prepare(
-          "INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status,app_id,base_url) VALUES(?,?,?,?,?,?,?,?)",
-        )
-        .run(
+      const appToken =
+        d.app_token || String(d.document_url).match(/\/base\/([^/?#]+)/)?.[1] || null;
+      const tableId = d.table_id || "tblUaCqyE3xkk1Bj";
+      const existing = db
+        .prepare("SELECT id FROM feishu_sync_configs WHERE app_token=? AND table_id=? LIMIT 1")
+        .get(appToken, tableId);
+      if (existing) {
+        db.prepare(
+          `UPDATE feishu_sync_configs SET name=?,document_url=?,field_mapping=?,status=?,app_id=?,base_url=?
+           WHERE id=?`,
+        ).run(
           d.name,
           d.document_url,
-          d.app_token ?? null,
-          d.table_id ?? "tblUaCqyE3xkk1Bj",
           JSON.stringify(d.field_mapping || {}),
           d.status || "active",
-          d.app_id ?? "cli_a902ca6a2cb85cc0",
-          d.base_url ?? d.document_url ?? null,
+          d.app_id,
+          d.base_url || d.document_url,
+          existing.id,
         );
-      return json(res, 201, { id: r.lastInsertRowid });
+        logAdmin(admin, req, "update", "feishu_sync_configs", existing.id, { table_id: tableId });
+        return json(res, 200, { id: existing.id, updated: true });
+      }
+      const r = db.prepare(
+        "INSERT INTO feishu_sync_configs(name,document_url,app_token,table_id,field_mapping,status,app_id,base_url) VALUES(?,?,?,?,?,?,?,?)",
+      ).run(
+        d.name,
+        d.document_url,
+        appToken,
+        tableId,
+        JSON.stringify(d.field_mapping || {}),
+        d.status || "active",
+        d.app_id,
+        d.base_url || d.document_url,
+      );
+      logAdmin(admin, req, "create", "feishu_sync_configs", r.lastInsertRowid, { table_id: tableId });
+      return json(res, 201, { id: r.lastInsertRowid, updated: false });
+    }
+    if (path === "/api/admin/feishu/test-connection" && method === "POST") {
+      const d = await body(req);
+      const config = db
+        .prepare("SELECT * FROM feishu_sync_configs WHERE id=?")
+        .get(Number(d.config_id));
+      if (!config) return json(res, 404, { message: "飞书数据源不存在" });
+      const appToken =
+        config.app_token || String(config.document_url || "").match(/\/base\/([^/?#]+)/)?.[1];
+      if (!appToken || !config.table_id)
+        return json(res, 400, { message: "飞书 app_token 或数据表 ID 未配置" });
+      try {
+        const accessToken = await getFeishuAccess(config);
+        const base = `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${config.table_id}`;
+        const [fieldsResponse, recordsResponse] = await Promise.all([
+          fetch(`${base}/fields?page_size=500`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+          fetch(`${base}/records?page_size=1`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+        ]);
+        const [fieldsData, recordsData] = await Promise.all([fieldsResponse.json(), recordsResponse.json()]);
+        if (!fieldsResponse.ok || fieldsData.code) throw new Error(fieldsData.msg || "读取字段失败");
+        if (!recordsResponse.ok || recordsData.code) throw new Error(recordsData.msg || "读取记录失败");
+        const fieldNames = (fieldsData.data?.items || []).map((item) => item.field_name).filter(Boolean);
+        const savedCount = db.prepare("SELECT COUNT(*) AS count FROM feishu_sync_configs").get().count;
+        const activeCount = db.prepare("SELECT COUNT(*) AS count FROM feishu_sync_configs WHERE status='active'").get().count;
+        const result = {
+          connected: true,
+          config_id: config.id,
+          saved_connections: savedCount,
+          active_connections: activeCount,
+          fields: fieldNames.length,
+          field_names: fieldNames,
+          records: Number(recordsData.data?.total || 0),
+          secret_configured: Boolean(process.env.FEISHU_APP_SECRET),
+          message: "连接成功，已读取数据表元信息；本次测试未写入商品数据库。",
+        };
+        logAdmin(admin, req, "test_connection", "feishu_sync_configs", config.id, result);
+        return json(res, 200, result);
+      } catch (error) {
+        return json(res, 502, {
+          connected: false,
+          config_id: config.id,
+          message: error instanceof Error ? error.message : "飞书连接测试失败",
+        });
+      }
     }
     if (path === "/api/admin/feishu/previews" && method === "GET")
       return json(

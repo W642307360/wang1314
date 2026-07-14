@@ -73,6 +73,7 @@ type ApiPet = {
   images?: Array<{ id?: number; url: string; type?: string; thumbnail_url?: string; webp_url?: string }>;
   videos?: Array<{ id?: number; url: string; cover_url?: string }>;
   reviews?: Array<any>;
+  review_count?: number;
   updated_at?: string;
   breed_profile?: { intro?: string; origin?: string; growth_profile?: string; standard_body?: string };
   personality?: string;
@@ -82,6 +83,20 @@ type ApiPet = {
 const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const originMapPoint = (origin = "") => {
+  const points: Array<[string[], number, number]> = [
+    [["中国", "日本", "泰国", "缅甸", "新加坡", "东南亚", "亚洲"], 246, 62],
+    [["澳大利亚", "大洋洲"], 266, 119],
+    [["美国", "加拿大", "北美洲", "墨西哥"], 55, 56],
+    [["南美洲", "亚马孙", "安第斯", "中美洲"], 92, 111],
+    [["英国", "法国", "德国", "瑞士", "挪威", "俄罗斯", "欧洲", "苏格兰", "威尔士"], 171, 45],
+    [["非洲", "埃塞俄比亚", "埃及"], 168, 86],
+    [["土耳其", "伊朗", "地中海", "塞浦路斯"], 194, 68],
+    [["印度", "印度洋"], 221, 82],
+  ];
+  const match = points.find(([keywords]) => keywords.some((keyword) => origin.includes(keyword)));
+  return match ? { x: match[1], y: match[2] } : { x: 212, y: 70 };
+};
 const resolveMediaUrl = (url?: string) => {
   if (!url) return "";
   if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
@@ -869,6 +884,8 @@ function Detail({
   const [featureTab, setFeatureTab] = useState("品种");
   const [playing, setPlaying] = useState(false);
   const [favorite, setFavorite] = useState(false);
+  const [favoriteSaving, setFavoriteSaving] = useState(false);
+  const [favoriteMessage, setFavoriteMessage] = useState("");
   const [following, setFollowing] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
@@ -909,6 +926,18 @@ function Detail({
       .catch(() => {});
     return () => window.clearTimeout(readyTimer);
   }, [breed.name, pet, pet?.id, userId]);
+  useEffect(() => {
+    if (!petDbId) return;
+    fetch(`${API_BASE}/api/favorites?user_id=${userId}`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) =>
+        setFavorite(
+          Array.isArray(items) &&
+            items.some((item: any) => Number(item.pet_id) === Number(petDbId)),
+        ),
+      )
+      .catch(() => {});
+  }, [petDbId, userId]);
   useEffect(() => {
     if (!buyOpen) return;
     setAddressLoading(true);
@@ -958,8 +987,15 @@ function Detail({
   const moveGallery = (direction: number) =>
     setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
   const toggleFavorite = async () => {
-    if (petDbId) {
-      await fetch(
+    if (!petDbId || favoriteSaving) {
+      setFavoriteMessage("商品资料仍在加载，请稍后再收藏");
+      return;
+    }
+    setFavoriteSaving(true);
+    setFavoriteMessage("");
+    try {
+      const nextFavorite = !favorite;
+      const response = await fetch(
         favorite
           ? `${API_BASE}/api/favorites/${petDbId}?user_id=${userId}`
           : `${API_BASE}/api/favorites`,
@@ -970,9 +1006,17 @@ function Detail({
             ? undefined
             : JSON.stringify({ user_id: userId, pet_id: petDbId }),
         },
-      ).catch(() => {});
+      );
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "收藏保存失败");
+      setFavorite(nextFavorite);
+      setFavoriteMessage(nextFavorite ? `收藏成功，宠物家已保存${result.count ? `（共${result.count}只）` : ""}` : "已取消收藏");
+      window.dispatchEvent(new Event("fuchong-favorites-change"));
+    } catch (error) {
+      setFavoriteMessage(error instanceof Error ? error.message : "收藏保存失败，请稍后重试");
+    } finally {
+      setFavoriteSaving(false);
     }
-    setFavorite(!favorite);
   };
   const submitOrder = async () => {
     if (!petDbId || orderSubmitting) return;
@@ -1048,6 +1092,7 @@ function Detail({
     writeLocalCart([nextItem, ...readLocalCart()].slice(0, 99));
     setCart(true);
   };
+  const originPoint = originMapPoint(detailPet?.breed_profile?.origin || "");
   return (
     <div className="detail">
       <section
@@ -1065,15 +1110,6 @@ function Detail({
         )}
         <Back onClick={() => go(returnPage)} />
         <span className="life">♢ {mediaItems.length}项真实影像</span>
-        <div className="pet-name">
-          <em>{displayName}</em>
-          <i>{detailPet?.gender === "公" || detailPet?.gender === "male" ? "♂" : "♀"}</i>
-          <b>纯种{detailPet?.breed || breed.name}</b>
-          <p>{detailPet?.personality || "温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养"}</p>
-        </div>
-        <strong className="price">
-          ¥{displayPrice} <small>已售 128</small>
-        </strong>
         <span className="count">{galleryIndex + 1}/{mediaItems.length}</span>
         {mediaItems.length > 1 && (
           <div className="gallery-arrows">
@@ -1099,6 +1135,14 @@ function Detail({
             <span>{item.kind === "video" ? "▶ 视频" : item.label}</span>
           </button>
         ))}
+      </section>
+      <section className="detail-summary">
+        <div className="pet-name">
+          <div><em>{displayName}</em><i>{detailPet?.gender === "公" || detailPet?.gender === "male" ? "♂" : "♀"}</i></div>
+          <b>纯种{detailPet?.breed || breed.name}</b>
+          <p>{detailPet?.personality || "温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养"}</p>
+        </div>
+        <strong className="price">¥{displayPrice} <small>已售 128</small></strong>
       </section>
       {detailReady ? (
       <>
@@ -1242,7 +1286,7 @@ function Detail({
             <svg viewBox="0 0 320 150" role="img" aria-label={`${breed.name}品种起源地图`}>
               <path d="M16 51l24-29 46 7 19 23-13 20-32 4-13 34-20-19zm104-18 34-19 32 15 25-8 45 22 42 5 9 23-29 12-31-7-18 20-35-7-17 30-28-14-9-32-24-14z" />
               <path d="M212 109l18-9 20 12-7 23-24-3z" />
-              <circle cx="225" cy="55" r="6" />
+              <circle cx={originPoint.x} cy={originPoint.y} r="6" />
             </svg>
             <span>{detailPet?.breed_profile?.origin || `${breed.name}品种来源地`}</span>
           </div>
@@ -1258,7 +1302,7 @@ function Detail({
         </div>
       </section>
       <section className="reviews">
-        <header><div><small>真实购买反馈</small><h3>用户评价（{detailPet?.reviews?.length || 3}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
+        <header><div><small>真实购买反馈</small><h3>用户评价（{detailPet?.review_count || detailPet?.reviews?.length || 3}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
         {(detailPet?.reviews?.length ? detailPet.reviews : [
           { id: "demo-1", nickname: "林间小屋", rating: 5, is_verified: 1, created_at: "2026-06-28", content: `${displayName}到家后状态特别好，眼睛清亮，毛发柔软。客服提前讲了饮食和应激期注意事项，第一晚就愿意靠近我们。`, images: mediaItems.filter((x) => x.kind === "image").slice(0, 2).map((x) => x.thumb), likes: 18 },
           { id: "demo-2", nickname: "阿梨的日常", rating: 5, is_verified: 1, created_at: "2026-06-19", content: "整个购买流程很透明，健康资料和疫苗记录都能查看。接回家一周适应得很快，性格比照片里还亲人。", images: mediaItems.filter((x) => x.kind === "image").slice(1, 3).map((x) => x.thumb), likes: 11 },
@@ -1268,7 +1312,7 @@ function Detail({
           const liked = likedReviews.has(reviewKey);
           return (
             <article className="review-card" key={reviewKey}>
-              <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
+              <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.source === "generated" ? "平台体验样本" : review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
               <p>{review.content}</p>
               {!!review.images?.length && <div className="review-media">{review.images.map((image: string) => <SmartImage key={image} src={resolveMediaUrl(image)} alt="用户评价图片" />)}</div>}
               {!!review.videos?.length && <div className="review-media">{review.videos.map((video: string) => <video key={video} src={resolveMediaUrl(video)} controls playsInline preload="metadata" />)}</div>}
@@ -1300,7 +1344,7 @@ function Detail({
         >
           ♧<small>客服</small>
         </button>
-        <button className={favorite ? "selected" : ""} onClick={toggleFavorite}>
+        <button disabled={favoriteSaving} className={favorite ? "selected" : ""} onClick={toggleFavorite}>
           {favorite ? "♥" : "♡"}
           <small>{favorite ? "已收藏" : "收藏"}</small>
         </button>
@@ -1323,6 +1367,7 @@ function Detail({
           <small>¥{displayPrice}</small>
         </button>
       </div>
+      {favoriteMessage && <div className="toast favorite-toast">{favoriteMessage}</div>}
       {inlineService && (
         <ProductServiceOverlay
           context={inlineService}

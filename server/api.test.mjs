@@ -138,6 +138,32 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   );
   assert.equal(inventoryUpdate.response.status, 200);
   assert.equal(inventoryUpdate.payload.available_stock, 2);
+  const extraPets = [];
+  for (const name of ["多收藏测试银渐层", "多收藏测试缅因猫"]) {
+    const created = await request("/api/admin/pets", {
+      method: "POST",
+      headers: adminHeaders,
+      body: JSON.stringify({ name, category_id: 1, breed: name.includes("银") ? "银渐层" : "缅因猫", price: 5200, stock: 1, status: "published" }),
+    });
+    assert.equal(created.response.status, 201);
+    extraPets.push(created.payload.id);
+  }
+  for (const petId of [pet.payload.id, ...extraPets]) {
+    const favorite = await request("/api/favorites", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: 1, pet_id: petId }),
+    });
+    assert.equal(favorite.response.status, 201);
+  }
+  const duplicateFavorite = await request("/api/favorites", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1, pet_id: pet.payload.id }),
+  });
+  assert.equal(duplicateFavorite.payload.count, 3);
+  const favorites = await request("/api/favorites?user_id=1");
+  assert.deepEqual(new Set(favorites.payload.map((item) => item.pet_id)), new Set([pet.payload.id, ...extraPets]));
 
   const address = await request("/api/addresses", {
     method: "POST",
@@ -176,6 +202,7 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     }),
   });
   assert.equal(order.response.status, 201);
+  assert.match(order.payload.order_no, /^FC\d{8}-\d{4}$/);
 
   const unpaidShipping = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
@@ -243,6 +270,16 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(likedReview.payload.likes, 1);
   const reviewedPet = await request(`/api/pets/${pet.payload.id}`);
   assert.equal(reviewedPet.payload.reviews.length, 1);
+  const generatedReviews = await request("/api/admin/reviews/generate", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ pet_id: pet.payload.id, count: 42 }),
+  });
+  assert.equal(generatedReviews.response.status, 201);
+  assert.equal(generatedReviews.payload.count, 42);
+  const petWithGeneratedReviews = await request(`/api/pets/${pet.payload.id}`);
+  assert.equal(petWithGeneratedReviews.payload.review_count, 43);
+  assert.equal(petWithGeneratedReviews.payload.reviews.some((item) => item.source === "generated"), true);
   const afterSale = await request("/api/after-sales", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -46,6 +46,10 @@ const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const CART_KEY = "fuchong-cart";
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
+const displayMedia = (url?: string) =>
+  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
+    ? `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`
+    : url || fallbackImg;
 
 function Header({ title, back }: { title: string; back: () => void }) {
   return (
@@ -271,12 +275,17 @@ export function P0CollectionPage({
   const [loading, setLoading] = useState(true);
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
-    setLoading(true);
-    fetch(`${API_BASE}/api/favorites?user_id=${userId}`)
-      .then((response) => response.json())
-      .then((data) => setFavorites(Array.isArray(data) ? data : []))
-      .catch(() => setFavorites([]))
-      .finally(() => setLoading(false));
+    const loadFavorites = () => {
+      setLoading(true);
+      fetch(`${API_BASE}/api/favorites?user_id=${userId}`)
+        .then((response) => response.json())
+        .then((data) => setFavorites(Array.isArray(data) ? data : []))
+        .catch(() => setFavorites([]))
+        .finally(() => setLoading(false));
+    };
+    loadFavorites();
+    window.addEventListener("fuchong-favorites-change", loadFavorites);
+    return () => window.removeEventListener("fuchong-favorites-change", loadFavorites);
   }, [userId]);
   useEffect(() => {
     const refresh = () => setCart(readCart());
@@ -292,6 +301,7 @@ export function P0CollectionPage({
       method: "DELETE",
     }).catch(() => {});
     setFavorites((items) => items.filter((item) => item.pet_id !== petId));
+    window.dispatchEvent(new Event("fuchong-favorites-change"));
   };
   const removeCart = (cartId: string) => {
     const next = cart.filter((item) => item.cart_id !== cartId);
@@ -336,7 +346,7 @@ export function P0CollectionPage({
                   }
                 >
                   <span className="collection-photo">
-                    <img src={pet.image || fallbackImg} loading="lazy" decoding="async" />
+                    <img src={displayMedia(pet.image)} loading="lazy" decoding="async" />
                   </span>
                   <em>{statusText(pet.product_status)}</em>
                 </button>
