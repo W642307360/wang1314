@@ -1169,15 +1169,16 @@ function AfterSales({ token }: { token: string }) {
   const load = useCallback(
     () =>
       Promise.all(
-        ["complaints", "after-sales"].map((x) =>
+        ["complaints", "after-sales", "seller-reports"].map((x) =>
           fetch(`${API_BASE}/api/admin/${x}`, { headers }).then((r) =>
             r.json(),
           ),
         ),
-      ).then(([a, b]) =>
+      ).then(([a, b, c]) =>
         setItems([
           ...a.map((x: any) => ({ ...x, kind: "投诉" })),
           ...b.map((x: any) => ({ ...x, kind: "售后" })),
+          ...c.map((x: any) => ({ ...x, kind: "商家举报" })),
         ]),
       ),
     [headers],
@@ -1187,18 +1188,20 @@ function AfterSales({ token }: { token: string }) {
   }, [load]);
   const resolve = async (x: any, status: "processing" | "rejected" | "completed") => {
     const result = prompt(
-      x.kind === "投诉" ? "回复客户" : "填写处理结果",
+      x.kind === "投诉" ? "回复客户" : x.kind === "商家举报" ? "填写平台核实结果" : "填写处理结果",
       status === "processing" ? "已受理，正在核实" : status === "rejected" ? "申请资料不符合退款条件" : "已处理完成",
     );
     if (!result) return;
-    const resource = x.kind === "投诉" ? "complaints" : "after-sales";
+    const resource = x.kind === "投诉" ? "complaints" : x.kind === "商家举报" ? "seller-reports" : "after-sales";
     const response = await fetch(`${API_BASE}/api/admin/${resource}/${x.id}`, {
       method: "PATCH",
       headers,
       body: JSON.stringify(
         x.kind === "投诉"
           ? { reply: result, status: "completed" }
-          : { result, status },
+          : x.kind === "商家举报"
+            ? { reply: result, status }
+            : { result, status },
       ),
     });
     const payload = await response.json();
@@ -1214,7 +1217,7 @@ function AfterSales({ token }: { token: string }) {
         <thead>
           <tr>
             <th>类型</th>
-            <th>关联订单</th>
+            <th>关联对象</th>
             <th>原因/内容</th>
             <th>状态</th>
             <th>处理</th>
@@ -1225,12 +1228,13 @@ function AfterSales({ token }: { token: string }) {
           {items.map((x) => (
             <tr key={`${x.kind}-${x.id}`}>
               <td>{x.kind}</td>
-              <td>{x.order_id}</td>
-              <td>{x.reason || x.content}</td>
+              <td>{x.kind === "商家举报" ? <>{x.seller_name}<small>{x.pet_name || "未关联具体商品"} · {x.contact_phone || "未留联系电话"}</small></> : x.order_id}</td>
+              <td>{x.kind === "商家举报" ? <><b>{x.category}</b><small>{x.content}</small></> : x.reason || x.content}</td>
               <td>{x.status}</td>
               <td>
                 {x.kind === "售后" && x.status !== "completed" && <button onClick={() => resolve(x, "processing")}>受理</button>}
                 {x.kind === "售后" && x.status !== "completed" && <button onClick={() => resolve(x, "rejected")}>驳回</button>}
+                {x.kind === "商家举报" && x.status === "pending" && <button onClick={() => resolve(x, "processing")}>受理核实</button>}
                 <button onClick={() => resolve(x, "completed")}>回复并完成</button>
               </td>
             </tr>

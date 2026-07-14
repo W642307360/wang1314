@@ -959,6 +959,8 @@ createServer(async (req, res) => {
     }
     if (path === "/api/users/login" && method === "POST") {
       const d = await body(req);
+      if (["phone", "mock_wechat", "wechat"].includes(String(d.login_type || "")) && !/^1\d{10}$/.test(String(d.phone || "")))
+        return json(res, 400, { message: "登录需要有效的11位手机号" });
       const account =
         d.account ||
         d.phone ||
@@ -1370,6 +1372,23 @@ createServer(async (req, res) => {
           "SELECT * FROM categories WHERE status='active' ORDER BY sort_order,id",
         ),
       );
+    const sellerReportRoute = path.match(/^\/api\/sellers\/(\d+)\/reports$/);
+    if (sellerReportRoute && method === "POST") {
+      const sellerId = Number(sellerReportRoute[1]);
+      const seller = db.prepare("SELECT id FROM sellers WHERE id=? AND status='active'").get(sellerId);
+      if (!seller) return json(res, 404, { message: "商家不存在或已暂停营业" });
+      const d = await body(req);
+      const content = String(d.content || "").trim();
+      const category = String(d.category || "其他问题").trim();
+      if (content.length < 5) return json(res, 400, { message: "请至少填写5个字的问题说明" });
+      const userId = db.prepare("SELECT id FROM users WHERE id=?").get(Number(d.user_id))?.id || null;
+      const petId = db.prepare("SELECT id FROM pets WHERE id=?").get(Number(d.pet_id))?.id || null;
+      const created = db.prepare(
+        `INSERT INTO seller_reports(seller_id,user_id,pet_id,category,content,contact_phone,status)
+         VALUES(?,?,?,?,?,?,'pending')`,
+      ).run(sellerId, userId, petId, category, content, String(d.contact_phone || "").trim() || null);
+      return json(res, 201, { id: created.lastInsertRowid, status: "pending", message: "举报信息已提交，平台会尽快核实" });
+    }
     const publicSeller = path.match(/^\/api\/sellers\/(\d+)$/);
     if (publicSeller && method === "GET") {
       const seller = db
@@ -1378,6 +1397,11 @@ createServer(async (req, res) => {
       if (!seller) return json(res, 404, { message: "商家不存在或已暂停营业" });
       return json(res, 200, {
         ...seller,
+        review_total: db.prepare("SELECT COUNT(*) AS count FROM seller_reviews WHERE seller_id=?").get(seller.id).count,
+        reviews: rows(
+          "SELECT id,nickname,rating,content,tags,created_at FROM seller_reviews WHERE seller_id=? ORDER BY created_at DESC,id DESC LIMIT 30",
+          seller.id,
+        ),
         products: rows(
           `SELECT id,name,breed,price,status,
                   (SELECT url FROM pet_images WHERE pet_id=pets.id ORDER BY sort_order,id LIMIT 1) AS image
@@ -1560,6 +1584,26 @@ createServer(async (req, res) => {
     }
     if (path === "/api/admin/complaints")
       return json(res, 200, rows("SELECT * FROM complaints ORDER BY id DESC"));
+    if (path === "/api/admin/seller-reports")
+      return json(res, 200, rows(
+        `SELECT sr.*,s.name AS seller_name,u.nickname AS user_nickname,p.name AS pet_name
+         FROM seller_reports sr
+         JOIN sellers s ON s.id=sr.seller_id
+         LEFT JOIN users u ON u.id=sr.user_id
+         LEFT JOIN pets p ON p.id=sr.pet_id
+         ORDER BY CASE sr.status WHEN 'pending' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,sr.id DESC`,
+      ));
+    const sellerReportAdmin = path.match(/^\/api\/admin\/seller-reports\/(\d+)$/);
+    if (sellerReportAdmin && method === "PATCH") {
+      const d = await body(req);
+      const status = ["pending", "processing", "completed", "rejected"].includes(d.status) ? d.status : "processing";
+      const result = db.prepare(
+        "UPDATE seller_reports SET status=?,reply=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(status, String(d.reply || "").trim() || null, Number(sellerReportAdmin[1]));
+      if (!result.changes) return json(res, 404, { message: "举报记录不存在" });
+      logAdmin(admin, req, "resolve", "seller_reports", Number(sellerReportAdmin[1]), { status });
+      return json(res, 200, { ok: true, status });
+    }
     const complaint = path.match(/^\/api\/admin\/complaints\/(\d+)$/);
     if (complaint && method === "PATCH") {
       const d = await body(req);

@@ -997,6 +997,13 @@ function Detail({
   const [buyOpen, setBuyOpen] = useState(false);
   const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
   const [sellerOpen, setSellerOpen] = useState(false);
+  const [sellerDetail, setSellerDetail] = useState<any>(null);
+  const [sellerReviewLimit, setSellerReviewLimit] = useState(8);
+  const [sellerReportOpen, setSellerReportOpen] = useState(false);
+  const [sellerReportCategory, setSellerReportCategory] = useState("商品资料不实");
+  const [sellerReportContent, setSellerReportContent] = useState("");
+  const [sellerReportPhone, setSellerReportPhone] = useState("");
+  const [sellerReportMessage, setSellerReportMessage] = useState("");
   const [selectedAddress, setSelectedAddress] = useState<any>(null);
   const [addressLoading, setAddressLoading] = useState(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
@@ -1093,6 +1100,8 @@ function Detail({
   }, [breed.image, detailPet]);
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
   const archiveMeta = petArchiveMeta(detailPet, displayName);
+  const merchant = sellerDetail || sellerProfile;
+  const sellerLogoStyle = { "--seller-hue": `${((Number(sellerProfile?.id || detailPet?.seller_id || 1) * 47) % 360)}deg` } as CSSProperties;
   useEffect(() => {
     setGalleryIndex(0);
     setMediaViewerOpen(false);
@@ -1188,6 +1197,46 @@ function Detail({
       },
     ).catch(() => {});
     setFollowing(!following);
+  };
+  const openSellerProfile = async () => {
+    setSellerOpen(true);
+    setSellerReviewLimit(8);
+    setSellerReportOpen(false);
+    const sellerId = Number(sellerProfile?.id || detailPet?.seller_id || 0);
+    if (!sellerId) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/sellers/${sellerId}`);
+      if (response.ok) setSellerDetail(await response.json());
+    } catch {
+      setSellerDetail(sellerProfile || null);
+    }
+  };
+  const submitSellerReport = async () => {
+    setSellerReportMessage("");
+    const sellerId = Number(merchant?.id || detailPet?.seller_id || 0);
+    if (!sellerId || sellerReportContent.trim().length < 5) {
+      setSellerReportMessage("请至少填写5个字的问题说明");
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE}/api/sellers/${sellerId}/reports`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          pet_id: petDbId,
+          category: sellerReportCategory,
+          content: sellerReportContent.trim(),
+          contact_phone: sellerReportPhone.trim(),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "提交失败");
+      setSellerReportContent("");
+      setSellerReportMessage("已提交平台核实，可在客服中心继续补充材料");
+    } catch (error) {
+      setSellerReportMessage(error instanceof Error ? error.message : "提交失败，请稍后重试");
+    }
   };
   const addToCart = () => {
     const nextItem: LocalCartPet = {
@@ -1445,8 +1494,8 @@ function Detail({
         </div>
         <div className="seller-summary">
           <h3>所属商家</h3>
-          <button className="seller-profile-entry" onClick={() => setSellerOpen(true)}>
-            <i>{displaySeller.slice(0, 1)}</i>
+          <button className="seller-profile-entry" onClick={openSellerProfile}>
+            <i className="seller-logo-mark" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>
             <span><b>{displaySeller}</b><small>{sellerProfile?.offline_store || "认证线下体验店"}</small></span>
             <em>查看商家 ›</em>
           </button>
@@ -1464,11 +1513,28 @@ function Detail({
         <div className="seller-sheet-backdrop" role="dialog" aria-modal="true" aria-label={`${displaySeller}商家资料`} onClick={() => setSellerOpen(false)}>
           <section className="seller-sheet" onClick={(event) => event.stopPropagation()}>
             <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
-            <header><i>{displaySeller.slice(0, 1)}</i><div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{sellerProfile?.rating || 4.9} 分</p></div></header>
-            <div className="seller-sheet-metrics"><span><b>{sellerProfile?.sales || 3289}</b>累计销量</span><span><b>{sellerProfile?.review_count || 862}</b>用户评价</span><span><b>98%</b>满意度</span></div>
-            <article><small>线下门店</small><h3>{sellerProfile?.offline_store || `${displaySeller}线下体验店`}</h3><p>{sellerProfile?.city || "本地"} · {sellerProfile?.address || "具体地址请咨询商家"}</p></article>
-            <article><small>擅长服务</small><h3>{sellerProfile?.specialty || "家庭适养评估与长期健康回访"}</h3><p>支持到店了解、视频看宠、健康档案核验及到家后持续回访。</p></article>
-            <footer><button onClick={() => { setSellerOpen(false); setInlineService({ productId: petDbId, productName: displayName, sellerId: sellerProfile?.id || detailPet?.seller_id, sellerName: displaySeller, source: "product_detail" }); }}>咨询商家</button><button onClick={toggleFollow}>{following ? "已关注" : "关注商家"}</button></footer>
+            <header><i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i><div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
+            <div className="seller-sheet-metrics"><span><b>{merchant?.sales || 3289}</b>累计销量</span><span><b>{merchant?.review_total || merchant?.review_count || 24}</b>用户评价</span><span><b>98%</b>满意度</span></div>
+            <article><small>线下门店</small><h3>{merchant?.offline_store || `${displaySeller}线下体验店`}</h3><p>{merchant?.city || "本地"} · {merchant?.address || "具体地址请咨询商家"}</p></article>
+            <article className="seller-real-promise"><small>影像与档案承诺</small><h3>{merchant?.specialty || "家庭适养评估与长期健康回访"}</h3><p>商品上传的图片、生活照片与视频均为对应宠物实拍；健康档案、接种凭证和线下核验信息支持逐项查看。</p><div><span>实拍影像</span><span>档案核验</span><span>到店可查</span><span>长期回访</span></div></article>
+            <section className="seller-review-section">
+              <header><div><small>真实到店与购买体验</small><h3>商家评价（{merchant?.review_total || merchant?.reviews?.length || 0}）</h3></div><b>{merchant?.rating || 4.9} ★</b></header>
+              <div className="seller-review-list">
+                {(merchant?.reviews || []).slice(0, sellerReviewLimit).map((review: any) => (
+                  <article key={review.id}><div><i>{String(review.nickname).slice(0, 1)}</i><span><b>{review.nickname}</b><small>{String(review.created_at || "").slice(0, 10)} · {review.tags?.split(",").slice(0, 2).join(" · ")}</small></span><em>{"★".repeat(Number(review.rating || 5))}</em></div><p>{review.content}</p></article>
+                ))}
+              </div>
+              {sellerReviewLimit < Number(merchant?.reviews?.length || 0) && <button className="seller-review-more" onClick={() => setSellerReviewLimit((value) => value + 8)}>查看更多评价</button>}
+            </section>
+            <button className="seller-report-trigger" onClick={() => setSellerReportOpen((value) => !value)}>⚑ 举报商家或提交问题</button>
+            {sellerReportOpen && <section className="seller-report-form">
+              <h3>向平台提交商家问题</h3><p>信息仅用于平台核实，不会直接公开联系方式。</p>
+              <select value={sellerReportCategory} onChange={(event) => setSellerReportCategory(event.target.value)}><option>商品资料不实</option><option>图片或视频不一致</option><option>健康档案问题</option><option>价格或合同争议</option><option>服务态度问题</option><option>其他问题</option></select>
+              <textarea value={sellerReportContent} onChange={(event) => setSellerReportContent(event.target.value)} placeholder="请描述发生时间、相关商品和具体问题" />
+              <input value={sellerReportPhone} onChange={(event) => setSellerReportPhone(event.target.value.replace(/\D/g, "").slice(0, 11))} inputMode="numeric" placeholder="联系电话（选填）" />
+              <button onClick={submitSellerReport}>提交平台核实</button>{sellerReportMessage && <em>{sellerReportMessage}</em>}
+            </section>}
+            <footer><button onClick={() => { setSellerOpen(false); setInlineService({ productId: petDbId, productName: displayName, sellerId: merchant?.id || detailPet?.seller_id, sellerName: displaySeller, source: "product_detail" }); }}>咨询商家</button><button onClick={toggleFollow}>{following ? "已关注" : "关注商家"}</button></footer>
           </section>
         </div>
       )}
@@ -1622,7 +1688,7 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
     ["售后/退款", String(summary.orders?.after_sale || 0)],
   ];
   const services = [
-    ["♙", "登录与账号", "登录、手机号与账号安全", "login"],
+    ["♙", "登录与账号", "登录方式与账号安全", "login"],
     ["♡", "我的收藏", "收藏的宠物与心愿清单", "favorites"],
     ["🛒", "购物车", "已加入购物车的宠物", "follows"],
     ["◷", "浏览足迹", "最近看过的宠物", "footprints"],
@@ -1645,7 +1711,7 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
             <h1>{user?.nickname || "登录 / 注册"}</h1>
             <p>
               {user
-                ? user.phone || "点击绑定手机号"
+                ? user.phone || "账号资料已同步"
                 : "登录后同步订单、收藏和宠物档案"}
             </p>
           </div>
