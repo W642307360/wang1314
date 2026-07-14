@@ -369,6 +369,26 @@ const feishuValue = (value) => {
     return value.url || value.tmp_url || value.text || value.name || null;
   return String(value);
 };
+const feishuCategoryId = (value) => {
+  const hall = Array.isArray(value) ? value[0] : value;
+  const hallMap = {
+    "猫猫馆": 1,
+    "狗狗馆": 2,
+    "鸟类馆": 3,
+    "水族馆": 4,
+    "奇宠馆": 5,
+    "更多馆": 6,
+  };
+  return Number(hall) || hallMap[String(hall || "")] || 1;
+};
+const feishuProductStatus = (value) => {
+  const status = String(Array.isArray(value) ? value[0] : value || "").trim();
+  if (["published", "available", "在售", "上架", "销售中"].includes(status))
+    return "published";
+  if (["sold", "已售", "已售出"].includes(status)) return "sold";
+  if (["offline", "下架", "已下架"].includes(status)) return "offline";
+  return "draft";
+};
 const feishuItems = async (config) => {
   const appId = config.app_id || process.env.FEISHU_APP_ID;
   const appSecret = process.env.FEISHU_APP_SECRET;
@@ -420,7 +440,10 @@ const feishuItems = async (config) => {
     const videos = field(record, "videos", "视频");
     return {
       name: field(record, "name", "宠物名称"),
-      category_id: Number(field(record, "category_id", "分类ID") || 1),
+      category_id: feishuCategoryId(
+        field(record, "category_id", "场馆") ||
+          field(record, "category_id", "分类ID"),
+      ),
       breed: field(record, "breed", "品种"),
       gender: field(record, "gender", "性别"),
       age_months: Number(field(record, "age_months", "月龄") || 0) || null,
@@ -432,7 +455,7 @@ const feishuItems = async (config) => {
       description: field(record, "description", "商品详情"),
       price: Number(field(record, "price", "价格") || 0),
       seller_name: field(record, "seller_name", "商家名称"),
-      status: field(record, "status", "商品状态") || "draft",
+      status: feishuProductStatus(field(record, "status", "商品状态")),
       source: "feishu",
       external_id: record.record_id,
       stock: Number(field(record, "stock", "库存") || 1),
@@ -466,7 +489,21 @@ const processSyncTask = (taskId, items) => {
       `INSERT INTO pets(name,category_id,breed,gender,age_months,color,body_type,personality,health_status,vaccine_record,description,price,seller_name,status,source,external_id)
        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(source,external_id) DO UPDATE SET
-       name=excluded.name,category_id=excluded.category_id,breed=excluded.breed,price=excluded.price,status=excluded.status,updated_at=CURRENT_TIMESTAMP`,
+       name=excluded.name,
+       category_id=excluded.category_id,
+       breed=excluded.breed,
+       gender=excluded.gender,
+       age_months=excluded.age_months,
+       color=excluded.color,
+       body_type=excluded.body_type,
+       personality=excluded.personality,
+       health_status=excluded.health_status,
+       vaccine_record=excluded.vaccine_record,
+       description=excluded.description,
+       price=excluded.price,
+       seller_name=excluded.seller_name,
+       status=excluded.status,
+       updated_at=CURRENT_TIMESTAMP`,
     );
     for (const [i, item] of batch.entries()) {
       try {
@@ -533,7 +570,7 @@ const processSyncTask = (taskId, items) => {
           ).run(petId, Number(item.stock || 1), Number(item.stock || 1), petId);
         if (petId)
           db.prepare(
-            "UPDATE inventory SET total_stock=?,available_stock=MAX(available_stock,?),updated_at=CURRENT_TIMESTAMP WHERE pet_id=? AND sku_id IS NULL",
+            "UPDATE inventory SET total_stock=?,available_stock=MAX(0,?-locked_stock),updated_at=CURRENT_TIMESTAMP WHERE pet_id=? AND sku_id IS NULL",
           ).run(Number(item.stock || 1), Number(item.stock || 1), petId);
         for (const [imageIndex, imageUrl] of (item.images || []).entries())
           if (petId && imageUrl)

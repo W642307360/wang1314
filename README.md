@@ -74,7 +74,7 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 
 后台可保存多维表格 App ID、Base 链接、Table ID 和字段映射。任务执行流程为：鉴权 → 分页读取 → 字段校验/标准品种匹配 → 每批最多 500 条写入宠物、库存、图片和视频 → 记录成功数与逐行错误。缺少 `FEISHU_APP_SECRET` 时远程任务会明确失败，不会伪造同步成功；测试数据模式仍可验证完整队列。
 
-当前表格配置基准：App ID `cli_a902ca6a2cb85cc0`，Table ID `tblUaCqyE3xkk1Bj`。要进行真实远程读取，必须在运行环境提供对应 App Secret，并在飞书开放平台授予多维表格读取权限。
+当前表格配置基准：App ID `cli_a902ca6a2cb85cc0`，Table ID `tblUaCqyE3xkk1Bj`。已完成真实远程读取验证；场馆名称会转换为本地分类，中文商品状态会转换为本地状态，同一飞书 `record_id` 再次同步时会更新原商品。商品表建议使用“商品名称、场馆、品种、性别、价格、详细介绍、主图文件、视频文件、年龄（月）、毛色、体型、性格、健康状态、疫苗记录、父亲信息、母亲信息、商家名称、商品状态、库存、宠物识别码”等字段。真实运行仍必须通过服务端环境变量提供 App Secret，并授予多维表格读取权限，密钥不得写入源码或提交 Git。
 
 ## 微信支付
 
