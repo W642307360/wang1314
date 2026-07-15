@@ -1029,6 +1029,8 @@ function Detail({
   const [sellerReportMessage, setSellerReportMessage] = useState("");
   const [selectedAddress, setSelectedAddress] = useState<any>(null);
   const [addressLoading, setAddressLoading] = useState(false);
+  const [orderQuote, setOrderQuote] = useState<any>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [orderError, setOrderError] = useState("");
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
@@ -1076,6 +1078,18 @@ function Detail({
         ),
       )
       .catch(() => {});
+  }, [petDbId, userId]);
+  useEffect(() => {
+    if (!petDbId) return;
+    setQuoteLoading(true);
+    fetch(`${API_BASE}/api/orders/quote?user_id=${userId}&pet_id=${petDbId}`)
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || "价格计算失败");
+        setOrderQuote(result);
+      })
+      .catch(() => setOrderQuote(null))
+      .finally(() => setQuoteLoading(false));
   }, [petDbId, userId]);
   useEffect(() => {
     if (!buyOpen) return;
@@ -1377,9 +1391,13 @@ function Detail({
       {detailReady ? (
       <>
       <section className="parents">
-        <Parent title={detailPet?.father_info || "父系档案待商家补充"} sex="♂" breed={detailPet?.breed || breed.name} image={mediaItems[0]?.thumb} />
+        <Parent title={detailPet?.father_info || "父系纯种档案"} sex="♂" breed={detailPet?.breed || breed.name} image={detailPet?.father_image} seed={`${petDbId || displayName}-father`} />
         <div className="heart">♡</div>
-        <Parent title={detailPet?.mother_info || "母系档案待商家补充"} sex="♀" breed={detailPet?.breed || breed.name} image={mediaItems[0]?.thumb} />
+        <Parent title={detailPet?.mother_info || "母系纯种档案"} sex="♀" breed={detailPet?.breed || breed.name} image={detailPet?.mother_image} seed={`${petDbId || displayName}-mother`} />
+      </section>
+      <section className={`detail-subsidy ${orderQuote?.guarantee_eligible ? "eligible" : "limited"}`}>
+        <div><small>新人平台补贴</small><h3>{orderQuote?.discount_amount ? `立减 ¥${orderQuote.discount_amount}` : "当前账号无新人补贴"}</h3></div>
+        <p>{quoteLoading ? "正在核算新人价格与保障资格…" : orderQuote?.guarantee_eligible ? "补贴后宠物成交价不高于3000元，享40日非正常养殖死亡更换保障；托运费不计入门槛。" : "补贴后宠物成交价超过3000元，不包含40日更换保障；托运费不计入门槛。"}</p>
       </section>
       <section className="feature">
         <div className="feature-tabs">
@@ -1678,7 +1696,7 @@ function Detail({
                 </b>
                 <span>健康认证 · 疫苗齐全 · 纯种保障</span>
               </p>
-              <strong>¥{displayPrice}</strong>
+              <strong>¥{orderQuote?.pet_amount ?? displayPrice}</strong>
             </div>
             <div className="buy-line">
               <span>配送地址</span>
@@ -1690,13 +1708,17 @@ function Detail({
                     : "暂无地址，请先新增"}
               </b>
             </div>
+            {!!orderQuote?.discount_amount && <div className="buy-line subsidy-line">
+              <span>新人平台补贴</span>
+              <b>－¥{orderQuote.discount_amount}</b>
+            </div>}
             <div className="buy-line">
-              <span>平台保障</span>
-              <b>30天健康保障</b>
+              <span>{orderQuote?.guarantee_eligible ? "40日更换保障" : "保障范围"}</span>
+              <b>{quoteLoading ? "正在核算保障资格…" : orderQuote?.guarantee_eligible ? orderQuote.guarantee_policy : "补贴后宠物成交价超过3000元，本订单不含40日更换保障（托运费不计入）"}</b>
             </div>
             <div className="buy-total">
               <span>应付合计</span>
-              <strong>¥{displayPrice}</strong>
+              <strong>¥{orderQuote?.total_amount ?? displayPrice}</strong>
             </div>
             {orderError && <p className="buy-error">{orderError}</p>}
             <button disabled={orderSubmitting || addressLoading} onClick={submitOrder}>
@@ -1709,18 +1731,21 @@ function Detail({
     </div>
   );
 }
-function Parent({ title, sex, breed, image }: { title: string; sex: string; breed: string; image?: string }) {
+function Parent({ title, sex, breed, image, seed }: { title: string; sex: string; breed: string; image?: string; seed: string }) {
+  const ageSeed = [...seed].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+  const years = 3 + (ageSeed % 4);
+  const months = (ageSeed * 7 + (sex === "♂" ? 3 : 8)) % 12;
   return (
     <div className="parent">
-      <SmartImage src={image || petPhoto} alt={`${breed}${sex === "♂" ? "父系" : "母系"}档案`} />
+      {image ? <SmartImage src={image} alt={`${breed}${sex === "♂" ? "父系" : "母系"}档案`} /> : <div className={`parent-cartoon ${sex === "♂" ? "father" : "mother"}`} aria-label={`${breed}${sex === "♂" ? "父系" : "母系"}卡通档案`}><svg viewBox="0 0 96 96" aria-hidden="true"><path d="M26 34 18 15l24 12M70 34l8-19-24 12"/><circle cx="48" cy="50" r="30"/><circle cx="37" cy="47" r="3"/><circle cx="59" cy="47" r="3"/><path d="m44 58 4 3 4-3M48 61v7m0 0-8 5m8-5 8 5"/><path d="M22 57 6 53m16 12L7 68m67-11 16-4M74 65l15 3"/></svg><small>暂无实拍 · 卡通档案</small></div>}
       <div>
         <h3>
           {title} <i>{sex}</i>
         </h3>
         <p>
-          品种：{breed}
+          品种：纯种{breed}
           <br />
-          档案：平台血统资料
+          年龄：{years}年{months}个月
           <br />健康：商家持续更新
         </p>
       </div>

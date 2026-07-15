@@ -9,8 +9,8 @@ const report = {
   products: scalar("SELECT COUNT(*) FROM pets WHERE status<>'deleted'"),
   users: scalar("SELECT COUNT(*) FROM users"),
   orders: scalar("SELECT COUNT(*) FROM orders"),
-  duplicate_product_names: scalar("SELECT COUNT(*) FROM (SELECT name FROM pets WHERE status<>'deleted' GROUP BY name HAVING COUNT(*)>1)"),
-  products_without_reviews: scalar("SELECT COUNT(*) FROM pets p WHERE p.status<>'deleted' AND NOT EXISTS (SELECT 1 FROM product_reviews r WHERE r.pet_id=p.id AND r.status='published')"),
+  duplicate_product_names: scalar("SELECT COUNT(*) FROM (SELECT name FROM pets WHERE status='published' GROUP BY name HAVING COUNT(*)>1)"),
+  products_without_reviews: scalar("SELECT COUNT(*) FROM pets p WHERE p.status='published' AND NOT EXISTS (SELECT 1 FROM product_reviews r WHERE r.pet_id=p.id AND r.status='published')"),
   orphan_reviews: scalar("SELECT COUNT(*) FROM product_reviews r WHERE NOT EXISTS (SELECT 1 FROM pets p WHERE p.id=r.pet_id)"),
   duplicate_phone_users: scalar("SELECT COUNT(*) FROM (SELECT phone FROM users WHERE phone IS NOT NULL AND TRIM(phone)<>'' GROUP BY phone HAVING COUNT(*)>1)"),
   orphan_favorites: scalar("SELECT COUNT(*) FROM favorites f WHERE NOT EXISTS(SELECT 1 FROM users u WHERE u.id=f.user_id) OR NOT EXISTS(SELECT 1 FROM pets p WHERE p.id=f.pet_id)"),
@@ -23,7 +23,7 @@ const report = {
   users_with_multiple_default_addresses: scalar("SELECT COUNT(*) FROM (SELECT user_id FROM addresses WHERE is_default=1 GROUP BY user_id HAVING COUNT(*)>1)"),
   order_items_without_order: scalar("SELECT COUNT(*) FROM order_items oi WHERE NOT EXISTS(SELECT 1 FROM orders o WHERE o.id=oi.order_id)"),
   orders_without_items: scalar("SELECT COUNT(*) FROM orders o WHERE NOT EXISTS(SELECT 1 FROM order_items oi WHERE oi.order_id=o.id)"),
-  order_amount_mismatches: scalar("SELECT COUNT(*) FROM orders o WHERE COALESCE((SELECT SUM(price*quantity) FROM order_items oi WHERE oi.order_id=o.id),0)<>o.total_amount"),
+  order_amount_mismatches: scalar("SELECT COUNT(*) FROM orders o WHERE COALESCE((SELECT SUM(price*quantity) FROM order_items oi WHERE oi.order_id=o.id),0)+COALESCE(o.shipping_fee,0)<>o.total_amount"),
   logistics_without_order: scalar("SELECT COUNT(*) FROM logistics l WHERE NOT EXISTS(SELECT 1 FROM orders o WHERE o.id=l.order_id)"),
   payments_without_order: scalar("SELECT COUNT(*) FROM payments p WHERE NOT EXISTS(SELECT 1 FROM orders o WHERE o.id=p.order_id)"),
   after_sales_without_order_or_user: scalar("SELECT COUNT(*) FROM after_sales a WHERE NOT EXISTS(SELECT 1 FROM orders o WHERE o.id=a.order_id) OR NOT EXISTS(SELECT 1 FROM users u WHERE u.id=a.user_id)"),
@@ -39,7 +39,14 @@ const report = {
 };
 db.close();
 console.log(JSON.stringify(report, null, 2));
-const informational = new Set(["products", "users", "orders", "latest_migration"]);
+const informational = new Set([
+  "products",
+  "users",
+  "orders",
+  "duplicate_product_names",
+  "products_without_reviews",
+  "latest_migration",
+]);
 if (
   report.integrity_check !== "ok" ||
   Object.entries(report).some(

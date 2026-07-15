@@ -642,6 +642,8 @@ function Products({
   token: string;
 }) {
   const [selected, setSelected] = useState<number[]>([]);
+  const [batching, setBatching] = useState(false);
+  const [notice, setNotice] = useState("");
   const headers = {
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
@@ -678,8 +680,46 @@ function Products({
       });
   };
   const batch = async (status: string) => {
-    await Promise.all(selected.map((id) => patch(id, { status })));
-    setSelected([]);
+    if (!selected.length) return setNotice("请先勾选需要批量处理的商品。");
+    setBatching(true);
+    setNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/pets/bulk-status`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ ids: selected, status }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "批量更新失败");
+      selected.forEach((id) => update(id, { status }));
+      setSelected([]);
+      setNotice(`已更新 ${result.changed} 个商品。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "批量更新失败");
+    } finally {
+      setBatching(false);
+    }
+  };
+  const offlineAll = async () => {
+    if (!window.confirm("确定一键下架全部宠物商品吗？此操作不会删除商品资料。")) return;
+    setBatching(true);
+    setNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/pets/bulk-status`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ scope: "all", status: "offline" }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "全部下架失败");
+      products.forEach((product) => update(product.id, { status: "offline" }));
+      setSelected([]);
+      setNotice(`全部商品已下架，共处理 ${result.changed} 个商品。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "全部下架失败");
+    } finally {
+      setBatching(false);
+    }
   };
   const bulkImport = async () => {
     const text = prompt("粘贴商品 JSON 数组");
@@ -704,11 +744,13 @@ function Products({
         <h3>宠物商品管理</h3>
         <span>
           <button onClick={bulkImport}>批量上传</button>{" "}
-          <button onClick={() => batch("published")}>批量上架</button>{" "}
-          <button onClick={() => batch("offline")}>批量下架</button>{" "}
+          <button disabled={batching || !selected.length} onClick={() => batch("published")}>批量上架</button>{" "}
+          <button disabled={batching || !selected.length} onClick={() => batch("offline")}>批量下架</button>{" "}
+          <button className="danger" disabled={batching || !products.length} onClick={offlineAll}>{batching ? "处理中…" : "一键下架全部"}</button>{" "}
           <button onClick={open}>＋ 新增宠物</button>
         </span>
       </div>
+      {notice && <p className="feishu-notice">{notice}</p>}
       <table>
         <thead>
           <tr>
@@ -943,50 +985,115 @@ function UsersManager({ token }: { token: string }) {
 function OrdersManager({ token }: { token: string }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [detail, setDetail] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<number | null>(null);
   const headers = useMemo(
     () => ({ authorization: `Bearer ${token}` }),
     [token],
   );
-  const statusOptions = [
+  const statusOptions: [string, string][] = [
     ["pending_payment", "待付款"],
     ["pending_confirm", "已付款/待处理"],
+    ["pending_ship", "已确认/待发货"],
     ["packed", "打包中"],
     ["shipped", "已发货"],
     ["in_transit", "运输中"],
     ["delivering", "配送中"],
+    ["pending_receive", "待收货"],
     ["completed", "已完成"],
     ["cancelled", "已取消"],
     ["after_sale", "售后"],
   ];
-  useEffect(() => {
-    fetch(`${API_BASE}/api/admin/orders`, { headers })
-      .then((r) => r.json())
-      .then(setOrders);
+  const transitions: Record<string, string[]> = {
+    pending_payment: ["pending_confirm", "cancelled"],
+    pending_confirm: ["pending_ship", "packed", "cancelled", "after_sale"],
+    pending_ship: ["packed", "shipped", "cancelled", "after_sale"],
+    packed: ["shipped", "cancelled", "after_sale"],
+    shipped: ["in_transit", "delivering", "pending_receive", "after_sale"],
+    in_transit: ["delivering", "pending_receive", "after_sale"],
+    delivering: ["pending_receive", "completed", "after_sale"],
+    pending_receive: ["completed", "after_sale"],
+    completed: ["after_sale"],
+    cancelled: [],
+    after_sale: ["completed", "cancelled"],
+  };
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/orders`, { headers });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !Array.isArray(result))
+        throw new Error(result?.message || `订单服务响应异常（${response.status}）`);
+      setOrders(result);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "订单加载失败");
+    } finally {
+      setLoading(false);
+    }
   }, [headers]);
+  useEffect(() => {
+    void load();
+  }, [load]);
   const update = async (
     id: number,
     patch: { status?: string; payment_status?: string },
   ) => {
-    const response = await fetch(`${API_BASE}/api/admin/orders/${id}`, {
-      method: "PATCH",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    const result = await response.json();
-    if (!response.ok) return alert(result.message || "订单更新失败");
-    setOrders((v) => v.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+    setBusyId(id);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/orders/${id}`, {
+        method: "PATCH",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || `订单更新失败（${response.status}）`);
+      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...patch } : order)));
+    } catch (updateError) {
+      alert(updateError instanceof Error ? updateError.message : "订单更新失败");
+      await load();
+    } finally {
+      setBusyId(null);
+    }
   };
-  const open = async (id: number) =>
-    setDetail(
-      await fetch(`${API_BASE}/api/admin/orders/${id}`, {
+  const confirmOrder = async (id: number) => {
+    setBusyId(id);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/orders/${id}/confirm`, {
+        method: "POST",
         headers,
-      }).then((r) => r.json()),
-    );
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || `确认订单失败（${response.status}）`);
+      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...result } : order)));
+    } catch (confirmError) {
+      alert(confirmError instanceof Error ? confirmError.message : "确认订单失败");
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const open = async (id: number) => {
+    setBusyId(id);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/orders/${id}`, { headers });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "订单详情加载失败");
+      setDetail(result);
+    } catch (detailError) {
+      alert(detailError instanceof Error ? detailError.message : "订单详情加载失败");
+    } finally {
+      setBusyId(null);
+    }
+  };
   return (
     <section className="admin-table">
       <div>
         <h3>订单管理</h3>
+        <button onClick={load} disabled={loading}>刷新订单</button>
       </div>
+      {error && <p className="feishu-notice">{error}　<button onClick={load}>重新加载</button></p>}
       <table>
         <thead>
           <tr>
@@ -1001,7 +1108,8 @@ function OrdersManager({ token }: { token: string }) {
           </tr>
         </thead>
         <tbody>
-          {!orders.length && <EmptyRow cols={8} text="暂无订单数据" />}
+          {loading && <EmptyRow cols={8} text="订单数据加载中…" />}
+          {!loading && !orders.length && <EmptyRow cols={8} text={error ? "订单服务暂不可用" : "暂无订单数据"} />}
           {orders.map((o) => (
             <tr key={o.id}>
               <td>{o.order_no}</td>
@@ -1014,9 +1122,9 @@ function OrdersManager({ token }: { token: string }) {
               <td>{o.paid_at ? String(o.paid_at).replace("T", " ").slice(0, 19) : "尚未支付"}</td>
               <td>{o.status}</td>
               <td>
-                <button onClick={() => open(o.id)}>详情</button>
+                <button disabled={busyId === o.id} onClick={() => open(o.id)}>详情</button>
                 <button
-                  disabled={o.payment_status === "paid"}
+                  disabled={busyId === o.id || o.payment_status === "paid"}
                   onClick={() =>
                     update(o.id, {
                       status: "pending_confirm",
@@ -1026,8 +1134,15 @@ function OrdersManager({ token }: { token: string }) {
                 >
                   确认付款
                 </button>
-                <select value={o.status} onChange={(event) => update(o.id, { status: event.target.value })}>
-                  {statusOptions.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+                <button
+                  className="primary"
+                  disabled={busyId === o.id || o.payment_status !== "paid" || o.status !== "pending_confirm"}
+                  onClick={() => confirmOrder(o.id)}
+                >
+                  {busyId === o.id ? "处理中…" : o.status === "pending_confirm" ? "确认订单" : "订单已确认"}
+                </button>
+                <select disabled={busyId === o.id} value={o.status} onChange={(event) => update(o.id, { status: event.target.value })}>
+                  {statusOptions.filter(([value]) => value === o.status || (transitions[o.status] || []).includes(value)).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
                 </select>
                 <button
                   onClick={() =>
@@ -1053,6 +1168,8 @@ function OrdersManager({ token }: { token: string }) {
             {detail.payment_status} · 物流：
             {detail.logistics?.status || "待发货"}
           </p>
+          <p>宠物原价：¥{detail.subtotal_amount ?? detail.total_amount} · 新人补贴：¥{detail.discount_amount || 0} · 托运费：¥{detail.shipping_fee || 0}</p>
+          <p>40日更换保障：{detail.guarantee_eligible ? "已包含（补贴后宠物成交价不高于3000元）" : "不包含"}</p>
           {!!detail.status_history?.length && <div className="order-history"><b>订单状态记录</b>{detail.status_history.map((event: any) => <p key={event.id}>{event.created_at}　{event.from_status || "创建"} → {event.to_status}</p>)}</div>}
           <button onClick={() => setDetail(null)}>关闭详情</button>
         </div>
@@ -1658,6 +1775,29 @@ function FeishuManager({ token }: { token: string }) {
       setSyncing(false);
     }
   };
+  const exportProducts = async (id: number) => {
+    if (!window.confirm("确定把当前商品库回写到飞书吗？将更新商品标题与资料；已有主图、视频附件会保留，缺失附件会自动上传。")) return;
+    setSyncing(true);
+    setNotice("正在把商品标题、资料、主图和视频回写飞书；媒体上传可能需要一些时间，请勿重复操作…");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/feishu/export-products`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ config_id: id, replace_media: false }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 207)
+        throw new Error(result.message || "商品回写飞书失败");
+      setNotice(
+        `飞书回写完成：新增 ${result.created || 0} 条、更新 ${result.updated || 0} 条、上传主图 ${result.images || 0} 个、视频 ${result.videos || 0} 个${result.failed ? `，失败 ${result.failed} 条` : "，无失败记录"}。`,
+      );
+      load();
+    } catch (exportError) {
+      setNotice(exportError instanceof Error ? exportError.message : "商品回写飞书失败");
+    } finally {
+      setSyncing(false);
+    }
+  };
   const commitPreview = async (id: number, publishAfterSync = false) => {
     setSyncing(true);
     setNotice(publishAfterSync ? "正在同步并上架商品，每批处理 100 条…" : "正在同步为草稿，每批处理 100 条…");
@@ -1721,6 +1861,7 @@ function FeishuManager({ token }: { token: string }) {
         <div><small>管理员同步控制台</small><b>{activeConfig ? activeConfig.name || "已保存飞书连接" : "请先保存同步配置"}</b><span>测试不会写库，预览确认后才会同步商品。</span></div>
         <button disabled={syncing || !activeConfig} onClick={() => activeConfig && testConnection(activeConfig.id)}>① 测试连接</button>
         <button disabled={syncing || !activeConfig} onClick={() => activeConfig && preview(activeConfig.id)}>② 同步预览</button>
+        <button disabled={syncing || !activeConfig} onClick={() => activeConfig && exportProducts(activeConfig.id)}>③ 商品库回写飞书</button>
       </section>
       {connectionTest && <div className={`connection-result ${connectionTest.connected ? "ok" : "error"}`}>
         <b>{connectionTest.connected ? "连接测试通过" : "连接测试失败"}</b>

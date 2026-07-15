@@ -107,6 +107,20 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(pet.response.status, 201);
   assert.ok(pet.payload.id);
+  const bulkOffline = await request("/api/admin/pets/bulk-status", {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ ids: [pet.payload.id], status: "offline" }),
+  });
+  assert.equal(bulkOffline.response.status, 200);
+  assert.equal(bulkOffline.payload.changed, 1);
+  const bulkRepublish = await request("/api/admin/pets/bulk-status", {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({ ids: [pet.payload.id], status: "published" }),
+  });
+  assert.equal(bulkRepublish.response.status, 200);
+  assert.equal(bulkRepublish.payload.changed, 1);
   const firstImage = await request(`/api/admin/pets/${pet.payload.id}/images`, {
     method: "POST",
     headers: adminHeaders,
@@ -197,6 +211,54 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const secondUserOrders = await request(`/api/orders?user_id=${secondUser.payload.id}`);
   assert.deepEqual(secondUserFavorites.payload, []);
   assert.deepEqual(secondUserOrders.payload, []);
+  const newcomerCoupons = await request(`/api/coupons?user_id=${secondUser.payload.id}`);
+  const newcomerCoupon = newcomerCoupons.payload.find((item) => item.code === "NEW_USER_300");
+  assert.equal(newcomerCoupon.amount, 300);
+  assert.equal(newcomerCoupon.user_status, "available");
+  const eligiblePet = await request("/api/admin/pets", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      name: "新人保障边界测试宠物",
+      category_id: 1,
+      breed: "布偶猫",
+      price: 3300,
+      stock: 1,
+      status: "published",
+    }),
+  });
+  const eligibleQuote = await request(
+    `/api/orders/quote?user_id=${secondUser.payload.id}&pet_id=${eligiblePet.payload.id}`,
+  );
+  assert.equal(eligibleQuote.response.status, 200);
+  assert.equal(eligibleQuote.payload.discount_amount, 300);
+  assert.equal(eligibleQuote.payload.pet_amount, 3000);
+  assert.equal(eligibleQuote.payload.shipping_fee, 0);
+  assert.equal(eligibleQuote.payload.guarantee_eligible, true);
+  assert.match(eligibleQuote.payload.guarantee_policy, /40日/);
+  const eligibleOrder = await request("/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: secondUser.payload.id,
+      pet_id: eligiblePet.payload.id,
+      client_request_id: "eligible-newcomer-order",
+      address: { name: "新人", phone: "13600000000", detail: "新人保障测试地址" },
+    }),
+  });
+  assert.equal(eligibleOrder.response.status, 201);
+  assert.equal(eligibleOrder.payload.total_amount, 3000);
+  assert.equal(eligibleOrder.payload.guarantee_eligible, true);
+  const cancelledEligibleOrder = await request(`/api/orders/${eligibleOrder.payload.id}/cancel`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: secondUser.payload.id }),
+  });
+  assert.equal(cancelledEligibleOrder.response.status, 200);
+  const restoredQuote = await request(
+    `/api/orders/quote?user_id=${secondUser.payload.id}&pet_id=${eligiblePet.payload.id}`,
+  );
+  assert.equal(restoredQuote.payload.discount_amount, 300);
   const visitor = await request("/api/visitors/session", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -262,6 +324,9 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     }),
   });
   assert.equal(order.response.status, 201);
+  assert.equal(order.payload.discount_amount, 300);
+  assert.equal(order.payload.pet_amount, 6500);
+  assert.equal(order.payload.guarantee_eligible, false);
   assert.match(order.payload.order_no, /^FC\d{8}-\d{4}$/);
   const repeatedOrder = await request("/api/orders", {
     method: "POST",
@@ -303,6 +368,19 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(paidAgain.response.status, 200);
   assert.equal(paidAgain.payload.idempotent, true);
+
+  const confirmedOrder = await request(`/api/admin/orders/${order.payload.id}/confirm`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(confirmedOrder.response.status, 200);
+  assert.equal(confirmedOrder.payload.status, "pending_ship");
+  const confirmedOrderAgain = await request(`/api/admin/orders/${order.payload.id}/confirm`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(confirmedOrderAgain.response.status, 200);
+  assert.equal(confirmedOrderAgain.payload.idempotent, true);
 
   const shipped = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
