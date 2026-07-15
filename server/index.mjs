@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import {
   readFileSync,
+  createReadStream,
   mkdirSync,
   existsSync,
   writeFileSync,
@@ -29,6 +30,8 @@ mkdirSync(join(root, "data"), { recursive: true });
 mkdirSync(join(root, "uploads"), { recursive: true });
 const compatibleMediaDir = join(root, "data", "compatible-media");
 mkdirSync(compatibleMediaDir, { recursive: true });
+const feishuImageCacheDir = join(root, "data", "feishu-image-cache");
+mkdirSync(feishuImageCacheDir, { recursive: true });
 const dbPath = process.env.DB_PATH || join(root, "data", "fuchong.db");
 const backupDir = join(root, "backups");
 mkdirSync(backupDir, { recursive: true });
@@ -239,7 +242,8 @@ const petDetail = (id) => {
               pp.id AS product_id,pp.status AS product_status,
               s.name AS seller_profile_name,s.city AS seller_city,s.address AS seller_address,
               s.rating AS seller_rating,s.sales AS seller_sales,s.review_count AS seller_review_count,
-              s.specialty AS seller_specialty,s.offline_store AS seller_offline_store
+              s.specialty AS seller_specialty,s.offline_store AS seller_offline_store,
+              s.image_url AS seller_image_url,s.thumbnail_url AS seller_thumbnail_url
        FROM pets p
        LEFT JOIN breeds b ON b.id=p.breed_id OR b.name=p.breed
        LEFT JOIN pet_products pp ON pp.pet_id=p.id
@@ -263,6 +267,8 @@ const petDetail = (id) => {
       review_count: pet.seller_review_count,
       specialty: pet.seller_specialty,
       offline_store: pet.seller_offline_store,
+      image_url: pet.seller_image_url,
+      thumbnail_url: pet.seller_thumbnail_url,
     } : null,
     product_status:
       pet.status === "published"
@@ -481,6 +487,14 @@ const userDataCounts = (userId) => ({
   addresses: db.prepare("SELECT COUNT(*) AS count FROM addresses WHERE user_id=?").get(userId).count,
   messages: db.prepare("SELECT COUNT(*) AS count FROM messages WHERE user_id=?").get(userId).count,
 });
+const validatedUserId = (res, value) => {
+  const userId = Number(value || 0);
+  if (!Number.isInteger(userId) || userId <= 0)
+    return json(res, 400, { message: "缺少有效用户身份，请重新登录" }), 0;
+  if (!db.prepare("SELECT id FROM users WHERE id=? AND status<>'merged'").get(userId))
+    return json(res, 400, { message: "用户不存在或已合并，请重新登录" }), 0;
+  return userId;
+};
 const mergeGuestData = (previousUserId, targetUserId) => {
   const previous = db.prepare("SELECT id,status FROM users WHERE id=?").get(Number(previousUserId));
   if (!previous || previous.id === targetUserId || previous.status !== "guest") return false;
@@ -489,7 +503,14 @@ const mergeGuestData = (previousUserId, targetUserId) => {
     db.prepare("INSERT OR IGNORE INTO favorites(user_id,pet_id,created_at) SELECT ?,pet_id,created_at FROM favorites WHERE user_id=?").run(targetUserId, previous.id);
     db.prepare("INSERT OR IGNORE INTO follows(user_id,seller_name,created_at) SELECT ?,seller_name,created_at FROM follows WHERE user_id=?").run(targetUserId, previous.id);
     db.prepare("INSERT OR IGNORE INTO cart_items(user_id,pet_id,quantity,selected,created_at,updated_at) SELECT ?,pet_id,quantity,selected,created_at,updated_at FROM cart_items WHERE user_id=?").run(targetUserId, previous.id);
-    for (const table of ["footprints", "addresses", "orders", "messages", "user_coupons", "customer_service_sessions", "seller_reports"])
+    db.prepare("DELETE FROM favorites WHERE user_id=?").run(previous.id);
+    db.prepare("DELETE FROM follows WHERE user_id=?").run(previous.id);
+    db.prepare("DELETE FROM cart_items WHERE user_id=?").run(previous.id);
+    for (const table of [
+      "footprints", "addresses", "orders", "messages", "user_coupons",
+      "customer_service_sessions", "seller_reports", "after_sales", "complaints",
+      "product_reviews", "seller_reviews",
+    ])
       db.prepare(`UPDATE ${table} SET user_id=? WHERE user_id=?`).run(targetUserId, previous.id);
     db.prepare("UPDATE visitors SET user_id=? WHERE user_id=?").run(targetUserId, previous.id);
     db.prepare("UPDATE users SET status='merged',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(previous.id);
@@ -560,6 +581,40 @@ const ensureCompatibleVideo = async (mediaUrl, accessToken) => {
   compatibleVideoTasks.set(key, task);
   return task;
 };
+const compatibleVideoFile = (mediaUrl) =>
+  join(compatibleMediaDir, `${createHash("sha256").update(mediaUrl).digest("hex")}.mp4`);
+const ensureProductVideoPoster = async (
+  imageUrl,
+  target,
+  width = 420,
+  quality = 74,
+) => {
+  if (existsSync(target) && statSync(target).size > 512) return target;
+  const image = db.prepare("SELECT pet_id FROM pet_images WHERE url=? LIMIT 1").get(imageUrl);
+  if (!image) return null;
+  const video = db
+    .prepare("SELECT url FROM pet_videos WHERE pet_id=? ORDER BY id LIMIT 1")
+    .get(image.pet_id);
+  if (!video?.url) return null;
+  const compatibleVideo = compatibleVideoFile(video.url);
+  if (!existsSync(compatibleVideo) || statSync(compatibleVideo).size <= 1024) return null;
+  await new Promise((resolve, reject) => {
+    const process = spawn(
+      ffmpegPath,
+      [
+        "-y", "-ss", "0.25", "-i", compatibleVideo,
+        "-vf", `scale=${width}:-2:force_original_aspect_ratio=decrease`,
+        "-frames:v", "1", "-quality", String(quality), target,
+      ],
+      { windowsHide: true, stdio: "ignore" },
+    );
+    process.once("error", reject);
+    process.once("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`商品视频封面生成失败（${code}）`)),
+    );
+  });
+  return target;
+};
 const serveRangeFile = (req, res, file, contentType) => {
   const size = statSync(file).size;
   const range = String(req.headers.range || "").match(/bytes=(\d*)-(\d*)/);
@@ -571,20 +626,97 @@ const serveRangeFile = (req, res, file, contentType) => {
       "cache-control": "public,max-age=31536000,immutable",
       "access-control-allow-origin": "*",
     });
-    return res.end(readFileSync(file));
+    return createReadStream(file).pipe(res);
   }
   const start = Math.max(0, Number(range[1] || 0));
   const end = Math.min(size - 1, Number(range[2] || Math.min(size - 1, start + 1024 * 1024 - 1)));
-  const data = readFileSync(file).subarray(start, end + 1);
   res.writeHead(206, {
     "content-type": contentType,
-    "content-length": data.length,
+    "content-length": end - start + 1,
     "content-range": `bytes ${start}-${end}/${size}`,
     "accept-ranges": "bytes",
     "cache-control": "public,max-age=31536000,immutable",
     "access-control-allow-origin": "*",
   });
-  return res.end(data);
+  return createReadStream(file, { start, end }).pipe(res);
+};
+const feishuImageTasks = new Map();
+let activeFeishuImageJobs = 0;
+const feishuImageWaiters = [];
+const withFeishuImageSlot = async (work) => {
+  if (activeFeishuImageJobs >= 2)
+    await new Promise((resolve) => feishuImageWaiters.push(resolve));
+  activeFeishuImageJobs++;
+  try {
+    return await work();
+  } finally {
+    activeFeishuImageJobs--;
+    feishuImageWaiters.shift()?.();
+  }
+};
+const ensureFeishuImage = async (mediaUrl, variant, config) => {
+  const key = createHash("sha256").update(mediaUrl).digest("hex");
+  const source = join(feishuImageCacheDir, `${key}.source`);
+  const typeFile = join(feishuImageCacheDir, `${key}.type`);
+  const thumb = join(feishuImageCacheDir, `${key}.thumb.webp`);
+  const poster = join(feishuImageCacheDir, `${key}.poster.webp`);
+  if (variant === "thumb" && existsSync(thumb) && statSync(thumb).size > 512)
+    return { file: thumb, contentType: "image/webp" };
+  if (variant !== "thumb" && existsSync(source) && statSync(source).size > 512)
+    return {
+      file: source,
+      contentType: existsSync(typeFile) ? readFileSync(typeFile, "utf8") : "image/jpeg",
+    };
+  const taskKey = `${key}:${variant}`;
+  if (feishuImageTasks.has(taskKey)) return feishuImageTasks.get(taskKey);
+  const task = withFeishuImageSlot(async () => {
+    if (!existsSync(source) || statSync(source).size <= 512) {
+      if (!process.env.FEISHU_APP_ID || !process.env.FEISHU_APP_SECRET) {
+        const videoPoster = await ensureProductVideoPoster(
+          mediaUrl,
+          variant === "thumb" ? thumb : poster,
+          variant === "thumb" ? 420 : 1200,
+          variant === "thumb" ? 74 : 88,
+        );
+        if (videoPoster) return { file: videoPoster, contentType: "image/webp" };
+      }
+      const accessToken = await getFeishuAccess(config);
+      const response = await fetch(mediaUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+      const contentType = response.headers.get("content-type") || "";
+      if (!response.ok || !contentType.startsWith("image/"))
+        throw new Error("飞书商品图片下载失败");
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (contentLength > 25 * 1024 * 1024)
+        throw new Error("飞书商品图片超过 25MB 限制");
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > 25 * 1024 * 1024)
+        throw new Error("飞书商品图片文件异常");
+      writeFileSync(source, buffer);
+      writeFileSync(typeFile, contentType.split(";")[0]);
+    }
+    if (variant !== "thumb")
+      return {
+        file: source,
+        contentType: existsSync(typeFile) ? readFileSync(typeFile, "utf8") : "image/jpeg",
+      };
+    await new Promise((resolve, reject) => {
+      const process = spawn(
+        ffmpegPath,
+        ["-y", "-i", source, "-vf", "scale=420:-2:force_original_aspect_ratio=decrease", "-frames:v", "1", "-quality", "72", thumb],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      process.once("error", reject);
+      process.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`商品缩略图生成失败（${code}）`)),
+      );
+    });
+    return { file: thumb, contentType: "image/webp" };
+  }).finally(() => feishuImageTasks.delete(taskKey));
+  feishuImageTasks.set(taskKey, task);
+  return task;
 };
 const generateSyncItems = (total = 500) =>
   Array.from({ length: total }, (_, i) => ({
@@ -769,6 +901,7 @@ const processSyncTask = (taskId, items) => {
        updated_at=CURRENT_TIMESTAMP`,
     );
     for (const [i, item] of batch.entries()) {
+      db.exec("SAVEPOINT feishu_sync_row");
       try {
         if (!item.name || !item.breed || !item.price)
           throw new Error("缺少名称、品种或价格");
@@ -883,8 +1016,11 @@ const processSyncTask = (taskId, items) => {
         db.prepare(
           "UPDATE feishu_sync_task_items SET status='success',error=NULL,processed_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
         ).run(taskId, start + i + 1);
+        db.exec("RELEASE SAVEPOINT feishu_sync_row");
         success++;
       } catch (e) {
+        db.exec("ROLLBACK TO SAVEPOINT feishu_sync_row");
+        db.exec("RELEASE SAVEPOINT feishu_sync_row");
         failed++;
         db.prepare(
           "UPDATE feishu_sync_task_items SET status='failed',error=?,processed_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
@@ -933,32 +1069,20 @@ const server = createServer(async (req, res) => {
         const config = db
           .prepare("SELECT * FROM feishu_sync_configs WHERE status='active' ORDER BY id DESC LIMIT 1")
           .get() || {};
-        const accessToken = await getFeishuAccess(config);
         if (url.searchParams.get("format") === "h264") {
+          const cachedVideo = compatibleVideoFile(mediaUrl.toString());
+          if (existsSync(cachedVideo) && statSync(cachedVideo).size > 1024)
+            return serveRangeFile(req, res, cachedVideo, "video/mp4");
+          const accessToken = await getFeishuAccess(config);
           const compatibleFile = await ensureCompatibleVideo(mediaUrl.toString(), accessToken);
           return serveRangeFile(req, res, compatibleFile, "video/mp4");
         }
-        const upstream = await fetch(mediaUrl, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            ...(req.headers.range ? { Range: req.headers.range } : {}),
-          },
-        });
-        if (!upstream.ok || !upstream.body)
-          return json(res, upstream.status || 502, { message: "飞书媒体读取失败" });
-        const headers = {
-          "content-type": upstream.headers.get("content-type") || "application/octet-stream",
-          "cache-control": "public,max-age=3600,stale-while-revalidate=86400",
-          "access-control-allow-origin": "*",
-          "accept-ranges": upstream.headers.get("accept-ranges") || "bytes",
-        };
-        const contentLength = upstream.headers.get("content-length");
-        const contentRange = upstream.headers.get("content-range");
-        if (contentLength) headers["content-length"] = contentLength;
-        if (contentRange) headers["content-range"] = contentRange;
-        res.writeHead(upstream.status, headers);
-        for await (const chunk of upstream.body) res.write(chunk);
-        return res.end();
+        const image = await ensureFeishuImage(
+          mediaUrl.toString(),
+          url.searchParams.get("variant") === "thumb" ? "thumb" : "original",
+          config,
+        );
+        return serveRangeFile(req, res, image.file, image.contentType);
       } catch (error) {
         return json(res, 502, {
           message: error instanceof Error ? error.message : "飞书媒体代理异常",
@@ -996,13 +1120,20 @@ const server = createServer(async (req, res) => {
           "UPDATE visitors SET last_seen=CURRENT_TIMESTAMP,visit_count=visit_count+1 WHERE id=?",
         ).run(visitor.id);
       } else {
-        const u = db
-          .prepare("INSERT INTO users(openid,nickname,status) VALUES(?,?,?)")
-          .run(`guest:${token}`, "访客用户", "guest");
-        const v = db
-          .prepare("INSERT INTO visitors(token,user_id) VALUES(?,?)")
-          .run(token, u.lastInsertRowid);
-        visitor = { id: v.lastInsertRowid, token, user_id: u.lastInsertRowid };
+        db.exec("BEGIN");
+        try {
+          const u = db
+            .prepare("INSERT INTO users(openid,nickname,status) VALUES(?,?,?)")
+            .run(`guest:${token}`, "访客用户", "guest");
+          const v = db
+            .prepare("INSERT INTO visitors(token,user_id) VALUES(?,?)")
+            .run(token, u.lastInsertRowid);
+          visitor = { id: v.lastInsertRowid, token, user_id: u.lastInsertRowid };
+          db.exec("COMMIT");
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
       }
       return json(res, 200, {
         token,
@@ -1136,6 +1267,12 @@ const server = createServer(async (req, res) => {
       if (!db.prepare("SELECT id FROM users WHERE id=?").get(id))
         return json(res, 404, { message: "用户不存在" });
       const count = (sql, ...args) => db.prepare(sql).get(...args).count;
+      const orderCounts = Object.fromEntries(
+        rows(
+          "SELECT status,COUNT(*) AS count FROM orders WHERE user_id=? GROUP BY status",
+          id,
+        ).map((item) => [item.status, item.count]),
+      );
       return json(res, 200, {
         favorites: count("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?", id),
         cart: count("SELECT COUNT(*) AS count FROM cart_items WHERE user_id=?", id),
@@ -1144,12 +1281,19 @@ const server = createServer(async (req, res) => {
           "SELECT COUNT(*) AS count FROM user_coupons WHERE user_id=? AND status='available'",
           id,
         ),
-        orders: Object.fromEntries(
-          rows(
-            "SELECT status,COUNT(*) AS count FROM orders WHERE user_id=? GROUP BY status",
-            id,
-          ).map((item) => [item.status, item.count]),
-        ),
+        orders: orderCounts,
+        order_groups: {
+          pending_payment: Number(orderCounts.pending_payment || 0),
+          pending_confirm: Number(orderCounts.pending_confirm || 0),
+          pending_ship:
+            Number(orderCounts.pending_ship || 0) + Number(orderCounts.packed || 0),
+          pending_receive:
+            Number(orderCounts.shipped || 0) +
+            Number(orderCounts.in_transit || 0) +
+            Number(orderCounts.delivering || 0) +
+            Number(orderCounts.pending_receive || 0),
+          after_sale: Number(orderCounts.after_sale || 0),
+        },
         spending: db
           .prepare(
             "SELECT COUNT(*) AS order_count,COALESCE(SUM(total_amount),0) AS amount FROM orders WHERE user_id=? AND payment_status='paid'",
@@ -1222,6 +1366,14 @@ const server = createServer(async (req, res) => {
         backups: existsSync(backupDir)
           ? readdirSync(backupDir).filter((name) => name.endsWith(".db"))
           : [],
+        media_cache: {
+          feishu_credentials_ready: Boolean(
+            process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET,
+          ),
+          original_images: readdirSync(feishuImageCacheDir).filter((name) => name.endsWith(".source")).length,
+          thumbnails: readdirSync(feishuImageCacheDir).filter((name) => name.endsWith(".thumb.webp")).length,
+          compatible_videos: readdirSync(compatibleMediaDir).filter((name) => name.endsWith(".mp4")).length,
+        },
         database_path: dbPath,
       });
     }
@@ -1306,8 +1458,13 @@ const server = createServer(async (req, res) => {
       const q = `%${search}%`;
       const status = url.searchParams.get("status") || "published";
       const { pageSize, offset } = pageParams(url, { pageSize: 12, max: 50 });
-      const baseSelect = `SELECT p.*,c.name AS category_name,pp.status AS product_status,
-                                 (SELECT pi.url FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1) AS image,
+      const baseSelect = `SELECT p.id,p.name,p.category_id,p.breed,p.gender,p.age_months,p.color,
+                                 p.health_status,p.price,p.seller_name,p.status,p.thumbnail_url,p.highres_url,
+                                 p.breed_id,p.seller_id,p.updated_at,
+                                 c.name AS category_name,pp.status AS product_status,
+                                 COALESCE(p.thumbnail_url,
+                                   (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
+                                 ) AS image,
                                  (SELECT COUNT(*) FROM pet_images pi WHERE pi.pet_id=p.id) AS image_count,
                                  (SELECT COUNT(*) FROM pet_videos pv WHERE pv.pet_id=p.id) AS video_count
                           FROM pets p
@@ -1457,7 +1614,12 @@ const server = createServer(async (req, res) => {
         ...seller,
         review_total: db.prepare("SELECT COUNT(*) AS count FROM seller_reviews WHERE seller_id=?").get(seller.id).count,
         reviews: rows(
-          "SELECT id,nickname,rating,content,tags,created_at FROM seller_reviews WHERE seller_id=? ORDER BY created_at DESC,id DESC LIMIT 30",
+          `SELECT id,nickname,rating,content,tags,created_at
+           FROM seller_reviews
+           WHERE seller_id=?
+             AND id IN (SELECT MAX(id) FROM seller_reviews WHERE seller_id=? GROUP BY content)
+           ORDER BY created_at DESC,id DESC LIMIT 24`,
+          seller.id,
           seller.id,
         ),
         products: rows(
@@ -1771,22 +1933,28 @@ const server = createServer(async (req, res) => {
         orderId = Number(logistics[1]),
         order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
       if (!order) return json(res, 404, { message: "订单不存在" });
-      if (d.status === "shipped" && order.payment_status !== "paid")
-        return json(res, 409, { message: "订单尚未付款，不能发货" });
       const statusProgress = {
           pending: 0,
           packed: 25,
           shipped: 50,
+          in_transit: 65,
           delivering: 75,
+          pending_receive: 90,
           delivered: 100,
         },
-        progressPercent = Math.min(
-          100,
-          Math.max(
-            0,
-            Number(d.progress_percent ?? statusProgress[d.status] ?? 0),
-          ),
-        ),
+        requestedStatus = String(d.status || "pending");
+      if (!Object.hasOwn(statusProgress, requestedStatus))
+        return json(res, 400, { message: "物流状态不合法" });
+      if (requestedStatus !== "pending" && order.payment_status !== "paid")
+        return json(res, 409, { message: "订单尚未付款，不能进入打包或配送流程" });
+      const latestEvent = db
+        .prepare("SELECT progress_percent,status FROM logistics_events WHERE order_id=? ORDER BY id DESC LIMIT 1")
+        .get(orderId);
+      const latestProgress = Number(latestEvent?.progress_percent || 0);
+      const progressPercent = statusProgress[requestedStatus];
+      if (progressPercent < latestProgress)
+        return json(res, 409, { message: `物流进度不能从 ${latestProgress}% 回退到 ${progressPercent}%` });
+      const
         progress = Array.isArray(d.progress)
           ? d.progress
           : [
@@ -1796,35 +1964,44 @@ const server = createServer(async (req, res) => {
                 percent: progressPercent,
               },
             ];
-      db.prepare(
-        `INSERT INTO logistics(order_id,company,tracking_no,status,progress) VALUES(?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET company=excluded.company,tracking_no=excluded.tracking_no,status=excluded.status,progress=excluded.progress,updated_at=CURRENT_TIMESTAMP`,
-      ).run(
-        orderId,
-        d.company,
-        d.tracking_no,
-        d.status || "pending",
-        JSON.stringify(progress),
-      );
-      const logisticsRow = db
-        .prepare("SELECT * FROM logistics WHERE order_id=?")
-        .get(orderId);
-      db.prepare(
-        "INSERT INTO logistics_events(order_id,logistics_id,progress_percent,status,note) VALUES(?,?,?,?,?)",
-      ).run(
-        orderId,
-        logisticsRow.id,
-        progressPercent,
-        d.status || "pending",
-        d.note || progress.at(-1)?.text || "物流状态已更新",
-      );
+      let logisticsRow;
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          `INSERT INTO logistics(order_id,company,tracking_no,status,progress) VALUES(?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET company=excluded.company,tracking_no=excluded.tracking_no,status=excluded.status,progress=excluded.progress,updated_at=CURRENT_TIMESTAMP`,
+        ).run(
+          orderId,
+          d.company,
+          d.tracking_no,
+          d.status || "pending",
+          JSON.stringify(progress),
+        );
+        logisticsRow = db
+          .prepare("SELECT * FROM logistics WHERE order_id=?")
+          .get(orderId);
+        if (
+          !latestEvent ||
+          Number(latestEvent.progress_percent) !== progressPercent ||
+          latestEvent.status !== requestedStatus
+        )
+          db.prepare(
+            "INSERT INTO logistics_events(order_id,logistics_id,progress_percent,status,note) VALUES(?,?,?,?,?)",
+          ).run(
+            orderId,
+            logisticsRow.id,
+            progressPercent,
+            requestedStatus,
+            d.note || progress.at(-1)?.text || "物流状态已更新",
+          );
       const logisticsOrderStatus = {
-        pending: "pending_confirm",
+        pending: null,
         packed: "packed",
         shipped: "shipped",
         in_transit: "in_transit",
         delivering: "delivering",
+        pending_receive: "pending_receive",
         delivered: "completed",
-      }[d.status];
+      }[requestedStatus];
       if (logisticsOrderStatus && logisticsOrderStatus !== order.status) {
         db.prepare(
           "UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -1833,17 +2010,22 @@ const server = createServer(async (req, res) => {
           "INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,?,?,?,?,?)",
         ).run(orderId, order.status, logisticsOrderStatus, "admin", admin.sub, d.note || "物流进度更新");
       }
-      if (d.status === "delivered")
-        db.exec(`
-          UPDATE orders SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=${orderId};
-          UPDATE inventory
-          SET locked_stock=MAX(
-                locked_stock-COALESCE((SELECT SUM(oi.quantity) FROM order_items oi WHERE oi.order_id=${orderId} AND oi.pet_id=inventory.pet_id),0),
-                0
-              ),
-              updated_at=CURRENT_TIMESTAMP
-          WHERE pet_id IN (SELECT pet_id FROM order_items WHERE order_id=${orderId});
-        `);
+        if (d.status === "delivered")
+          db.exec(`
+            UPDATE orders SET status='completed',updated_at=CURRENT_TIMESTAMP WHERE id=${orderId};
+            UPDATE inventory
+            SET locked_stock=MAX(
+                  locked_stock-COALESCE((SELECT SUM(oi.quantity) FROM order_items oi WHERE oi.order_id=${orderId} AND oi.pet_id=inventory.pet_id),0),
+                  0
+                ),
+                updated_at=CURRENT_TIMESTAMP
+            WHERE pet_id IN (SELECT pet_id FROM order_items WHERE order_id=${orderId});
+          `);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
       logAdmin(admin, req, "update", "logistics", logisticsRow.id, {
         order_id: orderId,
         status: d.status || "pending",
@@ -2115,7 +2297,8 @@ const server = createServer(async (req, res) => {
       });
     }
     if (path === "/api/orders" && method === "GET") {
-      const userId = Number(url.searchParams.get("user_id") || 1);
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
@@ -2148,29 +2331,40 @@ const server = createServer(async (req, res) => {
         return json(res, 409, { message: "该订单已有处理中售后申请" });
       const reason = String(d.reason || "").trim();
       if (!reason) return json(res, 400, { message: "请填写售后原因" });
-      const result = db
-        .prepare(
-          "INSERT INTO after_sales(order_id,user_id,type,reason,amount,status) VALUES(?,?,?,?,?,?)",
-        )
-        .run(
-          order.id,
-          order.user_id,
-          d.type || "refund",
-          reason,
-          Math.min(Number(d.amount || order.total_amount), order.total_amount),
-          "pending",
-        );
-      db.prepare(
-        "UPDATE orders SET status='after_sale',refund_status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?",
-      ).run(order.id);
-      return json(res, 201, { id: result.lastInsertRowid, status: "pending" });
+      let afterSaleId;
+      db.exec("BEGIN");
+      try {
+        const result = db
+          .prepare(
+            "INSERT INTO after_sales(order_id,user_id,type,reason,amount,status) VALUES(?,?,?,?,?,?)",
+          )
+          .run(
+            order.id,
+            order.user_id,
+            d.type || "refund",
+            reason,
+            Math.min(Number(d.amount || order.total_amount), order.total_amount),
+            "pending",
+          );
+        afterSaleId = result.lastInsertRowid;
+        db.prepare(
+          "UPDATE orders SET status='after_sale',refund_status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(order.id);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return json(res, 201, { id: afterSaleId, status: "pending" });
     }
     if (path === "/api/complaints" && method === "POST") {
       const d = await body(req);
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
       const order = d.order_id
         ? db
             .prepare("SELECT id FROM orders WHERE id=? AND user_id=?")
-            .get(Number(d.order_id), Number(d.user_id))
+            .get(Number(d.order_id), userId)
         : null;
       if (d.order_id && !order)
         return json(res, 404, { message: "关联订单不存在" });
@@ -2181,7 +2375,7 @@ const server = createServer(async (req, res) => {
           "INSERT INTO complaints(user_id,order_id,title,content,status) VALUES(?,?,?,?,?)",
         )
         .run(
-          Number(d.user_id),
+          userId,
           d.order_id || null,
           String(d.title).trim(),
           String(d.content).trim(),
@@ -2190,24 +2384,28 @@ const server = createServer(async (req, res) => {
       return json(res, 201, { id: result.lastInsertRowid, status: "pending" });
     }
     if (path === "/api/messages" && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       const sessionId = url.searchParams.get("session_id");
       return json(
         res,
         200,
         sessionId
           ? rows(
-              "SELECT * FROM messages WHERE session_id=? ORDER BY id",
+              "SELECT * FROM messages WHERE session_id=? AND user_id=? ORDER BY id",
               Number(sessionId),
+              userId,
             )
           : rows(
               "SELECT * FROM messages WHERE user_id=? ORDER BY id",
-              Number(url.searchParams.get("user_id") || 1),
+              userId,
             ),
       );
     }
     if (path === "/api/messages" && method === "POST") {
       const d = await body(req);
-      const userId = Number(d.user_id || 1);
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
       const pet = d.product_id ? petDetail(Number(d.product_id)) : null;
       let sessionId = Number(d.session_id || 0);
       if (!sessionId) {
@@ -2298,9 +2496,8 @@ const server = createServer(async (req, res) => {
         ),
       );
     if (path === "/api/cart" && method === "GET") {
-      const userId = Number(url.searchParams.get("user_id") || 0);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
-        return json(res, 400, { message: "用户不存在，请重新登录" });
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
@@ -2318,9 +2515,9 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/api/cart" && method === "POST") {
       const d = await body(req);
-      const userId = Number(d.user_id || 0), petId = Number(d.pet_id || 0);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
-        return json(res, 400, { message: "用户不存在，请重新登录" });
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
+      const petId = Number(d.pet_id || 0);
       if (!db.prepare("SELECT id FROM pets WHERE id=? AND status<>'deleted'").get(petId))
         return json(res, 404, { message: "商品不存在或已删除" });
       db.prepare(
@@ -2332,9 +2529,8 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/api/cart/merge" && method === "POST") {
       const d = await body(req);
-      const userId = Number(d.user_id || 0);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
-        return json(res, 400, { message: "用户不存在，请重新登录" });
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
       const items = Array.isArray(d.items) ? d.items.slice(0, 200) : [];
       const insert = db.prepare(
         `INSERT INTO cart_items(user_id,pet_id,quantity,selected) SELECT ?,?,?,1
@@ -2356,12 +2552,15 @@ const server = createServer(async (req, res) => {
     }
     const cartItem = path.match(/^\/api\/cart\/(\d+)$/);
     if (cartItem && method === "DELETE") {
-      const userId = Number(url.searchParams.get("user_id") || 0);
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       const petId = Number(url.searchParams.get("pet_id") || 0);
       db.prepare("DELETE FROM cart_items WHERE user_id=? AND (id=? OR (? > 0 AND pet_id=?))").run(userId, Number(cartItem[1]), petId, petId);
       return json(res, 200, { ok: true, count: userDataCounts(userId).cart });
     }
-    if (path === "/api/favorites" && method === "GET")
+    if (path === "/api/favorites" && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
@@ -2377,15 +2576,15 @@ const server = createServer(async (req, res) => {
            LEFT JOIN pet_products pp ON pp.pet_id=p.id
            WHERE f.user_id=?
            ORDER BY f.created_at DESC`,
-          Number(url.searchParams.get("user_id") || 1),
+          userId,
         ),
       );
+    }
     if (path === "/api/favorites" && method === "POST") {
       const d = await body(req);
-      const userId = Number(d.user_id || 0);
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
       const petId = Number(d.pet_id || 0);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
-        return json(res, 400, { message: "用户不存在，请重新登录" });
       if (!db.prepare("SELECT id FROM pets WHERE id=?").get(petId))
         return json(res, 404, { message: "商品不存在，暂时不能收藏" });
       db.prepare(
@@ -2401,82 +2600,106 @@ const server = createServer(async (req, res) => {
     }
     const favorite = path.match(/^\/api\/favorites\/(\d+)$/);
     if (favorite && method === "DELETE") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       db.prepare("DELETE FROM favorites WHERE user_id=? AND pet_id=?").run(
-        Number(url.searchParams.get("user_id") || 1),
+        userId,
         Number(favorite[1]),
       );
       return json(res, 200, { ok: true });
     }
-    if (path === "/api/follows" && method === "GET")
+    if (path === "/api/follows" && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
         rows(
           "SELECT * FROM follows WHERE user_id=?",
-          Number(url.searchParams.get("user_id") || 1),
+          userId,
         ),
       );
+    }
     if (path === "/api/follows" && method === "POST") {
       const d = await body(req);
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
+      const sellerName = String(d.seller_name || "").trim();
+      if (!sellerName) return json(res, 400, { message: "商家名称不能为空" });
       db.prepare(
         "INSERT OR IGNORE INTO follows(user_id,seller_name) VALUES(?,?)",
-      ).run(d.user_id || 1, d.seller_name);
+      ).run(userId, sellerName);
       return json(res, 201, { ok: true });
     }
     if (path === "/api/follows" && method === "DELETE") {
-      const userId = Number(url.searchParams.get("user_id") || 1),
-        seller = url.searchParams.get("seller_name") || "";
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
+      const seller = url.searchParams.get("seller_name") || "";
       db.prepare("DELETE FROM follows WHERE user_id=? AND seller_name=?").run(
         userId,
         seller,
       );
       return json(res, 200, { ok: true });
     }
-    if (path === "/api/footprints" && method === "GET")
+    if (path === "/api/footprints" && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
         rows(
           "SELECT f.*,p.name,p.breed,p.price FROM footprints f JOIN pets p ON p.id=f.pet_id WHERE f.user_id=? ORDER BY viewed_at DESC",
-          Number(url.searchParams.get("user_id") || 1),
+          userId,
         ),
       );
+    }
     if (path === "/api/footprints" && method === "POST") {
       const d = await body(req);
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
+      const petId = Number(d.pet_id || 0);
+      if (!db.prepare("SELECT id FROM pets WHERE id=? AND status<>'deleted'").get(petId))
+        return json(res, 404, { message: "商品不存在" });
       db.prepare("INSERT INTO footprints(user_id,pet_id) VALUES(?,?)").run(
-        d.user_id || 1,
-        d.pet_id,
+        userId,
+        petId,
       );
       return json(res, 201, { ok: true });
     }
     const footprintItem = path.match(/^\/api\/footprints\/(\d+)$/);
     if (footprintItem && method === "DELETE") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       db.prepare("DELETE FROM footprints WHERE id=? AND user_id=?").run(
         Number(footprintItem[1]),
-        Number(url.searchParams.get("user_id") || 1),
+        userId,
       );
       return json(res, 200, { ok: true });
     }
     if (path === "/api/footprints" && method === "DELETE") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       db.prepare("DELETE FROM footprints WHERE user_id=?").run(
-        Number(url.searchParams.get("user_id") || 1),
+        userId,
       );
       return json(res, 200, { ok: true });
     }
-    if (path === "/api/addresses" && method === "GET")
+    if (path === "/api/addresses" && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       return json(
         res,
         200,
         rows(
           "SELECT * FROM addresses WHERE user_id=?",
-          Number(url.searchParams.get("user_id") || 1),
+          userId,
         ),
       );
+    }
     if (path === "/api/addresses" && method === "POST") {
       const d = await body(req);
-      const userId = Number(d.user_id || 1);
-      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
-        return json(res, 400, { message: "用户不存在，请重新登录" });
+      const userId = validatedUserId(res, d.user_id);
+      if (!userId) return;
       if (!String(d.name || "").trim())
         return json(res, 400, { message: "请填写收货人" });
       if (!/^1\d{10}$/.test(String(d.phone || "")))
@@ -2550,7 +2773,8 @@ const server = createServer(async (req, res) => {
       }
     }
     if (addressItem && method === "DELETE") {
-      const userId = Number(url.searchParams.get("user_id") || 0);
+      const userId = validatedUserId(res, url.searchParams.get("user_id"));
+      if (!userId) return;
       const result = db
         .prepare("DELETE FROM addresses WHERE id=? AND user_id=?")
         .run(Number(addressItem[1]), userId);
@@ -2725,9 +2949,9 @@ const server = createServer(async (req, res) => {
         pending_confirm: ["pending_ship", "packed", "cancelled", "after_sale"],
         pending_ship: ["packed", "shipped", "cancelled", "after_sale"],
         packed: ["shipped", "cancelled", "after_sale"],
-        shipped: ["in_transit", "delivering", "after_sale"],
-        in_transit: ["delivering", "after_sale"],
-        delivering: ["completed", "after_sale"],
+        shipped: ["in_transit", "delivering", "pending_receive", "after_sale"],
+        in_transit: ["delivering", "pending_receive", "after_sale"],
+        delivering: ["pending_receive", "completed", "after_sale"],
         pending_receive: ["completed", "after_sale"],
         completed: ["after_sale"],
         cancelled: [],

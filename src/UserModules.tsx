@@ -1,6 +1,8 @@
 ﻿import { useCallback, useEffect, useState } from "react";
 import "./UserModules.css";
+import type { CSSProperties } from "react";
 import "./Chat.css";
+import { publishUserId, useUserId } from "./userIdentity";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const EMPTY_ADDRESS_FORM = {
   name: "",
@@ -40,8 +42,11 @@ export type Order = {
   petId?: number;
   sellerName?: string;
 };
-const petImg =
-  "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
+const petImg = "/assets/catalog/dogs-1-thumb.webp";
+const userMediaUrl = (url?: string) =>
+  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
+    ? `${API_BASE}/api/media/feishu?variant=thumb&url=${encodeURIComponent(url)}`
+    : url || petImg;
 const ORDER_STATUS_LABEL: Record<string, string> = {
   pending_payment: "待付款",
   pending_confirm: "待确认",
@@ -55,6 +60,69 @@ const ORDER_STATUS_LABEL: Record<string, string> = {
   cancelled: "已取消",
   after_sale: "售后",
 };
+const DELIVERY_STATUS_PROGRESS: Record<string, number> = {
+  pending_ship: 0,
+  packed: 25,
+  shipped: 50,
+  in_transit: 65,
+  delivering: 75,
+  pending_receive: 90,
+  completed: 100,
+};
+const DELIVERY_STAGES = [
+  [0, "备货"],
+  [25, "打包"],
+  [50, "已发货"],
+  [75, "配送中"],
+  [100, "已签收"],
+] as const;
+const deliveryProgress = (status?: string, value?: number) =>
+  Math.min(100, Math.max(0, Number(value || DELIVERY_STATUS_PROGRESS[status || ""] || 0)));
+const isDeliveryOrder = (status?: string) =>
+  ["pending_ship", "packed", "shipped", "in_transit", "delivering", "pending_receive", "completed"].includes(status || "");
+
+function DeliveryTruckProgress({
+  status,
+  percent,
+  trackingNo,
+}: {
+  status?: string;
+  percent?: number;
+  trackingNo?: string;
+}) {
+  const progress = deliveryProgress(status, percent);
+  const currentStage = [...DELIVERY_STAGES].reverse().find(([value]) => progress >= value)?.[1] || "备货";
+  return (
+    <section
+      className="delivery-progress"
+      style={{ "--delivery-progress": `${progress}%` } as CSSProperties}
+      aria-label={`物流进度 ${progress}% ${currentStage}`}
+    >
+      <header>
+        <span><b>安心配送</b><small>{currentStage} · {progress}%</small></span>
+        <em>{trackingNo || "物流单号生成中"}</em>
+      </header>
+      <div className="delivery-track">
+        <i className="delivery-track-fill" />
+        <span className="delivery-truck" aria-hidden="true">
+          <svg viewBox="0 0 64 40">
+            <path d="M5 8h31v21H5zM36 15h11l9 9v5H36z" />
+            <path d="M41 19h5l5 5H41z" className="truck-window" />
+            <circle cx="17" cy="31" r="5" /><circle cx="47" cy="31" r="5" />
+          </svg>
+        </span>
+        {DELIVERY_STAGES.map(([value]) => (
+          <i key={value} className={`delivery-dot ${progress >= value ? "reached" : ""}`} style={{ left: `${value}%` }} />
+        ))}
+      </div>
+      <div className="delivery-labels">
+        {DELIVERY_STAGES.map(([value, label]) => (
+          <span key={value} className={progress >= value ? "reached" : ""}><b>{value}%</b><small>{label}</small></span>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function Header({ title, back }: { title: string; back: () => void }) {
   return (
@@ -104,7 +172,7 @@ export function LoginPage({
       body: JSON.stringify(payload),
     });
     const saved = await r.json();
-    localStorage.setItem("fuchong-user-id", String(saved.id));
+    publishUserId(Number(saved.id));
     onLogin({
       id: String(saved.id),
       nickname: saved.nickname || "福宠新朋友",
@@ -186,7 +254,7 @@ export function CollectionPage({
   const [favorites, setFavorites] = useState<any[]>([]);
   const [follows, setFollows] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     setLoading(true);
     fetch(`${API_BASE}/api/favorites?user_id=${userId}`)
@@ -289,7 +357,7 @@ export function CollectionPage({
 
 export function FootprintsPage({ back }: { back: () => void }) {
   const [items, setItems] = useState<any[]>([]);
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     fetch(`${API_BASE}/api/footprints?user_id=${userId}`)
       .then((r) => r.json())
@@ -354,7 +422,7 @@ export function AddressesPage({ back }: { back: () => void }) {
     detail: string;
     is_default: number;
   };
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   const draftKey = `fuchong-address-draft-${userId}`;
   const [items, setItems] = useState<AddressItem[]>([]);
   const [editing, setEditing] = useState(false);
@@ -508,7 +576,7 @@ export function CouponsPage({ back }: { back: () => void }) {
   const [tab, setTab] = useState("available");
   const [coupons, setCoupons] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     fetch(`${API_BASE}/api/coupons?user_id=${userId}`)
       .then((response) => response.json())
@@ -590,7 +658,7 @@ export function OrdersPage({
   const [refreshKey, setRefreshKey] = useState(0);
   const [detail, setDetail] = useState<any>(null);
   const [actionError, setActionError] = useState("");
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   const cancelOrder = async (order: Order) => {
     if (!order.databaseId || !window.confirm("确认取消这个订单吗？")) return;
     const response = await fetch(
@@ -667,8 +735,12 @@ export function OrdersPage({
                 petName: pet.name || "宠物订单",
                 breed: pet.breed || "宠物档案",
                 price: o.total_amount,
-                image: pet.images?.[0]?.url || petImg,
-                logisticsPercent: Number(o.logistics_percent || 0),
+                image: userMediaUrl(
+                  pet.images?.[0]?.thumbnail_url ||
+                    pet.images?.[0]?.webp_url ||
+                    pet.images?.[0]?.url,
+                ),
+                logisticsPercent: deliveryProgress(o.status, Number(o.logistics_percent || 0)),
                 logisticsStatus: o.logistics_status,
                 trackingNo: o.tracking_no,
                 petId: Number(pet.id || o.pet_id || 0),
@@ -680,8 +752,13 @@ export function OrdersPage({
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [userId, refreshKey]);
-  const visible =
-    tab === "全部" ? orders : orders.filter((o) => o.status === tab);
+  const visible = orders.filter((order) => {
+    if (tab === "全部") return true;
+    if (tab === "待发货") return ["pending_ship", "packed"].includes(order.rawStatus || "");
+    if (tab === "待收货")
+      return ["shipped", "in_transit", "delivering", "pending_receive"].includes(order.rawStatus || "");
+    return order.status === tab;
+  });
   return (
     <div className="module-page">
       <Header title="我的订单" back={back} />
@@ -716,16 +793,12 @@ export function OrdersPage({
                 </p>
                 <b>¥{o.price}</b>
               </div>
-              {(o.logisticsPercent || 0) > 0 && (
-                <div className="order-logistics">
-                  <span>
-                    物流进度 {o.logisticsPercent}%
-                    {o.trackingNo ? ` · ${o.trackingNo}` : ""}
-                  </span>
-                  <i>
-                    <b style={{ width: `${o.logisticsPercent}%` }} />
-                  </i>
-                </div>
+              {isDeliveryOrder(o.rawStatus) && (
+                <DeliveryTruckProgress
+                  status={o.rawStatus}
+                  percent={o.logisticsPercent}
+                  trackingNo={o.trackingNo}
+                />
               )}
               <footer>
                 <small>订单号 {o.id}</small>
@@ -753,11 +826,19 @@ export function OrdersPage({
           ))}
         </div>
       ) : (
-        <Empty
-          icon="▣"
-          title={`暂无${tab}订单`}
-          text="每一次相遇，都值得安心守护"
-        />
+        <>
+          {tab === "待收货" && (
+            <div className="delivery-empty-guide">
+              <p><b>配送进度示意</b><small>有待收货订单后，物流车会跟随实时节点前进</small></p>
+              <DeliveryTruckProgress status="pending_ship" percent={0} />
+            </div>
+          )}
+          <Empty
+            icon="▣"
+            title={`暂无${tab}订单`}
+            text="每一次相遇，都值得安心守护"
+          />
+        </>
       )}
       {detail && (
         <div className="order-detail-mask" onClick={() => setDetail(null)}>
@@ -777,6 +858,13 @@ export function OrdersPage({
               )) : <p>订单状态记录正在生成</p>}
             </div>
             <h3>物流进度</h3>
+            {isDeliveryOrder(detail.status) && (
+              <DeliveryTruckProgress
+                status={detail.status}
+                percent={detail.logistics_events?.at(-1)?.progress_percent}
+                trackingNo={detail.tracking_no}
+              />
+            )}
             <div className="logistics-timeline">
               {detail.logistics_events?.length ? detail.logistics_events.map((event: any, index: number) => (
                 <p key={index}><b>{event.progress_percent}%</b><span>{event.note || event.status}<small>{event.created_at}</small></span></p>
@@ -797,7 +885,7 @@ export function MessagesPage({
   back: () => void;
   context?: ServiceContext | null;
 }) {
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   const [chat, setChat] = useState([
     {
       id: 1,

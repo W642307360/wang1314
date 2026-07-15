@@ -185,8 +185,44 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(repeatedPhoneLogin.payload.id, 1);
   assert.ok(repeatedPhoneLogin.payload.data_counts.favorites >= 1);
   assert.equal(repeatedPhoneLogin.payload.data_counts.cart, 1);
+  const missingIdentity = await request("/api/favorites");
+  assert.equal(missingIdentity.response.status, 400);
+  const secondUser = await request("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "13600000000", login_type: "phone" }),
+  });
+  assert.notEqual(secondUser.payload.id, repeatedPhoneLogin.payload.id);
+  const secondUserFavorites = await request(`/api/favorites?user_id=${secondUser.payload.id}`);
+  const secondUserOrders = await request(`/api/orders?user_id=${secondUser.payload.id}`);
+  assert.deepEqual(secondUserFavorites.payload, []);
+  assert.deepEqual(secondUserOrders.payload, []);
+  const visitor = await request("/api/visitors/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: "api-test-guest-merge-token" }),
+  });
+  const guestCart = await request("/api/cart", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: visitor.payload.userId, pet_id: extraPets[0], quantity: 1 }),
+  });
+  assert.equal(guestCart.response.status, 201);
+  const mergedLogin = await request("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      phone: "13700000000",
+      login_type: "phone",
+      previous_user_id: visitor.payload.userId,
+    }),
+  });
+  assert.equal(mergedLogin.payload.guest_data_merged, true);
+  assert.equal(mergedLogin.payload.data_counts.cart, 2);
+  const mergedGuestCart = await request(`/api/cart?user_id=${visitor.payload.userId}`);
+  assert.equal(mergedGuestCart.response.status, 400);
   const restoredCart = await request("/api/cart?user_id=1");
-  assert.equal(restoredCart.payload[0].pet_id, pet.payload.id);
+  assert.equal(restoredCart.payload.some((item) => item.pet_id === pet.payload.id), true);
 
   const address = await request("/api/addresses", {
     method: "POST",
@@ -247,6 +283,12 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     body: JSON.stringify({ company: "顺丰速运", tracking_no: "SFTEST", status: "shipped" }),
   });
   assert.equal(unpaidShipping.response.status, 409);
+  const unpaidPacked = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({ company: "顺丰速运", tracking_no: "SFTEST", status: "packed" }),
+  });
+  assert.equal(unpaidPacked.response.status, 409);
 
   const paid = await request("/api/payments/mock", {
     method: "POST",
@@ -275,6 +317,24 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(shipped.response.status, 200);
   assert.equal(shipped.payload.progress_percent, 50);
+  const repeatedShipping = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      company: "顺丰速运",
+      tracking_no: "SFTEST",
+      status: "shipped",
+      progress_percent: 50,
+      note: "重复回调不重复写事件",
+    }),
+  });
+  assert.equal(repeatedShipping.response.status, 200);
+  const regressedShipping = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({ company: "顺丰速运", tracking_no: "SFTEST", status: "packed" }),
+  });
+  assert.equal(regressedShipping.response.status, 409);
 
   const orders = await request("/api/orders?user_id=1");
   const saved = orders.payload.find((item) => item.id === order.payload.id);

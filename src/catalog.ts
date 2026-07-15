@@ -3,12 +3,12 @@ export type BreedItem={id:string;name:string;en:string;desc:string;image:string;
 export type Hall={key:HallKey;name:string;subtitle:string;hero:string;accent:string;breeds:BreedItem[]}
 
 const photos={
- cats:['https://images.unsplash.com/photo-1574158622682-e40e69881006?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1533738363-b7f9aef128ce?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1596854407944-bf87f6fdd49e?auto=format&fit=crop&w=700&q=88'],
- dogs:['https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1561037404-61cd46aa615b?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1558788353-f76d92427f16?auto=format&fit=crop&w=700&q=88'],
- birds:['https://images.unsplash.com/photo-1552728089-57bdde30beb3?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1522926193341-e9ffd686c60f?auto=format&fit=crop&w=700&q=88'],
- aquatic:['https://images.unsplash.com/photo-1522069169874-c58ec4b76be5?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1544551763-46a013bb70d5?auto=format&fit=crop&w=700&q=88'],
- exotic:['https://images.unsplash.com/photo-1548767797-d8c844163c4c?auto=format&fit=crop&w=700&q=88','https://images.unsplash.com/photo-1535338454770-8be927b5a00b?auto=format&fit=crop&w=700&q=88'],
- more:['https://images.unsplash.com/photo-1452857297128-d9c29adba80b?auto=format&fit=crop&w=700&q=88']
+ cats:['/assets/catalog/cats-1.webp','/assets/catalog/cats-2.webp','/assets/catalog/cats-3.webp'],
+ dogs:['/assets/catalog/dogs-1.webp','/assets/catalog/dogs-2.webp','/assets/catalog/dogs-3.webp'],
+ birds:['/assets/catalog/birds-1.webp','/assets/catalog/birds-2.webp'],
+ aquatic:['/assets/catalog/aquatic-1.webp','/assets/catalog/aquatic-2.webp'],
+ exotic:['/assets/catalog/exotic-1.webp','/assets/catalog/exotic-2.webp'],
+ more:['/assets/catalog/more-1.webp']
 }
 const names:Record<HallKey,string[]>={
  cats:['布偶猫','缅因猫','英短蓝猫','银渐层','金渐层','蓝金渐层','紫金渐层','金点','银点','乳白','美短','暹罗猫','德文卷毛','无毛猫','加菲猫','波斯猫','折耳猫','矮脚猫','三花猫','高地猫','拿破仑猫','狸花猫','孟加拉豹猫','俄罗斯蓝猫','斯芬克斯','阿比西尼亚','新加坡猫','缅甸猫','挪威森林猫','索马里猫','喜马拉雅猫','曼基康','伯曼猫','科尼斯卷毛','西伯利亚猫','呵叻猫','日本短尾猫','中国狸花猫','塞浦路斯猫','库里尔短尾猫','萨凡纳猫','切瑟尔猫','哈瓦那棕猫','约克巧克力猫','塞伦盖蒂猫','加利福尼亚闪亮猫','欧西猫','雪鞋猫','爪哇猫','巴厘猫','安哥拉猫','土耳其梵猫','东方猫','卡尔特猫','曼岛猫','夏特尔猫','土耳其安哥拉','塞尔凯克卷毛','柯尼斯卷毛','其他品种'],
@@ -28,13 +28,10 @@ const meta:Record<HallKey,[string,string,string,string]>={
 }
 const english:Record<string,string>={'布偶猫':'Ragdoll','缅因猫':'Maine Coon','金渐层':'Golden Shaded','金毛':'Golden Retriever','拉布拉多':'Labrador','柴犬':'Shiba Inu','萨摩耶':'Samoyed','柯基':'Welsh Corgi','边牧':'Border Collie','虎皮鹦鹉':'Budgerigar','锦鲤':'Koi','金鱼':'Goldfish','垂耳兔':'Lop Rabbit','龙猫':'Chinchilla'}
 const verifiedPortraits:Record<string,string>={
- '布偶猫':'Ragdoll from Gatil Ragbelas.jpg',
- '缅因猫':'Maine Coon Fallen male Angel of Canadian Summer 01.jpg',
- '英短蓝猫':'A British Shorthair cat.jpg',
- '暹罗猫':'Siamese cat 1960.jpg',
- '波斯猫':'Persian Cat.jpg',
- '无毛猫':'20170604 Sphynx cat 7984.jpg',
- '斯芬克斯':'Cat Sphynx. img 040.jpg'
+ '暹罗猫':'/assets/catalog/siamese.webp',
+ '波斯猫':'/assets/catalog/persian.webp',
+ '无毛猫':'/assets/catalog/hairless.webp',
+ '斯芬克斯':'/assets/catalog/sphynx.webp'
 }
 const localBreedPortraits:Record<string,string>={
  '布偶猫':'/assets/cats/ragdoll-portrait.jpg',
@@ -48,10 +45,8 @@ const localBreedGrowth:Record<string,string>={
  '英短蓝猫':'/assets/cats/british-blue-growth.jpg',
  '银渐层':'/assets/cats/silver-shaded-growth.jpg'
 }
-const commonsPortrait=(file:string)=>`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=720`
-
 export const halls:Hall[]=(Object.keys(names) as HallKey[]).map(key=>{
  const [name,subtitle,tagline,accent]=meta[key]
- return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:localBreedPortraits[name]||(verifiedPortraits[name]?commonsPortrait(verifiedPortraits[name]):photos[key][i%photos[key].length]),growthImage:localBreedGrowth[name]}))}
+ return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:localBreedPortraits[name]||verifiedPortraits[name]||photos[key][i%photos[key].length],growthImage:localBreedGrowth[name]}))}
 })
 export const hallByKey=(key:HallKey)=>halls.find(x=>x.key===key)||halls[0]

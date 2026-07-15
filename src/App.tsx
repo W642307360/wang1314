@@ -37,6 +37,7 @@ import AdminApp from "./Admin";
 import { ensureVisitor } from "./visitor";
 import { optimizePetImage } from "./imagePipeline";
 import { readCart, writeCart, type StoredCartPet } from "./cartStore";
+import { publishUserId, useUserId } from "./userIdentity";
 
 type Page =
   | "home"
@@ -74,6 +75,7 @@ type ApiPet = {
   seller_profile?: {
     id: number; name: string; city: string; address: string; rating: number;
     sales: number; review_count: number; specialty: string; offline_store: string;
+    image_url?: string; thumbnail_url?: string;
   };
   thumbnail_url?: string;
   highres_url?: string;
@@ -227,10 +229,10 @@ function FurColorArchive({ src, color }: { src: string; color?: string }) {
     <b>{color || detected}</b>
   </>;
 }
-const resolveMediaUrl = (url?: string) => {
+const resolveMediaUrl = (url?: string, variant: "thumb" | "original" = "thumb") => {
   if (!url) return "";
   if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
-    return `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`;
+    return `${API_BASE}/api/media/feishu?variant=${variant}&url=${encodeURIComponent(url)}`;
   return url;
 };
 const resolveVideoUrl = (url?: string) => {
@@ -247,8 +249,10 @@ const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
       pet?.thumbnail_url ||
       pet?.image ||
       pet?.highres_url,
+    "thumb",
   ) || fallback;
 const jsonCache = new Map<string, { at: number; ttl: number; data: unknown }>();
+const jsonInFlight = new Map<string, Promise<unknown>>();
 const imageMemoryCache = new Set<string>();
 const thumbImage = (url?: string, fallback = petPhoto) =>
   optimizePetImage(url || fallback, "thumb", fallback);
@@ -257,10 +261,18 @@ const coverImage = (url?: string, fallback = petPhoto) =>
 async function cachedJson<T>(url: string, ttl = 45_000): Promise<T> {
   const cached = jsonCache.get(url);
   if (cached && Date.now() - cached.at < cached.ttl) return cached.data as T;
-  const r = await fetch(url);
-  const data = (await r.json()) as T;
-  jsonCache.set(url, { at: Date.now(), ttl, data });
-  return data;
+  const pending = jsonInFlight.get(url);
+  if (pending) return pending as Promise<T>;
+  const request = fetch(url)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`数据加载失败（${response.status}）`);
+      const data = (await response.json()) as T;
+      jsonCache.set(url, { at: Date.now(), ttl, data });
+      return data;
+    })
+    .finally(() => jsonInFlight.delete(url));
+  jsonInFlight.set(url, request);
+  return request;
 }
 function SmartImage({
   src,
@@ -314,7 +326,7 @@ function SmartImage({
     >
       {!loaded && <i />}
       {error ? (
-        <em>图片加载中</em>
+        <em>实拍图暂不可用</em>
       ) : (
         <img
           src={current}
@@ -429,7 +441,7 @@ function Home({
       <section className="home-carousel">
         <div className="carousel-track">
           <article>
-            <SmartImage src={halls[0].hero} eager />
+            <SmartImage src={halls[0].hero} highres={halls[0].hero} eager />
             <div>
               <small>生命伙伴计划</small>
               <h2>遇见值得陪伴一生的它</h2>
@@ -763,7 +775,7 @@ function Breed({
         <button>♡</button>
       </div>
       <section className="breed-cover">
-        <SmartImage src={b.image} alt={b.name} eager />
+        <SmartImage src={b.image} highres={b.image} alt={b.name} eager />
         <span>标准品种档案</span>
       </section>
       <section className="breed-copy">
@@ -871,7 +883,7 @@ function ProductServiceOverlay({
   context: ServiceContext;
   onClose: () => void;
 }) {
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sessionId, setSessionId] = useState<number | null>(null);
@@ -1007,8 +1019,9 @@ function Detail({
   const [buyOpen, setBuyOpen] = useState(false);
   const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
   const [sellerOpen, setSellerOpen] = useState(false);
+  const [sellerImageOpen, setSellerImageOpen] = useState(false);
   const [sellerDetail, setSellerDetail] = useState<any>(null);
-  const [sellerReviewLimit, setSellerReviewLimit] = useState(8);
+  const [sellerReviewLimit, setSellerReviewLimit] = useState(12);
   const [sellerReportOpen, setSellerReportOpen] = useState(false);
   const [sellerReportCategory, setSellerReportCategory] = useState("商品资料不实");
   const [sellerReportContent, setSellerReportContent] = useState("");
@@ -1026,7 +1039,7 @@ function Detail({
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
   const orderRequestId = useRef(crypto.randomUUID());
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     setDetailPet(pet);
     setPetDbId(pet?.id || null);
@@ -1092,7 +1105,7 @@ function Detail({
     const images = (detailPet?.images || [])
       .map((item: any) => ({
         kind: "image" as const,
-        url: resolveMediaUrl(item.highres_url || item.webp_url || item.url),
+        url: resolveMediaUrl(item.highres_url || item.webp_url || item.url, "original"),
         thumb: resolveMediaUrl(item.thumbnail_url || item.webp_url || item.url),
         label: item.type === "life" ? "生活照" : item.type === "main" ? "主图" : "展示图",
       }))
@@ -1213,7 +1226,7 @@ function Detail({
   };
   const openSellerProfile = async () => {
     setSellerOpen(true);
-    setSellerReviewLimit(8);
+    setSellerReviewLimit(12);
     setSellerReportOpen(false);
     const sellerId = Number(sellerProfile?.id || detailPet?.seller_id || 0);
     if (!sellerId) return;
@@ -1300,7 +1313,7 @@ function Detail({
         }}
       >
         {activeMedia.kind === "video" ? (
-          <video src={activeMedia.url} poster={activeMedia.thumb} controls playsInline preload="metadata" />
+          <video src={activeMedia.url} poster={activeMedia.thumb} controls playsInline preload="none" />
         ) : (
           <SmartImage src={activeMedia.thumb} highres={activeMedia.url} alt={`${displayName}-${activeMedia.label}`} eager />
         )}
@@ -1344,7 +1357,7 @@ function Detail({
           {mediaItems.length > 1 && <button type="button" className="media-viewer-prev" onClick={(event) => { event.stopPropagation(); moveGallery(-1); }} aria-label="上一张">‹</button>}
           <div className="media-viewer-stage" onClick={(event) => event.stopPropagation()}>
             {activeMedia.kind === "video" ? (
-              <video src={activeMedia.url} poster={activeMedia.thumb} controls autoPlay playsInline preload="auto" />
+              <video src={activeMedia.url} poster={activeMedia.thumb} controls autoPlay playsInline preload="metadata" />
             ) : (
               <SmartImage src={activeMedia.thumb} highres={activeMedia.url} alt={`${displayName}-${activeMedia.label}-高清图`} eager />
             )}
@@ -1484,6 +1497,7 @@ function Detail({
           <SmartImage
             className="growth-timeline-image"
             src={breed.growthImage}
+            highres={breed.growthImage}
             alt={`${breed.name}从幼年到成年的专属成长记录`}
           />
         ) : (
@@ -1526,7 +1540,9 @@ function Detail({
         <div className="seller-summary">
           <h3>所属商家</h3>
           <button className="seller-profile-entry" onClick={openSellerProfile}>
-            <i className="seller-logo-mark" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>
+            {sellerProfile?.thumbnail_url
+              ? <img className="seller-entry-thumb" src={sellerProfile.thumbnail_url} alt={`${displaySeller}门店实景缩略图`} />
+              : <i className="seller-logo-mark" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}
             <span><b>{displaySeller}</b><small>{sellerProfile?.offline_store || "认证线下体验店"}</small></span>
             <em>查看商家 ›</em>
           </button>
@@ -1544,8 +1560,11 @@ function Detail({
         <div className="seller-sheet-backdrop" role="dialog" aria-modal="true" aria-label={`${displaySeller}商家资料`} onClick={() => setSellerOpen(false)}>
           <section className="seller-sheet" onClick={(event) => event.stopPropagation()}>
             <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
-            <header><i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i><div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
+            <header>{merchant?.thumbnail_url
+              ? <button type="button" className="seller-header-photo" onClick={() => setSellerImageOpen(true)} aria-label={`放大查看${displaySeller}门店实景`}><img src={merchant.thumbnail_url} alt={`${displaySeller}门店实景`} /></button>
+              : <i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}<div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
             <div className="seller-sheet-metrics"><span><b>{merchant?.sales || 3289}</b>累计销量</span><span><b>{merchant?.review_total || merchant?.review_count || 24}</b>用户评价</span><span><b>98%</b>满意度</span></div>
+            {merchant?.image_url && <button type="button" className="seller-store-media" onClick={() => setSellerImageOpen(true)}><img src={merchant.image_url} alt={`${displaySeller}门店实景大图`} /><span><b>门店实景</b><small>点击查看大图</small></span></button>}
             <section className="seller-trust-card">
               <header><div><small>平台多维资料核验</small><h3>商家信任度</h3></div><b>{merchantTrust.score}<small>/100</small></b></header>
               <div>{merchantTrust.dimensions.map((item) => <span key={item.label}><em>{item.label}</em><i><b style={{ width: `${item.value}%` }} /></i><small>{item.value}</small></span>)}</div>
@@ -1560,7 +1579,7 @@ function Detail({
                   <article key={review.id}><div><i>{String(review.nickname).slice(0, 1)}</i><span><b>{review.nickname}</b><small>{String(review.created_at || "").slice(0, 10)} · {review.tags?.split(",").slice(0, 2).join(" · ")}</small></span><em>{"★".repeat(Number(review.rating || 5))}</em></div><p>{review.content}</p></article>
                 ))}
               </div>
-              {sellerReviewLimit < Number(merchant?.reviews?.length || 0) && <button className="seller-review-more" onClick={() => setSellerReviewLimit((value) => value + 8)}>查看更多评价</button>}
+              {sellerReviewLimit < Number(merchant?.reviews?.length || 0) && <button className="seller-review-more" onClick={() => setSellerReviewLimit((value) => Math.min(24, value + 6))}>查看更多评价</button>}
             </section>
             <button className="seller-report-trigger" onClick={() => setSellerReportOpen((value) => !value)}>⚑ 举报商家或提交问题</button>
             {sellerReportOpen && <section className="seller-report-form">
@@ -1574,6 +1593,7 @@ function Detail({
           </section>
         </div>
       )}
+      {sellerImageOpen && merchant?.image_url && <div className="seller-image-viewer" role="dialog" aria-modal="true" aria-label={`${displaySeller}门店实景大图`} onClick={() => setSellerImageOpen(false)}><button type="button" onClick={() => setSellerImageOpen(false)}>×</button><img src={merchant.image_url} alt={`${displaySeller}门店实景大图`} /></div>}
       <section className="reviews">
         <header><div><small>文字评价</small><h3>用户评价（{Math.min(25, detailPet?.review_count || detailPet?.reviews?.length || 3)}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
         {(detailPet?.reviews?.length ? detailPet.reviews : [
@@ -1709,19 +1729,20 @@ function Parent({ title, sex, breed, image }: { title: string; sex: string; bree
 }
 function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
   const [summary, setSummary] = useState<any>({ orders: {} });
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     fetch(`${API_BASE}/api/users/${userId}/summary`)
       .then((response) => response.json())
       .then((data) => data && !data.message && setSummary(data))
       .catch(() => {});
   }, [userId]);
+  const orderGroups = summary.order_groups || summary.orders || {};
   const orders = [
-    ["待付款", String(summary.orders?.pending_payment || 0)],
-    ["待确认", String(summary.orders?.pending_confirm || 0)],
-    ["待发货", String(summary.orders?.pending_ship || 0)],
-    ["待收货", String(summary.orders?.pending_receive || 0)],
-    ["售后/退款", String(summary.orders?.after_sale || 0)],
+    ["待付款", String(orderGroups.pending_payment || 0)],
+    ["待确认", String(orderGroups.pending_confirm || 0)],
+    ["待发货", String(orderGroups.pending_ship || 0)],
+    ["待收货", String(orderGroups.pending_receive || 0)],
+    ["售后/退款", String(orderGroups.after_sale || 0)],
   ];
   const services = [
     ["♙", "登录与账号", "登录方式与账号安全", "login"],
@@ -2095,7 +2116,7 @@ export default function App() {
   const logout = () => {
     setUser(null);
     localStorage.removeItem("fuchong-user");
-    localStorage.removeItem("fuchong-user-id");
+    publishUserId(0);
     localStorage.removeItem("fuchong-visitor-token");
     ensureVisitor();
   };

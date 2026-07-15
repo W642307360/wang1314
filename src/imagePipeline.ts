@@ -26,7 +26,16 @@ export const optimizePetImage = (
   fallback = "",
 ) => {
   const source = url || fallback;
-  if (!source || !source.startsWith("http")) return source;
+  if (!source) return source;
+  if (!source.startsWith("http")) {
+    if (
+      variant === "thumb" &&
+      (/^\/assets\/catalog\//.test(source) || /^\/assets\/cats\//.test(source)) &&
+      !/-thumb\.webp(?:\?|$)/.test(source)
+    )
+      return source.replace(/\.(?:jpe?g|png|webp)(\?.*)?$/i, "-thumb.webp$1");
+    return source;
+  }
   if (source.includes("/api/media/feishu")) return source;
   const { width, quality } = variantSize[variant];
 

@@ -8,6 +8,7 @@ import {
   writeCart,
   type StoredCartPet,
 } from "./cartStore";
+import { publishUserId, useUserId } from "./userIdentity";
 
 type FavoritePet = {
   id: number;
@@ -105,7 +106,7 @@ export function P0LoginPage({
     });
     if (!response.ok) throw new Error("login failed");
     const saved = await response.json();
-    localStorage.setItem("fuchong-user-id", String(saved.id));
+    publishUserId(Number(saved.id));
     const next = {
       id: String(saved.id),
       nickname: saved.nickname || payload.nickname || "福宠用户",
@@ -214,7 +215,7 @@ export function P0CollectionPage({
   const [favorites, setFavorites] = useState<FavoritePet[]>([]);
   const [cart, setCart] = useState<CartPet[]>(() => readCart());
   const [loading, setLoading] = useState(true);
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   useEffect(() => {
     const loadFavorites = () => {
       setLoading(true);
@@ -368,7 +369,7 @@ export function P0MessagesPage({
   context?: ServiceContext | null;
   onOpenProduct?: (petId: number, productName?: string) => void;
 }) {
-  const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
+  const userId = useUserId();
   const serviceTypes = [
     ["购买咨询", "了解价格、健康、疫苗和购买流程"],
     ["订单咨询", "查询订单、支付和确认信息"],

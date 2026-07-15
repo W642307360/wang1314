@@ -14,9 +14,9 @@ export type StoredCartPet = {
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const legacyKey = "fuchong-cart";
-const keyFor = (userId: number) => `fuchong-cart:${userId || 1}`;
+const keyFor = (userId: number) => `fuchong-cart:${Math.max(0, userId)}`;
 
-export const currentCartUserId = () => Number(localStorage.getItem("fuchong-user-id") || 1);
+export const currentCartUserId = () => Number(localStorage.getItem("fuchong-user-id") || 0);
 
 export const readCart = (userId = currentCartUserId()): StoredCartPet[] => {
   try {
@@ -40,6 +40,7 @@ export const writeCart = (items: StoredCartPet[], userId = currentCartUserId()) 
 };
 
 export const loadCartFromServer = async (userId = currentCartUserId()) => {
+  if (!userId) return [];
   const response = await fetch(`${API_BASE}/api/cart?user_id=${userId}`);
   if (!response.ok) throw new Error("购物车同步失败");
   const items = await response.json();
@@ -49,6 +50,7 @@ export const loadCartFromServer = async (userId = currentCartUserId()) => {
 };
 
 export const mergeCartToServer = async (userId: number, items: StoredCartPet[]) => {
+  if (!userId) return [];
   if (!items.length) return loadCartFromServer(userId);
   const response = await fetch(`${API_BASE}/api/cart/merge`, {
     method: "POST",
