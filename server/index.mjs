@@ -1652,6 +1652,10 @@ const server = createServer(async (req, res) => {
            )
            SELECT day,
              (SELECT COUNT(*) FROM orders WHERE date(created_at)=day) AS orders,
+             (SELECT COUNT(*) FROM orders WHERE date(created_at)=day AND payment_status='paid') AS paid_orders,
+             (SELECT COUNT(*) FROM orders WHERE date(created_at)=day AND status='completed') AS completed_orders,
+             (SELECT COUNT(*) FROM orders WHERE date(created_at)=day AND status='cancelled') AS cancelled_orders,
+             (SELECT COALESCE(SUM(total_amount),0) FROM orders WHERE date(created_at)=day AND payment_status='paid') AS revenue,
              (SELECT COUNT(DISTINCT user_id) FROM user_login_logs WHERE date(created_at)=day) AS active_users,
              (SELECT COUNT(*) FROM footprints WHERE date(viewed_at)=day) AS views
            FROM days ORDER BY day`,
@@ -3211,36 +3215,57 @@ const server = createServer(async (req, res) => {
     const confirmOrderRoute = path.match(/^\/api\/admin\/orders\/(\d+)\/confirm$/);
     if (confirmOrderRoute && method === "POST") {
       const orderId = Number(confirmOrderRoute[1]);
-      db.exec("BEGIN IMMEDIATE");
+      let transactionOpen = false;
       try {
+        db.exec("BEGIN IMMEDIATE");
+        transactionOpen = true;
         const existing = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
         if (!existing) {
           db.exec("ROLLBACK");
+          transactionOpen = false;
           return json(res, 404, { message: "订单不存在" });
         }
         if (existing.payment_status !== "paid") {
           db.exec("ROLLBACK");
+          transactionOpen = false;
           return json(res, 409, { message: "订单尚未付款，不能确认订单" });
         }
         if (existing.status !== "pending_confirm") {
           db.exec("COMMIT");
+          transactionOpen = false;
           return json(res, 200, { ...existing, idempotent: true });
         }
-        db.prepare(
+        const changed = db.prepare(
           "UPDATE orders SET status='pending_ship',confirmed_at=COALESCE(confirmed_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending_confirm'",
         ).run(orderId);
-        db.prepare(
-          "INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,'pending_confirm','pending_ship','admin',?,'管理员确认订单，等待发货')",
-        ).run(orderId, admin.sub);
+        if (changed.changes) {
+          db.prepare(
+            "INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,'pending_confirm','pending_ship','admin',?,'管理员确认订单，等待发货')",
+          ).run(orderId, admin.sub);
+        }
         const updated = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
         db.exec("COMMIT");
-        logAdmin(admin, req, "confirm", "orders", orderId, {
-          from: existing.status,
-          to: updated.status,
-        });
-        return json(res, 200, updated);
+        transactionOpen = false;
+        try {
+          logAdmin(admin, req, "confirm", "orders", orderId, {
+            from: existing.status,
+            to: updated.status,
+            idempotent: !changed.changes,
+          });
+        } catch (auditError) {
+          console.error("订单确认已成功，但审计日志写入失败", auditError);
+        }
+        return json(res, 200, { ...updated, idempotent: !changed.changes });
       } catch (error) {
-        db.exec("ROLLBACK");
+        if (transactionOpen) {
+          try {
+            db.exec("ROLLBACK");
+          } catch (rollbackError) {
+            console.error("订单确认事务回滚失败", rollbackError);
+          }
+        }
+        if (/busy|locked/i.test(String(error?.message || "")))
+          return json(res, 503, { message: "订单正在同步处理中，请稍后重试", retryable: true });
         throw error;
       }
     }

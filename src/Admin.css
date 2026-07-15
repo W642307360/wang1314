@@ -4,6 +4,7 @@
 .admin-table td.admin-empty{text-align:center;padding:38px;color:#9b928a}
 .admin-form-error{margin:15px 0 0;padding:10px;border-radius:10px;background:#fff0ee;color:#b33;font-size:9px}
 .chart-summary{font-size:8px;color:#918981;text-align:right}
+.chart{align-items:stretch;padding-top:8px}.chart-column{display:grid;grid-template-rows:18px 1fr 18px;align-items:end;justify-items:center;flex:1;min-width:0}.chart-column>b{color:#8b5d39;font-size:8px}.chart-column>i{width:70%;min-height:8px;background:linear-gradient(#b68155,#ddc2a5);border-radius:5px 5px 0 0}.chart-column>small{align-self:center;color:#9c938b;font-size:7px}.trend-analysis{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:13px}.trend-analysis span{padding:8px 5px;border-radius:10px;background:#f7f1ea;text-align:center}.trend-analysis b,.trend-analysis small{display:block}.trend-analysis b{color:#604a37;font-size:10px}.trend-analysis small{margin-top:3px;color:#9c9085;font-size:6px}
 .content-subtitle{margin:18px 0 8px!important;font-size:11px;font-weight:650;color:#5d554d}
 .coupon-form{grid-template-columns:1.2fr .7fr .7fr 1fr auto!important}
 @media(max-width:900px){.coupon-form{grid-template-columns:1fr 1fr!important}}

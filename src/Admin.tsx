@@ -587,6 +587,15 @@ function Dashboard({ token }: { token: string }) {
   ];
   const trend = Array.isArray(stats?.trends) ? stats.trends : [];
   const maxTrend = Math.max(1, ...trend.map((item: any) => Number(item.orders || 0)));
+  const trendTotals = trend.reduce((summary: any, item: any) => ({
+    orders: summary.orders + Number(item.orders || 0),
+    paid: summary.paid + Number(item.paid_orders || 0),
+    revenue: summary.revenue + Number(item.revenue || 0),
+    activeUsers: summary.activeUsers + Number(item.active_users || 0),
+    views: summary.views + Number(item.views || 0),
+  }), { orders: 0, paid: 0, revenue: 0, activeUsers: 0, views: 0 });
+  const paidRate = trendTotals.orders ? Math.round((trendTotals.paid / trendTotals.orders) * 100) : 0;
+  const averageOrderValue = trendTotals.paid ? Math.round(trendTotals.revenue / trendTotals.paid) : 0;
   return (
     <>
       <section className="admin-stats">
@@ -603,10 +612,21 @@ function Dashboard({ token }: { token: string }) {
           <h3>订单趋势</h3>
           <div className="chart">
             {trend.length ? trend.map((item: any) => (
-              <i title={`${item.day}：${item.orders}单`} style={{ height: `${Math.max(8, (Number(item.orders || 0) / maxTrend) * 100)}%` }} key={item.day} />
+              <span className="chart-column" title={`${item.day}：下单${item.orders}，支付${item.paid_orders}，成交¥${item.revenue}`} key={item.day}>
+                <b>{item.orders}</b>
+                <i style={{ height: `${Math.max(8, (Number(item.orders || 0) / maxTrend) * 100)}%` }} />
+                <small>{String(item.day).slice(5)}</small>
+              </span>
             )) : <span>暂无订单趋势数据</span>}
           </div>
-          <p className="chart-summary">7日活跃用户 {trend.reduce((sum: number, item: any) => sum + Number(item.active_users || 0), 0)} · 浏览 {trend.reduce((sum: number, item: any) => sum + Number(item.views || 0), 0)}</p>
+          <div className="trend-analysis">
+            <span><b>{trendTotals.orders}</b><small>7日下单</small></span>
+            <span><b>{trendTotals.paid}</b><small>支付订单</small></span>
+            <span><b>{paidRate}%</b><small>支付转化</small></span>
+            <span><b>¥{trendTotals.revenue}</b><small>成交金额</small></span>
+            <span><b>¥{averageOrderValue}</b><small>实付客单价</small></span>
+          </div>
+          <p className="chart-summary">真实数据库近7日 · 活跃用户 {trendTotals.activeUsers} · 商品浏览 {trendTotals.views}</p>
         </article>
         <article>
           <h3>待处理事项</h3>
@@ -1060,13 +1080,25 @@ function OrdersManager({ token }: { token: string }) {
   const confirmOrder = async (id: number) => {
     setBusyId(id);
     try {
-      const response = await fetch(`${API_BASE}/api/admin/orders/${id}/confirm`, {
-        method: "POST",
-        headers,
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.message || `确认订单失败（${response.status}）`);
-      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...result } : order)));
+      let confirmed: any = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetch(`${API_BASE}/api/admin/orders/${id}/confirm`, {
+          method: "POST",
+          headers,
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok) {
+          confirmed = result;
+          break;
+        }
+        const retryable = response.status >= 500 || result.retryable;
+        if (!retryable || attempt === 2)
+          throw new Error(result.message || `确认订单失败（${response.status}）`);
+        await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+      }
+      if (!confirmed) throw new Error("确认订单暂未完成，请刷新后重试");
+      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...confirmed } : order)));
+      if (detail?.id === id) setDetail((current: any) => current ? { ...current, ...confirmed } : current);
     } catch (confirmError) {
       alert(confirmError instanceof Error ? confirmError.message : "确认订单失败");
       await load();
@@ -1139,7 +1171,11 @@ function OrdersManager({ token }: { token: string }) {
                   disabled={busyId === o.id || o.payment_status !== "paid" || o.status !== "pending_confirm"}
                   onClick={() => confirmOrder(o.id)}
                 >
-                  {busyId === o.id ? "处理中…" : o.status === "pending_confirm" ? "确认订单" : "订单已确认"}
+                  {busyId === o.id
+                    ? "处理中…"
+                    : ["pending_ship", "packed", "shipped", "in_transit", "delivering", "pending_receive", "completed"].includes(o.status)
+                      ? "订单已确认"
+                      : "确认订单"}
                 </button>
                 <select disabled={busyId === o.id} value={o.status} onChange={(event) => update(o.id, { status: event.target.value })}>
                   {statusOptions.filter(([value]) => value === o.status || (transitions[o.status] || []).includes(value)).map(([value, label]) => <option value={value} key={value}>{label}</option>)}

@@ -380,12 +380,14 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(confirmedOrder.response.status, 200);
   assert.equal(confirmedOrder.payload.status, "pending_ship");
-  const confirmedOrderAgain = await request(`/api/admin/orders/${order.payload.id}/confirm`, {
-    method: "POST",
-    headers: adminHeaders,
-  });
-  assert.equal(confirmedOrderAgain.response.status, 200);
-  assert.equal(confirmedOrderAgain.payload.idempotent, true);
+  const repeatedConfirmations = await Promise.all(
+    Array.from({ length: 3 }, () => request(`/api/admin/orders/${order.payload.id}/confirm`, {
+      method: "POST",
+      headers: adminHeaders,
+    })),
+  );
+  assert.equal(repeatedConfirmations.every((item) => item.response.status === 200), true);
+  assert.equal(repeatedConfirmations.every((item) => item.payload.idempotent === true), true);
 
   const shipped = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
@@ -484,6 +486,8 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const stats = await request("/api/admin/stats", { headers: adminHeaders });
   assert.equal(stats.response.status, 200);
   assert.equal(stats.payload.orders.paid, 1);
+  assert.equal(stats.payload.trends.length, 7);
+  assert.equal(stats.payload.trends.every((item) => "paid_orders" in item && "revenue" in item), true);
   const resolvedAfterSale = await request(
     `/api/admin/after-sales/${afterSale.payload.id}`,
     {

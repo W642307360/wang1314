@@ -633,6 +633,23 @@ function Hall({
 }) {
   const hall = hallByKey(hallKey);
   const [query, setQuery] = useState("");
+  const [breedCounts, setBreedCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    let active = true;
+    fetch(`${API_BASE}/api/pets?page=1&pageSize=100`)
+      .then((response) => response.ok ? response.json() : [])
+      .then((items) => {
+        if (!active || !Array.isArray(items)) return;
+        const counts = items.reduce((result: Record<string, number>, item: ApiPet) => {
+          const key = String(item.breed || "").trim().replace(/[猫犬]$/, "");
+          result[key] = (result[key] || 0) + 1;
+          return result;
+        }, {});
+        setBreedCounts(counts);
+      })
+      .catch(() => active && setBreedCounts({}));
+    return () => { active = false; };
+  }, [hallKey]);
   const visible = useMemo(
     () =>
       hall.breeds.filter(
@@ -695,11 +712,14 @@ function Hall({
               : undefined
           }
         >
-        {virtualBreeds.items.map((b, i) => (
+        {virtualBreeds.items.map((b) => (
           <button key={b.id} onClick={() => openBreed(b)}>
             <div className="headshot">
               <SmartImage src={b.image} alt={b.name} />
-              <span>{(i % 7) + 3}只在售</span>
+              {(() => {
+                const count = breedCounts[b.name.trim().replace(/[猫犬]$/, "")] || 0;
+                return <span className={count ? "" : "none-in-stock"}>{count ? `${count}只在售` : "暂无在售"}</span>;
+              })()}
             </div>
             <h3>{b.name}</h3>
             <small>{b.en}</small>
@@ -839,36 +859,13 @@ function Breed({
                 <b>¥ {pet.price}</b>
               </button>
             ))}
-        {!pets.length &&
-          !loading &&
-          Array.from({ length: 6 }).map((_, index) => {
-            const mockPet: ApiPet = {
-              id: 0,
-              name: `${b.name}精选宠物 ${String(index + 1).padStart(2, "0")}`,
-              breed: b.name,
-              price: 3600 + index * 500,
-              gender: index % 2 ? "妹妹" : "弟弟",
-              age_months: 2 + index,
-              health_status: "健康认证",
-              seller_name: "福宠认证宠物馆",
-              image: b.image,
-            };
-            return (
-              <button
-                key={`${b.name}-mock-${index}`}
-                className="breed-showcase-card"
-                onClick={() => openPet(mockPet, b)}
-              >
-                <SmartImage src={b.image} alt={mockPet.name} />
-                <span>{index < 2 ? "今日可咨询" : "健康认证"}</span>
-                <h3>{mockPet.name}</h3>
-                <p>
-                  {mockPet.breed} · {mockPet.age_months}个月 · {mockPet.gender}
-                </p>
-                <b>{index < 2 ? `¥ ${mockPet.price}` : "预约咨询"}</b>
-              </button>
-            );
-          })}
+        {!pets.length && !loading && (
+          <div className="real-products-empty">
+            <i>真</i>
+            <h3>暂无真实在售商品</h3>
+            <p>该品种当前没有飞书商品库中的有效在售记录，上新后会自动同步显示。</p>
+          </div>
+        )}
       </div>
       <div ref={sentinel} />
       <RefreshHint refreshing={loading} hasMore={hasMore} />
@@ -1485,13 +1482,23 @@ function Detail({
           </article>
           <article className="trait-breed">
             <span>繁育档案</span>
-            <div className="trait-breed-media">
-              <SmartImage
-                src={mediaItems[0]?.thumb || breed.image}
-                highres={mediaItems[0]?.url}
-                alt={`${displayName}繁育档案`}
-              />
-              <small><i>✓</i> 鉴定纯种</small>
+            <div className="trait-breed-gallery">
+              <div className="trait-breed-media">
+                <SmartImage
+                  src={mediaItems[0]?.thumb || breed.image}
+                  highres={mediaItems[0]?.url}
+                  alt={`${displayName}纯种鉴定档案`}
+                />
+                <small><i>✓</i> 鉴定纯种</small>
+              </div>
+              <div className="trait-breed-media official-check">
+                <SmartImage
+                  src="/assets/product/official-breeding-check.webp"
+                  highres="/assets/product/official-breeding-check.webp"
+                  alt={`${displayName}官方检测记录`}
+                />
+                <small><i>✓</i> 官方检测</small>
+              </div>
             </div>
             <b><em>疫苗接种</em>{detailPet?.vaccine_record || "基础免疫信息待商家补充"}</b>
           </article>
@@ -1885,7 +1892,18 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
   );
 }
 
-const careGuides = [
+type CareGuide = {
+  id: string;
+  group: string;
+  title: string;
+  desc: string;
+  image: string;
+  tone: string;
+  minutes: number;
+  points?: string[];
+  warning?: string;
+};
+const careGuides: CareGuide[] = [
   {
     id: "cat-first-week",
     group: "猫猫",
@@ -1940,10 +1958,143 @@ const careGuides = [
     tone: "家庭档案",
     minutes: 7,
   },
+  {
+    id: "cat-feeding",
+    group: "猫猫",
+    title: "幼猫分龄喂养计划",
+    desc: "按月龄安排主粮、饮水、换粮速度和每日观察记录。",
+    image: hallByKey("cats").breeds[2].image,
+    tone: "营养节律",
+    minutes: 9,
+    points: ["2–4月龄少量多餐，每日记录食量", "换粮至少用7天逐步替换", "每天检查饮水、排便和精神状态"],
+    warning: "连续拒食、频繁呕吐或精神沉郁应尽快咨询兽医。",
+  },
+  {
+    id: "cat-grooming",
+    group: "猫猫",
+    title: "长毛猫梳毛与毛球管理",
+    desc: "从耳后、腋下到尾部建立低压力梳毛流程。",
+    image: hallByKey("cats").breeds[0].image,
+    tone: "柔软护理",
+    minutes: 8,
+    points: ["先用宽齿梳处理浮毛", "结毛处固定毛根后分段梳开", "换毛季提高频率并关注排便"],
+    warning: "不要直接拉扯紧贴皮肤的毛结，严重结团应交由专业人员处理。",
+  },
+  {
+    id: "cat-litter",
+    group: "猫猫",
+    title: "猫砂盆数量与异常排尿观察",
+    desc: "用位置、清洁频率和尿团变化提前发现压力与健康问题。",
+    image: hallByKey("cats").breeds[3].image,
+    tone: "清洁观察",
+    minutes: 6,
+    points: ["猫砂盆建议按猫数加一准备", "每日清理并观察尿团大小", "避开食盆与高噪声区域"],
+    warning: "频繁进出猫砂盆却排不出尿属于紧急情况。",
+  },
+  {
+    id: "dog-exercise",
+    group: "狗狗",
+    title: "犬只分龄运动强度表",
+    desc: "幼犬、成犬和老年犬分别安排散步、嗅闻与休息。",
+    image: hallByKey("dogs").breeds[0].image,
+    tone: "活力节拍",
+    minutes: 10,
+    points: ["幼犬避免长距离奔跑和频繁跳跃", "成犬把嗅闻探索计入运动时间", "老年犬缩短单次时长并增加次数"],
+    warning: "喘息异常、步态改变或拒绝活动时立即停止运动。",
+  },
+  {
+    id: "dog-dental",
+    group: "狗狗",
+    title: "狗狗口腔清洁训练",
+    desc: "从触碰嘴边到使用宠物牙刷，循序建立配合。",
+    image: hallByKey("dogs").breeds[2].image,
+    tone: "清新日常",
+    minutes: 7,
+    points: ["先奖励允许触碰嘴唇的行为", "使用宠物专用牙膏", "重点清洁犬齿与后臼齿外侧"],
+    warning: "牙龈持续出血、口臭突然加重或进食疼痛需检查。",
+  },
+  {
+    id: "dog-home-alone",
+    group: "狗狗",
+    title: "独处适应与分离压力预防",
+    desc: "通过短时离开、环境丰富化和稳定回家仪式降低焦虑。",
+    image: hallByKey("dogs").breeds[4].image,
+    tone: "安心独处",
+    minutes: 11,
+    points: ["从数十秒离开逐渐延长", "离开前提供安全耐咬玩具", "回家后保持平静再互动"],
+    warning: "持续嚎叫、自伤或破坏门窗需要专业行为评估。",
+  },
+  {
+    id: "bird-diet",
+    group: "鸟类",
+    title: "鸟类日粮与安全食物清单",
+    desc: "合理组合颗粒粮、蔬果和少量种子，避免单一种子饮食。",
+    image: hallByKey("birds").breeds[1].image,
+    tone: "羽翼营养",
+    minutes: 8,
+    points: ["主食以营养完整的颗粒粮为主", "新鲜蔬果洗净后少量提供", "每日更换饮水并清洗容器"],
+    warning: "避免巧克力、牛油果、酒精、咖啡因和高盐食物。",
+  },
+  {
+    id: "bird-flight",
+    group: "鸟类",
+    title: "室内放飞安全检查",
+    desc: "关闭门窗、风扇和热源，规划可见的停落位置。",
+    image: hallByKey("birds").breeds[0].image,
+    tone: "安全飞行",
+    minutes: 5,
+    points: ["放飞前锁闭门窗并拉好纱网", "关闭吊扇并遮挡大面积玻璃", "移除热水、明火和有毒植物"],
+    warning: "不熟悉召回的鸟不要在开放室外环境放飞。",
+  },
+  {
+    id: "aqua-daily",
+    group: "水族",
+    title: "鱼缸每日5分钟观察法",
+    desc: "从游姿、呼吸、体表、进食和设备声音判断状态。",
+    image: hallByKey("aquatic").breeds[0].image,
+    tone: "静水观察",
+    minutes: 5,
+    points: ["先观察再投喂，记录异常个体", "检查过滤流量与水温", "少量投喂并清理残饵"],
+    warning: "集体浮头、急促呼吸时优先检查溶氧与水质。",
+  },
+  {
+    id: "exotic-rabbit",
+    group: "奇宠",
+    title: "兔类牧草、磨牙与肠胃观察",
+    desc: "保证无限量牧草，结合粪便和进食变化判断肠道状态。",
+    image: hallByKey("exotic").breeds[0].image,
+    tone: "草香照护",
+    minutes: 8,
+    points: ["优质牧草全天可取食", "提供安全磨牙材料", "每天观察粪便数量与大小"],
+    warning: "停止进食或长时间不排便需要尽快就医。",
+  },
+  {
+    id: "general-emergency",
+    group: "通用",
+    title: "需要立即就医的异常信号",
+    desc: "识别呼吸困难、意识异常、持续出血和无法排尿等紧急情况。",
+    image: halls[0].hero,
+    tone: "紧急判断",
+    minutes: 6,
+    points: ["保持环境安静并减少搬动", "记录症状开始时间和可能诱因", "提前联系医院说明动物种类与状态"],
+    warning: "不要自行使用人用药物，也不要因等待线上回复延误急救。",
+  },
+  {
+    id: "general-travel",
+    group: "通用",
+    title: "接宠与长途运输准备单",
+    desc: "运输箱、吸水垫、饮水、温控和到家隔离一次准备齐全。",
+    image: halls[1].hero,
+    tone: "平稳到家",
+    minutes: 9,
+    points: ["提前适应尺寸合适的运输箱", "准备吸水垫和熟悉气味物品", "到家后先提供安静独立空间"],
+    warning: "运输中不要随意打开箱门，极端温度时应调整行程。",
+  },
 ];
 
 function CareManual({ go }: { go: (p: Page) => void }) {
   const [active, setActive] = useState("全部");
+  const [selectedGuide, setSelectedGuide] = useState<CareGuide | null>(null);
   const groups = ["全部", ...Array.from(new Set(careGuides.map((item) => item.group)))];
   const list = active === "全部" ? careGuides : careGuides.filter((item) => item.group === active);
   return (
@@ -1976,7 +2127,7 @@ function CareManual({ go }: { go: (p: Page) => void }) {
       </div>
       <section className="care-mosaic">
         {list.map((guide, index) => (
-          <button key={guide.id} className={index % 3 === 0 ? "wide" : ""}>
+          <button key={guide.id} className={index % 3 === 0 ? "wide" : ""} onClick={() => setSelectedGuide(guide)}>
             <SmartImage src={guide.image} alt={guide.title} />
             <div>
               <small>{guide.group} · {guide.minutes} 分钟</small>
@@ -1988,9 +2139,24 @@ function CareManual({ go }: { go: (p: Page) => void }) {
         ))}
       </section>
       <section className="care-upload-hint">
-        <b>后续数据位</b>
-        <p>可接飞书云文档字段：品种、阶段、图片、视频、喂养步骤、禁忌、健康提醒、适用年龄。</p>
+        <b>持续更新</b>
+        <p>照护手册按品种、成长阶段和健康主题持续扩充，重要异常请优先联系专业兽医。</p>
       </section>
+      {selectedGuide && (
+        <div className="care-detail-mask" onClick={() => setSelectedGuide(null)}>
+          <section className="care-detail-sheet" onClick={(event) => event.stopPropagation()}>
+            <button className="care-detail-close" onClick={() => setSelectedGuide(null)}>×</button>
+            <small>{selectedGuide.group} · 约 {selectedGuide.minutes} 分钟</small>
+            <h2>{selectedGuide.title}</h2>
+            <p>{selectedGuide.desc}</p>
+            <h3>照护步骤</h3>
+            <ol>
+              {(selectedGuide.points || ["先观察宠物当前状态", "逐步调整环境和日常节奏", "持续记录饮食、排泄与精神变化"]).map((point) => <li key={point}>{point}</li>)}
+            </ol>
+            <div className="care-warning"><b>重要提醒</b>{selectedGuide.warning || "发现持续异常或状态快速变化时，请及时联系专业兽医。"}</div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

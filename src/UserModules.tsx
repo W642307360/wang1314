@@ -80,6 +80,10 @@ const deliveryProgress = (status?: string, value?: number) =>
   Math.min(100, Math.max(0, Number(value || DELIVERY_STATUS_PROGRESS[status || ""] || 0)));
 const isDeliveryOrder = (status?: string) =>
   ["pending_ship", "packed", "shipped", "in_transit", "delivering", "pending_receive", "completed"].includes(status || "");
+const deliveryCurvePoint = (value: number) => ({
+  x: Math.min(100, Math.max(0, value)),
+  y: 18 - 8 * Math.sin((Math.min(100, Math.max(0, value)) / 100) * Math.PI * 2),
+});
 
 function DeliveryTruckProgress({
   status,
@@ -92,6 +96,7 @@ function DeliveryTruckProgress({
 }) {
   const progress = deliveryProgress(status, percent);
   const currentStage = [...DELIVERY_STAGES].reverse().find(([value]) => progress >= value)?.[1] || "备货";
+  const truckPoint = deliveryCurvePoint(progress);
   return (
     <section
       className="delivery-progress"
@@ -103,17 +108,21 @@ function DeliveryTruckProgress({
         <em>{trackingNo || "物流单号生成中"}</em>
       </header>
       <div className="delivery-track">
-        <i className="delivery-track-fill" />
-        <span className="delivery-truck" aria-hidden="true">
+        <svg className="delivery-route" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">
+          <path className="delivery-route-base" d="M0 18 Q25 2 50 18 T100 18" pathLength="100" />
+          <path className="delivery-route-fill" d="M0 18 Q25 2 50 18 T100 18" pathLength="100" style={{ strokeDashoffset: 100 - progress }} />
+        </svg>
+        <span className="delivery-truck" aria-hidden="true" style={{ left: `${truckPoint.x}%`, top: `${truckPoint.y - 20}px` }}>
           <svg viewBox="0 0 64 40">
             <path d="M5 8h31v21H5zM36 15h11l9 9v5H36z" />
             <path d="M41 19h5l5 5H41z" className="truck-window" />
             <circle cx="17" cy="31" r="5" /><circle cx="47" cy="31" r="5" />
           </svg>
         </span>
-        {DELIVERY_STAGES.map(([value]) => (
-          <i key={value} className={`delivery-dot ${progress >= value ? "reached" : ""}`} style={{ left: `${value}%` }} />
-        ))}
+        {DELIVERY_STAGES.map(([value]) => {
+          const point = deliveryCurvePoint(value);
+          return <i key={value} className={`delivery-dot ${progress >= value ? "reached" : ""}`} style={{ left: `${point.x}%`, top: `${point.y - 5}px` }} />;
+        })}
       </div>
       <div className="delivery-labels">
         {DELIVERY_STAGES.map(([value, label]) => (
