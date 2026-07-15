@@ -7,7 +7,7 @@
 - 用户端：首页、场馆/品种、分页搜索、宠物详情、收藏、购物车、足迹、地址、优惠券、订单、客服、登录与资料维护。
 - 交易链路：选择商品、地址确认、创建订单、库存锁定、模拟支付/微信预支付、支付回调、后台发货、物流进度、售后退款。
 - 管理后台：管理员鉴权、商品资料与媒体、SKU/库存、用户、订单、交易流水、物流、投诉售后、Banner/分类、优惠券、飞书同步和操作日志。
-- 数据安全：增量 migration、启动前自动备份、外键检查、常用查询索引、测试使用独立临时数据库。
+- 数据安全：增量 migration、启动前自动备份、外键检查、常用查询索引、订单请求幂等、测试使用独立临时数据库。
 - 性能：商品 API 分页、列表懒加载、图片缩略图/高清图分级、骨架状态、飞书每批最多 500 条异步处理。
 
 ## 本地启动
@@ -43,7 +43,7 @@ npm start --prefix server
 Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyMMdd-HHmmss).db
 ```
 
-主要数据表：`users`、`user_auth`、`pets`、`breeds`、`pet_products`、`pet_skus`、`pet_images`、`pet_videos`、`inventory`、`orders`、`order_items`、`payments`、`logistics`、`logistics_events`、`after_sales`、`complaints`、`favorites`、`follows`、`footprints`、`addresses`、`coupons`、`user_coupons`、`messages`、`banners`、`categories`、`feishu_sync_configs`、`feishu_sync_tasks`、`admin_operation_logs`。
+主要数据表：`users`、`user_auth`、`cart_items`、`pets`、`breeds`、`pet_products`、`pet_skus`、`pet_images`、`pet_videos`、`inventory`、`orders`、`order_items`、`payments`、`logistics`、`logistics_events`、`after_sales`、`complaints`、`favorites`、`follows`、`footprints`、`addresses`、`coupons`、`user_coupons`、`messages`、`banners`、`categories`、`feishu_sync_configs`、`feishu_sync_tasks`、`feishu_sync_task_items`、`api_error_logs`、`admin_operation_logs`。
 
 ## 核心 API
 
@@ -54,6 +54,7 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 - `GET /api/users/:id/summary`
 - `GET/POST/PATCH/DELETE /api/addresses`
 - `GET/POST/DELETE /api/favorites`、`GET/POST/DELETE /api/follows`
+- `GET/POST/DELETE /api/cart`、`POST /api/cart/merge`
 - `GET/POST/DELETE /api/footprints`、`GET /api/coupons`
 - `POST /api/orders`、`GET /api/orders`、`GET /api/orders/:id`、`PATCH /api/orders/:id/cancel`
 - `POST /api/payments/mock`、`POST /api/payments/wechat/prepay`、`POST /api/payments/wechat/notify`
@@ -72,7 +73,7 @@ Copy-Item server\data\fuchong.db server\backups\fuchong-$(Get-Date -Format yyyyM
 
 ## 飞书同步
 
-后台可保存多维表格 App ID、Base 链接、Table ID 和字段映射。固定流程为：测试读取 → 字段与媒体检测 → 新增/更新/重复/异常预览 → 管理员确认 → 默认每批 100 条写入宠物、库存、图片和视频 → 显示进度与逐行错误。预览存入 `feishu_sync_previews`，确认前不会改正式商品；同一 `record_id` 使用幂等更新，空字段不会覆盖已有正确资料。缺少 `FEISHU_APP_SECRET` 时远程任务会明确失败，不会伪造同步成功。
+后台可保存多维表格 App ID、Base 链接、Table ID 和字段映射。固定流程为：测试读取 → 字段与媒体检测 → 新增/更新/重复/异常预览 → 管理员确认 → 默认每批 100 条写入宠物、库存、图片和视频 → 显示进度与逐行错误。预览存入 `feishu_sync_previews`，确认前不会改正式商品；每行任务原始数据持久化到 `feishu_sync_task_items`，服务重启可以继续，同一 `record_id` 使用幂等更新，空字段不会覆盖已有正确资料。缺少 `FEISHU_APP_SECRET` 时远程任务会明确失败，不会伪造同步成功。
 
 飞书附件下载接口需要服务端授权，前端不会直接暴露密钥。`GET /api/media/feishu` 会校验飞书媒体域名、附加访问令牌并支持 HTTP Range，商品列表、详情轮播和视频播放器因此可以直接读取数据库内的真实附件 URL。
 
@@ -93,6 +94,8 @@ npm test --prefix server
 ```
 
 接口测试使用系统临时目录中的独立 SQLite 数据库，不读取、不覆盖真实业务库。提交前还应检查 `/api/admin/db/status` 的迁移记录、外键完整性和备份结果。
+
+详细关系、接口恢复规则和部署检查清单见 [系统数据流程](docs/DATA-FLOW.md) 与 [部署手册](docs/DEPLOYMENT.md)。
 
 ## 部署建议
 

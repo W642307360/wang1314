@@ -453,6 +453,53 @@ const markOrderPaid = (order, payment) => {
   }
 };
 const syncQueues = new Map();
+const persistSyncItems = (taskId, items) => {
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO feishu_sync_task_items(task_id,row_no,external_id,payload,status,error,processed_at)
+     VALUES(?,?,?,?, 'pending',NULL,NULL)`,
+  );
+  db.exec("BEGIN");
+  try {
+    items.forEach((item, index) =>
+      insert.run(taskId, index + 1, item.external_id || null, JSON.stringify(item)),
+    );
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+};
+const persistedSyncItems = (taskId) =>
+  rows(
+    "SELECT payload FROM feishu_sync_task_items WHERE task_id=? ORDER BY row_no",
+    taskId,
+  ).map((item) => JSON.parse(item.payload));
+const userDataCounts = (userId) => ({
+  favorites: db.prepare("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?").get(userId).count,
+  cart: db.prepare("SELECT COUNT(*) AS count FROM cart_items WHERE user_id=?").get(userId).count,
+  orders: db.prepare("SELECT COUNT(*) AS count FROM orders WHERE user_id=?").get(userId).count,
+  addresses: db.prepare("SELECT COUNT(*) AS count FROM addresses WHERE user_id=?").get(userId).count,
+  messages: db.prepare("SELECT COUNT(*) AS count FROM messages WHERE user_id=?").get(userId).count,
+});
+const mergeGuestData = (previousUserId, targetUserId) => {
+  const previous = db.prepare("SELECT id,status FROM users WHERE id=?").get(Number(previousUserId));
+  if (!previous || previous.id === targetUserId || previous.status !== "guest") return false;
+  db.exec("BEGIN");
+  try {
+    db.prepare("INSERT OR IGNORE INTO favorites(user_id,pet_id,created_at) SELECT ?,pet_id,created_at FROM favorites WHERE user_id=?").run(targetUserId, previous.id);
+    db.prepare("INSERT OR IGNORE INTO follows(user_id,seller_name,created_at) SELECT ?,seller_name,created_at FROM follows WHERE user_id=?").run(targetUserId, previous.id);
+    db.prepare("INSERT OR IGNORE INTO cart_items(user_id,pet_id,quantity,selected,created_at,updated_at) SELECT ?,pet_id,quantity,selected,created_at,updated_at FROM cart_items WHERE user_id=?").run(targetUserId, previous.id);
+    for (const table of ["footprints", "addresses", "orders", "messages", "user_coupons", "customer_service_sessions", "seller_reports"])
+      db.prepare(`UPDATE ${table} SET user_id=? WHERE user_id=?`).run(targetUserId, previous.id);
+    db.prepare("UPDATE visitors SET user_id=? WHERE user_id=?").run(targetUserId, previous.id);
+    db.prepare("UPDATE users SET status='merged',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(previous.id);
+    db.exec("COMMIT");
+    return true;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+};
 const feishuTokenCache = new Map();
 const getFeishuAccess = async (config = {}) => {
   const appId = config.app_id || process.env.FEISHU_APP_ID;
@@ -833,9 +880,15 @@ const processSyncTask = (taskId, items) => {
               "INSERT OR IGNORE INTO pet_videos(pet_id,url,status) VALUES(?,?,?)",
             ).run(petId, String(videoUrl), "pending_transcode");
         }
+        db.prepare(
+          "UPDATE feishu_sync_task_items SET status='success',error=NULL,processed_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
+        ).run(taskId, start + i + 1);
         success++;
       } catch (e) {
         failed++;
+        db.prepare(
+          "UPDATE feishu_sync_task_items SET status='failed',error=?,processed_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
+        ).run(e.message, taskId, start + i + 1);
         db.prepare(
           "INSERT INTO sync_task_errors(task_id,row_no,payload,error) VALUES(?,?,?,?)",
         ).run(taskId, start + i + 1, JSON.stringify(item), e.message);
@@ -856,7 +909,7 @@ const processSyncTask = (taskId, items) => {
   setTimeout(() => processSyncTask(taskId, items), 0);
 };
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") return json(res, 204, {});
     const url = new URL(req.url, "http://localhost");
@@ -1007,6 +1060,8 @@ createServer(async (req, res) => {
           .prepare("SELECT * FROM users WHERE id=?")
           .get(r.lastInsertRowid);
       }
+      user = db.prepare("SELECT * FROM users WHERE id=?").get(user.id);
+      const guestDataMerged = mergeGuestData(d.previous_user_id, user.id);
       db.prepare(
         "INSERT INTO user_login_logs(user_id,login_type,ip,user_agent) VALUES(?,?,?,?)",
       ).run(
@@ -1028,6 +1083,8 @@ createServer(async (req, res) => {
         avatar: d.avatar || user.avatar,
         phone: d.phone || user.phone || "",
         login_method: d.login_type || user.login_method || "mock_wechat",
+        guest_data_merged: guestDataMerged,
+        data_counts: userDataCounts(user.id),
       });
     }
     const bindPhoneRoute = path.match(/^\/api\/users\/(\d+)\/bind-phone$/);
@@ -1081,6 +1138,7 @@ createServer(async (req, res) => {
       const count = (sql, ...args) => db.prepare(sql).get(...args).count;
       return json(res, 200, {
         favorites: count("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?", id),
+        cart: count("SELECT COUNT(*) AS count FROM cart_items WHERE user_id=?", id),
         footprints: count("SELECT COUNT(*) AS count FROM footprints WHERE user_id=?", id),
         coupons: count(
           "SELECT COUNT(*) AS count FROM user_coupons WHERE user_id=? AND status='available'",
@@ -1541,7 +1599,10 @@ createServer(async (req, res) => {
       logAdmin(admin, req, "update", "inventory", petId, { total, locked });
       return json(res, 200, { ok: true, total_stock: total, available_stock: total - locked });
     }
-    if (path === "/api/admin/orders")
+    if (path === "/api/admin/orders") {
+      const paging = pageParams(url, { pageSize: 100, max: 200 });
+      const orderStatus = String(url.searchParams.get("status") || "");
+      const paymentStatus = String(url.searchParams.get("payment_status") || "");
       return json(
         res,
         200,
@@ -1550,17 +1611,30 @@ createServer(async (req, res) => {
                   CASE WHEN NULLIF(TRIM(u.phone),'') IS NULL THEN 0 ELSE 1 END AS phone_bound,
                   (SELECT COUNT(*) FROM visitors v WHERE v.user_id=o.user_id) AS visitor_sessions,
                   (SELECT COALESCE(SUM(v.visit_count),0) FROM visitors v WHERE v.user_id=o.user_id) AS visit_count
-           FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.id DESC`,
+           FROM orders o JOIN users u ON u.id=o.user_id
+           WHERE (?='' OR o.status=?) AND (?='' OR o.payment_status=?)
+           ORDER BY o.id DESC LIMIT ? OFFSET ?`,
+          orderStatus,
+          orderStatus,
+          paymentStatus,
+          paymentStatus,
+          paging.pageSize,
+          paging.offset,
         ),
       );
-    if (path === "/api/admin/users")
+    }
+    if (path === "/api/admin/users") {
+      const paging = pageParams(url, { pageSize: 100, max: 200 });
       return json(
         res,
         200,
         rows(
-          "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users ORDER BY id DESC",
+          "SELECT id,nickname,avatar,phone,status,login_method,last_login_at,created_at FROM users ORDER BY id DESC LIMIT ? OFFSET ?",
+          paging.pageSize,
+          paging.offset,
         ),
       );
+    }
     if (path === "/api/admin/uploads" && method === "POST") {
       const d = await body(req);
       const cleanName = String(d.fileName || "file").replace(
@@ -1788,6 +1862,13 @@ createServer(async (req, res) => {
       const userId = Number(d.user_id || 0);
       const user = db.prepare("SELECT id FROM users WHERE id=?").get(userId);
       if (!user) return json(res, 400, { message: "用户不存在，请先登录" });
+      const clientRequestId = String(d.client_request_id || "").trim();
+      if (clientRequestId) {
+        const existingOrder = db
+          .prepare("SELECT id,order_no,status,payment_status FROM orders WHERE user_id=? AND client_request_id=?")
+          .get(userId, clientRequestId);
+        if (existingOrder) return json(res, 200, { ...existingOrder, idempotent: true });
+      }
       const address = d.address;
       if (!address?.name || !address?.phone || !address?.detail)
         return json(res, 400, { message: "请选择完整的收货地址" });
@@ -1803,9 +1884,9 @@ createServer(async (req, res) => {
         const no = nextOrderNumber();
         const o = db
           .prepare(
-            "INSERT INTO orders(order_no,user_id,total_amount,address_snapshot) VALUES(?,?,?,?)",
+            "INSERT INTO orders(order_no,user_id,total_amount,address_snapshot,client_request_id) VALUES(?,?,?,?,?)",
           )
-          .run(no, userId, pet.price, JSON.stringify(address));
+          .run(no, userId, pet.price, JSON.stringify(address), clientRequestId || null);
         db.prepare(
           "INSERT INTO order_items(order_id,pet_id,pet_snapshot,price) VALUES(?,?,?,?)",
         ).run(o.lastInsertRowid, pet.id, JSON.stringify(pet), pet.price);
@@ -2216,6 +2297,70 @@ createServer(async (req, res) => {
            ORDER BY s.updated_at DESC LIMIT 200`,
         ),
       );
+    if (path === "/api/cart" && method === "GET") {
+      const userId = Number(url.searchParams.get("user_id") || 0);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
+        return json(res, 400, { message: "用户不存在，请重新登录" });
+      return json(
+        res,
+        200,
+        rows(
+          `SELECT c.id AS cart_id,c.pet_id,c.quantity,c.selected,c.created_at AS added_at,
+                  p.name,p.breed,p.gender,p.age_months,p.price,p.seller_name,p.status AS pet_status,
+                  COALESCE(p.thumbnail_url,p.highres_url,
+                    (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
+                  ) AS image
+           FROM cart_items c JOIN pets p ON p.id=c.pet_id
+           WHERE c.user_id=? ORDER BY c.updated_at DESC,c.id DESC`,
+          userId,
+        ),
+      );
+    }
+    if (path === "/api/cart" && method === "POST") {
+      const d = await body(req);
+      const userId = Number(d.user_id || 0), petId = Number(d.pet_id || 0);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
+        return json(res, 400, { message: "用户不存在，请重新登录" });
+      if (!db.prepare("SELECT id FROM pets WHERE id=? AND status<>'deleted'").get(petId))
+        return json(res, 404, { message: "商品不存在或已删除" });
+      db.prepare(
+        `INSERT INTO cart_items(user_id,pet_id,quantity,selected) VALUES(?,?,?,1)
+         ON CONFLICT(user_id,pet_id) DO UPDATE SET quantity=MIN(99,cart_items.quantity+excluded.quantity),selected=1,updated_at=CURRENT_TIMESTAMP`,
+      ).run(userId, petId, Math.max(1, Number(d.quantity || 1)));
+      const cart = db.prepare("SELECT * FROM cart_items WHERE user_id=? AND pet_id=?").get(userId, petId);
+      return json(res, 201, { ok: true, cart, count: userDataCounts(userId).cart });
+    }
+    if (path === "/api/cart/merge" && method === "POST") {
+      const d = await body(req);
+      const userId = Number(d.user_id || 0);
+      if (!db.prepare("SELECT id FROM users WHERE id=?").get(userId))
+        return json(res, 400, { message: "用户不存在，请重新登录" });
+      const items = Array.isArray(d.items) ? d.items.slice(0, 200) : [];
+      const insert = db.prepare(
+        `INSERT INTO cart_items(user_id,pet_id,quantity,selected) SELECT ?,?,?,1
+         WHERE EXISTS(SELECT 1 FROM pets WHERE id=? AND status<>'deleted')
+         ON CONFLICT(user_id,pet_id) DO UPDATE SET quantity=MAX(cart_items.quantity,excluded.quantity),updated_at=CURRENT_TIMESTAMP`,
+      );
+      db.exec("BEGIN");
+      try {
+        for (const item of items) {
+          const petId = Number(item.pet_id || 0);
+          if (petId) insert.run(userId, petId, Math.max(1, Number(item.quantity || 1)), petId);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return json(res, 200, { ok: true, count: userDataCounts(userId).cart });
+    }
+    const cartItem = path.match(/^\/api\/cart\/(\d+)$/);
+    if (cartItem && method === "DELETE") {
+      const userId = Number(url.searchParams.get("user_id") || 0);
+      const petId = Number(url.searchParams.get("pet_id") || 0);
+      db.prepare("DELETE FROM cart_items WHERE user_id=? AND (id=? OR (? > 0 AND pet_id=?))").run(userId, Number(cartItem[1]), petId, petId);
+      return json(res, 200, { ok: true, count: userDataCounts(userId).cart });
+    }
     if (path === "/api/favorites" && method === "GET")
       return json(
         res,
@@ -3052,6 +3197,7 @@ createServer(async (req, res) => {
           Math.min(500, Math.max(1, Number(d.batch_size || 100))),
         );
       const taskId = Number(created.lastInsertRowid);
+      persistSyncItems(taskId, items);
       db.prepare(
         "UPDATE feishu_sync_previews SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP,task_id=? WHERE id=?",
       ).run(taskId, preview.id);
@@ -3089,6 +3235,7 @@ createServer(async (req, res) => {
         );
       const taskId = Number(r.lastInsertRowid);
       if (initialItems) {
+        persistSyncItems(taskId, initialItems);
         syncQueues.set(taskId, { items: initialItems, paused: false });
         setTimeout(() => processSyncTask(taskId, initialItems), 0);
       } else {
@@ -3098,6 +3245,7 @@ createServer(async (req, res) => {
             db.prepare(
               "UPDATE feishu_sync_tasks SET total=?,status='running' WHERE id=?",
             ).run(items.length, taskId);
+            persistSyncItems(taskId, items);
             syncQueues.set(taskId, { items, paused: false });
             processSyncTask(taskId, items);
           } catch (e) {
@@ -3128,7 +3276,13 @@ createServer(async (req, res) => {
       return json(
         res,
         200,
-        rows("SELECT * FROM feishu_sync_tasks ORDER BY id DESC"),
+        rows(
+          `SELECT t.*,
+                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id) AS persisted_items,
+                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.status='success') AS persisted_success,
+                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.status='failed') AS persisted_failed
+           FROM feishu_sync_tasks t ORDER BY t.id DESC`,
+        ),
       );
     const syncAction = path.match(
       /^\/api\/admin\/feishu\/tasks\/(\d+)\/(pause|resume|retry|errors)$/,
@@ -3153,16 +3307,20 @@ createServer(async (req, res) => {
         ).run(taskId);
       }
       if (action === "resume" || action === "retry") {
-        const task = db
-          .prepare("SELECT * FROM feishu_sync_tasks WHERE id=?")
-          .get(taskId);
-        const items =
-          syncQueues.get(taskId)?.items ||
-          generateSyncItems(task?.total || 500);
+        const storedItems = persistedSyncItems(taskId);
+        const items = syncQueues.get(taskId)?.items || storedItems;
+        if (!items.length)
+          return json(res, 409, { message: "同步任务缺少持久化数据，请重新创建同步预览" });
         syncQueues.set(taskId, { items, paused: false });
-        db.prepare(
-          "UPDATE feishu_sync_tasks SET status='running',paused_at=NULL,retry_count=retry_count+? WHERE id=?",
-        ).run(action === "retry" ? 1 : 0, taskId);
+        if (action === "retry") {
+          db.prepare("UPDATE feishu_sync_task_items SET status='pending',error=NULL,processed_at=NULL WHERE task_id=?").run(taskId);
+          db.prepare(
+            "UPDATE feishu_sync_tasks SET status='running',processed=0,success=0,failed=0,error=NULL,paused_at=NULL,retry_count=retry_count+1,finished_at=NULL WHERE id=?",
+          ).run(taskId);
+        } else
+          db.prepare(
+            "UPDATE feishu_sync_tasks SET status='running',paused_at=NULL,finished_at=NULL WHERE id=?",
+          ).run(taskId);
         setTimeout(() => processSyncTask(taskId, items), 0);
       }
       logAdmin(admin, req, action, "feishu_sync_tasks", taskId);
@@ -3177,8 +3335,26 @@ createServer(async (req, res) => {
     return json(res, 404, { message: "接口不存在" });
   } catch (e) {
     console.error(e);
-    json(res, 500, { message: "服务器内部错误" });
+    const requestId = randomBytes(8).toString("hex");
+    try {
+      db.prepare(
+        "INSERT INTO api_error_logs(request_id,method,path,message,stack) VALUES(?,?,?,?,?)",
+      ).run(requestId, req.method || "UNKNOWN", req.url || "/", e?.message || String(e), e?.stack || null);
+    } catch {}
+    json(res, 500, { message: "服务器处理失败，请稍后重试", request_id: requestId });
   }
-}).listen(Number(process.env.PORT || 3001), () =>
+});
+
+for (const task of rows("SELECT id FROM feishu_sync_tasks WHERE status IN ('pending','running') ORDER BY id")) {
+  const items = persistedSyncItems(task.id);
+  if (!items.length) {
+    db.prepare("UPDATE feishu_sync_tasks SET status='failed',error='服务重启后未找到持久化同步数据',finished_at=CURRENT_TIMESTAMP WHERE id=?").run(task.id);
+    continue;
+  }
+  syncQueues.set(task.id, { items, paused: false });
+  setTimeout(() => processSyncTask(task.id, items), 0);
+}
+
+server.listen(Number(process.env.PORT || 3001), () =>
   console.log("福宠 API: http://127.0.0.1:3001"),
 );

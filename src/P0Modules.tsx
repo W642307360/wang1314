@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import type { ServiceContext, User } from "./UserModules";
+import {
+  currentCartUserId,
+  loadCartFromServer,
+  mergeCartToServer,
+  readCart,
+  writeCart,
+  type StoredCartPet,
+} from "./cartStore";
 
 type FavoritePet = {
   id: number;
@@ -18,18 +26,7 @@ type FavoritePet = {
   seller_name?: string;
 };
 
-export type CartPet = {
-  cart_id: string;
-  pet_id?: number | null;
-  name: string;
-  breed: string;
-  gender?: string;
-  age_months?: number;
-  price: number;
-  image?: string;
-  seller_name?: string;
-  added_at: string;
-};
+export type CartPet = StoredCartPet;
 
 type ChatMessage = {
   id: number;
@@ -43,7 +40,6 @@ type ChatMessage = {
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
-const CART_KEY = "fuchong-cart";
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
 const displayMedia = (url?: string) =>
@@ -81,19 +77,6 @@ const statusText = (status?: string) =>
         ? "商品不存在"
         : "正常销售";
 
-const readCart = (): CartPet[] => {
-  try {
-    return JSON.parse(localStorage.getItem(CART_KEY) || "[]");
-  } catch {
-    return [];
-  }
-};
-
-const writeCart = (items: CartPet[]) => {
-  localStorage.setItem(CART_KEY, JSON.stringify(items));
-  window.dispatchEvent(new Event("fuchong-cart-change"));
-};
-
 export function P0LoginPage({
   back,
   user,
@@ -113,10 +96,12 @@ export function P0LoginPage({
     setNickname(user?.nickname || "");
   }, [user?.nickname]);
   const saveLogin = async (payload: Partial<User> & { login_type: string }) => {
+    const previousUserId = currentCartUserId();
+    const previousCart = readCart(previousUserId);
     const response = await fetch(`${API_BASE}/api/users/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, previous_user_id: previousUserId }),
     });
     if (!response.ok) throw new Error("login failed");
     const saved = await response.json();
@@ -129,6 +114,7 @@ export function P0LoginPage({
       login_method: saved.login_method || payload.login_type,
     };
     localStorage.setItem("fuchong-user", JSON.stringify(next));
+    await mergeCartToServer(Number(saved.id), previousCart).catch(() => {});
     onLogin(next);
     return next;
   };
@@ -243,14 +229,15 @@ export function P0CollectionPage({
     return () => window.removeEventListener("fuchong-favorites-change", loadFavorites);
   }, [userId]);
   useEffect(() => {
-    const refresh = () => setCart(readCart());
+    loadCartFromServer(userId).then(setCart).catch(() => setCart(readCart(userId)));
+    const refresh = () => setCart(readCart(userId));
     window.addEventListener("fuchong-cart-change", refresh);
     window.addEventListener("storage", refresh);
     return () => {
       window.removeEventListener("fuchong-cart-change", refresh);
       window.removeEventListener("storage", refresh);
     };
-  }, []);
+  }, [userId]);
   const removeFavorite = async (petId: number) => {
     await fetch(`${API_BASE}/api/favorites/${petId}?user_id=${userId}`, {
       method: "DELETE",
@@ -258,10 +245,12 @@ export function P0CollectionPage({
     setFavorites((items) => items.filter((item) => item.pet_id !== petId));
     window.dispatchEvent(new Event("fuchong-favorites-change"));
   };
-  const removeCart = (cartId: string) => {
-    const next = cart.filter((item) => item.cart_id !== cartId);
+  const removeCart = (pet: CartPet) => {
+    const next = cart.filter((item) => item.cart_id !== pet.cart_id);
     setCart(next);
-    writeCart(next);
+    writeCart(next, userId);
+    if (Number.isFinite(Number(pet.cart_id)))
+      fetch(`${API_BASE}/api/cart/${pet.cart_id}?user_id=${userId}&pet_id=${Number(pet.pet_id || 0)}`, { method: "DELETE" }).catch(() => {});
   };
   const cartTotal = useMemo(
     () => cart.reduce((sum, item) => sum + Number(item.price || 0), 0),
@@ -345,7 +334,7 @@ export function P0CollectionPage({
                 </button>
                 <button
                   className="favorite-remove"
-                  onClick={() => confirm("确定移出购物车吗？") && removeCart(pet.cart_id)}
+                  onClick={() => confirm("确定移出购物车吗？") && removeCart(pet)}
                 >
                   ×
                 </button>

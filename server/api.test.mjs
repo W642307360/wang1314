@@ -165,6 +165,29 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const favorites = await request("/api/favorites?user_id=1");
   assert.deepEqual(new Set(favorites.payload.map((item) => item.pet_id)), new Set([pet.payload.id, ...extraPets]));
 
+  const cartAdd = await request("/api/cart", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1, pet_id: pet.payload.id, quantity: 1 }),
+  });
+  assert.equal(cartAdd.response.status, 201);
+  const firstPhoneLogin = await request("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "13700000000", login_type: "phone" }),
+  });
+  const repeatedPhoneLogin = await request("/api/users/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phone: "13700000000", login_type: "phone" }),
+  });
+  assert.equal(firstPhoneLogin.payload.id, 1);
+  assert.equal(repeatedPhoneLogin.payload.id, 1);
+  assert.ok(repeatedPhoneLogin.payload.data_counts.favorites >= 1);
+  assert.equal(repeatedPhoneLogin.payload.data_counts.cart, 1);
+  const restoredCart = await request("/api/cart?user_id=1");
+  assert.equal(restoredCart.payload[0].pet_id, pet.payload.id);
+
   const address = await request("/api/addresses", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -198,11 +221,25 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     body: JSON.stringify({
       user_id: 1,
       pet_id: pet.payload.id,
+      client_request_id: "api-test-order-request-1",
       address: { name: "测试用户", phone: "13800000000", detail: "测试地址一号" },
     }),
   });
   assert.equal(order.response.status, 201);
   assert.match(order.payload.order_no, /^FC\d{8}-\d{4}$/);
+  const repeatedOrder = await request("/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: 1,
+      pet_id: pet.payload.id,
+      client_request_id: "api-test-order-request-1",
+      address: { name: "测试用户", phone: "13800000000", detail: "测试地址一号" },
+    }),
+  });
+  assert.equal(repeatedOrder.response.status, 200);
+  assert.equal(repeatedOrder.payload.id, order.payload.id);
+  assert.equal(repeatedOrder.payload.idempotent, true);
 
   const unpaidShipping = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
@@ -344,20 +381,23 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     body: JSON.stringify({
       config_id: feishuConfig.payload.id,
       batch_size: 100,
-      total: 1000,
+      total: 5000,
     }),
   });
   assert.equal(sync.response.status, 202);
   let syncTask;
-  for (let i = 0; i < 120; i += 1) {
+  for (let i = 0; i < 240; i += 1) {
     const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
     syncTask = tasks.payload.find((item) => item.id === sync.payload.taskId);
     if (["completed", "failed"].includes(syncTask?.status)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(syncTask.status, "completed");
-  assert.equal(syncTask.success, 1000);
+  assert.equal(syncTask.success, 5000);
   assert.equal(syncTask.failed, 0);
+  assert.equal(syncTask.persisted_items, 5000);
+  assert.equal(syncTask.persisted_success, 5000);
+  assert.equal(syncTask.persisted_failed, 0);
   const mediaSync = await request("/api/admin/feishu/sync", {
     method: "POST",
     headers: adminHeaders,

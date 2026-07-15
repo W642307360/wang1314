@@ -36,6 +36,7 @@ import { hallByKey, halls, type BreedItem, type HallKey } from "./catalog";
 import AdminApp from "./Admin";
 import { ensureVisitor } from "./visitor";
 import { optimizePetImage } from "./imagePipeline";
+import { readCart, writeCart, type StoredCartPet } from "./cartStore";
 
 type Page =
   | "home"
@@ -253,31 +254,6 @@ const thumbImage = (url?: string, fallback = petPhoto) =>
   optimizePetImage(url || fallback, "thumb", fallback);
 const coverImage = (url?: string, fallback = petPhoto) =>
   optimizePetImage(url || fallback, "detail", fallback);
-const CART_KEY = "fuchong-cart";
-type LocalCartPet = {
-  cart_id: string;
-  pet_id?: number | null;
-  name: string;
-  breed: string;
-  gender?: string;
-  age_months?: number;
-  price: number;
-  image?: string;
-  seller_name?: string;
-  added_at: string;
-};
-const readLocalCart = (): LocalCartPet[] => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CART_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-const writeLocalCart = (items: LocalCartPet[]) => {
-  localStorage.setItem(CART_KEY, JSON.stringify(items));
-  window.dispatchEvent(new Event("fuchong-cart-change"));
-};
 async function cachedJson<T>(url: string, ttl = 45_000): Promise<T> {
   const cached = jsonCache.get(url);
   if (cached && Date.now() - cached.at < cached.ttl) return cached.data as T;
@@ -1049,6 +1025,7 @@ function Detail({
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
+  const orderRequestId = useRef(crypto.randomUUID());
   const userId = Number(localStorage.getItem("fuchong-user-id") || 1);
   useEffect(() => {
     setDetailPet(pet);
@@ -1196,7 +1173,7 @@ function Detail({
       const r = await fetch(`${API_BASE}/api/orders`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ user_id: userId, pet_id: petDbId, address }),
+        body: JSON.stringify({ user_id: userId, pet_id: petDbId, address, client_request_id: orderRequestId.current }),
       });
       const order = await r.json();
       if (!r.ok) throw new Error(order.message || "订单提交失败");
@@ -1212,6 +1189,7 @@ function Detail({
           bridge.invoke("getBrandWCPayRequest", pay, () => go("orders"));
       }
       setBuyOpen(false);
+      orderRequestId.current = crypto.randomUUID();
       go("orders");
     } catch (error) {
       setOrderError(error instanceof Error ? error.message : "订单提交失败");
@@ -1273,8 +1251,8 @@ function Detail({
       setSellerReportMessage(error instanceof Error ? error.message : "提交失败，请稍后重试");
     }
   };
-  const addToCart = () => {
-    const nextItem: LocalCartPet = {
+  const addToCart = async () => {
+    const nextItem: StoredCartPet = {
       cart_id: `${petDbId || displayName}-${Date.now()}`,
       pet_id: petDbId,
       name: displayName,
@@ -1286,8 +1264,23 @@ function Detail({
       seller_name: displaySeller,
       added_at: new Date().toISOString(),
     };
-    writeLocalCart([nextItem, ...readLocalCart()].slice(0, 99));
+    const existing = readCart(userId).filter((item) => Number(item.pet_id) !== Number(petDbId));
+    writeCart([nextItem, ...existing].slice(0, 99), userId);
     setCart(true);
+    if (petDbId) {
+      const response = await fetch(`${API_BASE}/api/cart`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId, pet_id: petDbId, quantity: 1 }),
+      }).catch(() => null);
+      if (response?.ok) {
+        const result = await response.json();
+        writeCart(
+          readCart(userId).map((item) => Number(item.pet_id) === Number(petDbId) ? { ...item, cart_id: result.cart.id } : item),
+          userId,
+        );
+      }
+    }
   };
   const originPoint = originMapPoint(detailPet?.breed_profile?.origin || "");
   const originStory = breedOriginStory(
@@ -1790,7 +1783,7 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
           <span>收藏宠物</span>
         </button>
         <button onClick={() => go("follows")}>
-          <b>{readLocalCart().length}</b>
+          <b>{summary.cart ?? readCart().length}</b>
           <span>购物车</span>
         </button>
         <button onClick={() => go("footprints")}>
@@ -2075,7 +2068,7 @@ function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about
 
 export default function App() {
   useEffect(() => {
-    ensureVisitor();
+    if (!localStorage.getItem("fuchong-user")) ensureVisitor();
   }, []);
   const adminMode = location.hash.startsWith("#admin");
   const [page, setPage] = useState<Page>("home");
