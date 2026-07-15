@@ -153,7 +153,7 @@ const body = async (req) => {
 const rows = (sql, ...args) => db.prepare(sql).all(...args);
 const NEWCOMER_COUPON_CODE = "NEW_USER_300";
 const REPLACEMENT_POLICY =
-  "40日安心更换：宠物成交价在新人补贴后不高于3000元（托运费不计入）时，如40天内发生经核验属于非正常养殖原因导致的死亡，可按保障协议申请更换；补贴后超过3000元不适用。";
+  "平台40日安心保证：宠物价格不高于3000元（托运费不计入）时，如40天内发生经核验属于非正常原因导致的死亡，可按保障协议申请更换。";
 const ensureNewcomerCoupon = (userId) => {
   const user = db.prepare("SELECT id,status FROM users WHERE id=?").get(Number(userId));
   if (!user || user.status !== "active") return null;
@@ -177,18 +177,17 @@ const ensureNewcomerCoupon = (userId) => {
     .get(user.id, coupon.id);
 };
 const newcomerOrderQuote = (userId, pet) => {
-  const coupon = ensureNewcomerCoupon(userId);
   const listPrice = Math.max(0, Number(pet?.price || 0));
-  const discount = coupon ? Math.min(listPrice, Number(coupon.amount || 300)) : 0;
-  const petAmount = Math.max(0, listPrice - discount);
+  const petAmount = listPrice;
   const shippingFee = 0;
   return {
     list_price: listPrice,
-    discount_amount: discount,
+    discount_amount: 0,
     pet_amount: petAmount,
     shipping_fee: shippingFee,
     total_amount: petAmount + shippingFee,
-    newcomer_coupon: coupon || null,
+    newcomer_coupon: null,
+    newcomer_badge: { amount: 300, label: "平台补贴300 · 新人专享价" },
     guarantee_eligible: petAmount <= 3000,
     guarantee_policy: petAmount <= 3000 ? REPLACEMENT_POLICY : null,
   };

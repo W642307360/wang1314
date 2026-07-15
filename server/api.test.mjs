@@ -222,7 +222,7 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       name: "新人保障边界测试宠物",
       category_id: 1,
       breed: "布偶猫",
-      price: 3300,
+      price: 3000,
       stock: 1,
       status: "published",
     }),
@@ -231,7 +231,7 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     `/api/orders/quote?user_id=${secondUser.payload.id}&pet_id=${eligiblePet.payload.id}`,
   );
   assert.equal(eligibleQuote.response.status, 200);
-  assert.equal(eligibleQuote.payload.discount_amount, 300);
+  assert.equal(eligibleQuote.payload.discount_amount, 0);
   assert.equal(eligibleQuote.payload.pet_amount, 3000);
   assert.equal(eligibleQuote.payload.shipping_fee, 0);
   assert.equal(eligibleQuote.payload.guarantee_eligible, true);
@@ -258,7 +258,12 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const restoredQuote = await request(
     `/api/orders/quote?user_id=${secondUser.payload.id}&pet_id=${eligiblePet.payload.id}`,
   );
-  assert.equal(restoredQuote.payload.discount_amount, 300);
+  assert.equal(restoredQuote.payload.discount_amount, 0);
+  const stillAvailableCoupons = await request(`/api/coupons?user_id=${secondUser.payload.id}`);
+  assert.equal(
+    stillAvailableCoupons.payload.find((item) => item.code === "NEW_USER_300").user_status,
+    "available",
+  );
   const visitor = await request("/api/visitors/session", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -324,8 +329,8 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     }),
   });
   assert.equal(order.response.status, 201);
-  assert.equal(order.payload.discount_amount, 300);
-  assert.equal(order.payload.pet_amount, 6500);
+  assert.equal(order.payload.discount_amount, 0);
+  assert.equal(order.payload.pet_amount, 6800);
   assert.equal(order.payload.guarantee_eligible, false);
   assert.match(order.payload.order_no, /^FC\d{8}-\d{4}$/);
   const repeatedOrder = await request("/api/orders", {
