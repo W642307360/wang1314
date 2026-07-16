@@ -24,10 +24,11 @@ for (const table of tables) {
   const rows = db.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
   for (let offset = 0; offset < rows.length; offset += 50) {
     const batch = rows.slice(offset, offset + 50);
+    const encoded = Buffer.from(JSON.stringify({ table, rows: batch }), "utf8").toString("base64");
     const response = await fetch(`${target}/api/admin/import`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-migration-secret": secret },
-      body: JSON.stringify({ table, rows: batch }),
+      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ blob: encoded }),
     });
     if (!response.ok) throw new Error(`${table} import failed: ${response.status} ${await response.text()}`);
     total += batch.length;

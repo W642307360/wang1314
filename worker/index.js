@@ -348,8 +348,21 @@ async function handleAdmin(request, env, url, path, method) {
     return json({ token: await adminToken(env, username), user: { id: 1, username, role: "admin" } });
   }
   if (path === "/api/admin/import" && method === "POST") {
-    if ((request.headers.get("x-migration-secret") || "") !== env.MIGRATION_SECRET) return error("无权导入", 403);
-    const x = await body(request); try { return json({ ok: true, imported: await importRows(db, text(x.table), x.rows) }); } catch (e) { return error(e.message, 400); }
+    const authorization = request.headers.get("authorization") || "";
+    const suppliedSecret = authorization.startsWith("Bearer ") ? authorization.slice(7) : request.headers.get("x-migration-secret") || "";
+    if (suppliedSecret !== env.MIGRATION_SECRET) return error("无权导入", 403);
+    const input = await body(request);
+    let x = input;
+    if (typeof input.blob === "string") {
+      try {
+        const binary = atob(input.blob);
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        x = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        return error("导入数据编码无效", 400);
+      }
+    }
+    try { return json({ ok: true, imported: await importRows(db, text(x.table), x.rows) }); } catch (e) { return error(e.message, 400); }
   }
   const admin = await verifyAdmin(request, env); if (!admin) return error("管理登录已过期", 401);
   if (path === "/api/admin/stats" && method === "GET") return json(await adminStats(db));
