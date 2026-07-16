@@ -1,5 +1,5 @@
 export type HallKey='cats'|'dogs'|'birds'|'aquatic'|'exotic'|'more'
-export type BreedItem={id:string;name:string;en:string;desc:string;image:string;growthImage?:string}
+export type BreedItem={id:string;name:string;en:string;desc:string;image:string;growthImage?:string;knowledgeImage?:string;knowledgeThumbnail?:string}
 export type Hall={key:HallKey;name:string;subtitle:string;hero:string;accent:string;breeds:BreedItem[]}
 
 const photos={

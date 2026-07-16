@@ -17,6 +17,7 @@ import "./SearchPage.css";
 import "./HomeLayout.css";
 import "./Stability.css";
 import "./ProductDetail.css";
+import "./ReviewKnowledge.css";
 import "./Charity.css";
 import { RefreshHint } from "./UIStates";
 import {
@@ -995,6 +996,33 @@ function ProductServiceOverlay({
   );
 }
 
+const buildReviewFallback = (productName: string, breedName: string, seedSource: string) => {
+  const nicknames = ["橘子汽水", "小满和团子", "住在云边", "阿梨的日常", "奶糖观察员", "慢慢陪伴", "林间小屋", "好好生活"];
+  const messages = [
+    `${productName}到家后状态很好，眼睛清亮，精神也很足，商家把过渡期饮食和注意事项讲得很细。`,
+    `下单前反复看了健康资料和生活视频，收到后与档案一致，${breedName}的性格比想象中更亲人。`,
+    "配送过程一直能看到节点，接到家后一周适应得很快，客服回访也很及时。",
+    "毛发、体态和照片没有差别，疫苗记录清楚，新手照护建议很实用。",
+    "沟通透明，没有隐藏项目。到家后会主动吃饭和探索，整体状态让人放心。",
+    "商家持续更新成长记录，接回家前还专门确认了环境和用品准备情况。",
+    `第一次养${breedName}，客服把性格特点、喂养频率和应激期都解释明白了。`,
+    "看了好几家后选了这里，档案完整、回复耐心，实际见到后比图片更可爱。",
+  ];
+  const seed = [...seedSource].reduce((sum, value) => sum + value.charCodeAt(0), 0);
+  return Array.from({ length: 8 }, (_, index) => {
+    const offset = (seed + index * 3) % messages.length;
+    return {
+      id: `sample-${seed}-${index}`,
+      nickname: nicknames[(seed + index * 5) % nicknames.length],
+      rating: index === 6 ? 4 : 5,
+      source: "generated",
+      created_at: `2026-0${6 - Math.floor(index / 4)}-${String(28 - ((seed + index * 3) % 21)).padStart(2, "0")}`,
+      content: messages[offset],
+      likes: 6 + ((seed + index * 7) % 24),
+    };
+  });
+};
+
 function Detail({
   go,
   breed,
@@ -1034,6 +1062,8 @@ function Detail({
   const [detailReady, setDetailReady] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
+  const [reviewPanelOpen, setReviewPanelOpen] = useState(false);
+  const [knowledgeViewerOpen, setKnowledgeViewerOpen] = useState(false);
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
   const orderRequestId = useRef(crypto.randomUUID());
@@ -1136,6 +1166,16 @@ function Detail({
       : [{ kind: "image" as const, url: petImage(detailPet, breed.image), thumb: petImage(detailPet, breed.image), label: "主图" }];
   }, [breed.image, detailPet]);
   const activeMedia = mediaItems[Math.min(galleryIndex, mediaItems.length - 1)];
+  const displayReviews = useMemo(
+    () => detailPet?.reviews?.length
+      ? detailPet.reviews
+      : buildReviewFallback(displayName, breed.name, String(detailPet?.id || breed.id)),
+    [breed.id, breed.name, detailPet?.id, detailPet?.reviews, displayName],
+  );
+  const reviewCount = Number(detailPet?.review_count || displayReviews.length);
+  const knowledgeThumb = breed.knowledgeThumbnail || (breed.knowledgeImage?.startsWith("/")
+    ? breed.knowledgeImage.replace(/\.(?:jpe?g|png|webp)$/i, "-thumb.webp")
+    : breed.knowledgeImage) || breed.image;
   const archiveMeta = petArchiveMeta(detailPet, displayName);
   const merchant = sellerDetail || sellerProfile;
   const merchantTrust = merchantTrustProfile(merchant, detailPet, mediaItems.length);
@@ -1143,6 +1183,8 @@ function Detail({
   useEffect(() => {
     setGalleryIndex(0);
     setMediaViewerOpen(false);
+    setReviewPanelOpen(false);
+    setKnowledgeViewerOpen(false);
   }, [detailPet?.id]);
   const moveGallery = (direction: number) =>
     setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
@@ -1626,24 +1668,73 @@ function Detail({
         </div>
       )}
       {sellerImageOpen && merchant?.image_url && <div className="seller-image-viewer" role="dialog" aria-modal="true" aria-label={`${displaySeller}门店实景大图`} onClick={() => setSellerImageOpen(false)}><button type="button" onClick={() => setSellerImageOpen(false)}>×</button><img src={merchant.image_url} alt={`${displaySeller}门店实景大图`} /></div>}
-      <section className="reviews">
-        <header><div><small>文字评价</small><h3>用户评价（{Math.min(25, detailPet?.review_count || detailPet?.reviews?.length || 3)}）</h3></div><b>4.9 <span>★★★★★</span></b></header>
-        {(detailPet?.reviews?.length ? detailPet.reviews : [
-          { id: "demo-1", nickname: "林间小屋", rating: 5, is_verified: 1, created_at: "2026-06-28", content: `${displayName}到家后状态特别好，眼睛清亮，毛发柔软。客服提前讲了饮食和应激期注意事项，第一晚就愿意靠近我们。`, images: mediaItems.filter((x) => x.kind === "image").slice(0, 2).map((x) => x.thumb), likes: 18 },
-          { id: "demo-2", nickname: "阿梨的日常", rating: 5, is_verified: 1, created_at: "2026-06-19", content: "整个购买流程很透明，健康资料和疫苗记录都能查看。接回家一周适应得很快，性格比照片里还亲人。", images: mediaItems.filter((x) => x.kind === "image").slice(1, 3).map((x) => x.thumb), likes: 11 },
-          { id: "demo-3", nickname: "慢慢陪伴", rating: 5, is_verified: 1, created_at: "2026-06-03", content: "商家会持续回访，喂养建议很细。外观、年龄和商品资料一致，生活视频也让我们下单前更放心。", videos: mediaItems.filter((x) => x.kind === "video").slice(0, 1).map((x) => x.url), likes: 9 },
-        ]).map((review: any) => {
-          const reviewKey = String(review.id);
-          const liked = likedReviews.has(reviewKey);
-          return (
-            <article className="review-card" key={reviewKey}>
-              <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.source === "generated" ? "平台体验样本" : review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
-              <p>{review.content}</p>
-              <button type="button" onClick={async () => { if (!liked && Number.isFinite(Number(review.id))) await fetch(`${API_BASE}/api/reviews/${review.id}/like`, { method: "POST" }).catch(() => {}); setLikedReviews((old) => { const next = new Set(old); if (liked) next.delete(reviewKey); else next.add(reviewKey); return next; }); }}>♡ 有帮助 {Number(review.likes || 0) + (liked ? 1 : 0)}</button>
-            </article>
-          );
-        })}
+      <section className="review-showcase">
+        <button type="button" className="review-showcase-open" onClick={() => setReviewPanelOpen(true)}>
+          <span className="review-showcase-title"><i>口碑</i><span><small>真实购买体验</small><b>用户评价</b></span></span>
+          <strong>4.9 <small>★★★★★</small></strong>
+          <span className="review-showcase-count">{reviewCount} 条评价 <b>展开查看 ↗</b></span>
+          <span className="review-peek-row">
+            {displayReviews.slice(0, 2).map((review: any) => (
+              <span className="review-peek" key={String(review.id)}>
+                <i>{String(review.nickname || "用户").slice(0, 1)}</i>
+                <span><b>{review.nickname}</b><small>{String(review.content || "").slice(0, 34)}{String(review.content || "").length > 34 ? "…" : ""}</small></span>
+              </span>
+            ))}
+          </span>
+        </button>
       </section>
+      <section className="breed-knowledge-card">
+        <span className="knowledge-orbit" aria-hidden="true"><i>✦</i><i>◌</i><i>+</i></span>
+        <div className="knowledge-copy">
+          <small>BREED ENCYCLOPEDIA</small>
+          <h3>{breed.name} · 品种科普图鉴</h3>
+          <p>{breed.knowledgeImage ? "从外形特征到日常照护，一张图快速了解。" : "科普图位置已预留，收到图片后可直接替换并显示专属缩略图。"}</p>
+          <span><b>01</b> 品种特征　<b>02</b> 喂养建议　<b>03</b> 健康提醒</span>
+        </div>
+        <button type="button" className={`knowledge-preview ${breed.knowledgeImage ? "ready" : "pending"}`} onClick={() => setKnowledgeViewerOpen(true)}>
+          <SmartImage src={knowledgeThumb} alt={`${breed.name}科普图缩略图`} />
+          <span>{breed.knowledgeImage ? "点击查看完整科普图" : "科普图待更新 · 查看预览框"}</span>
+        </button>
+      </section>
+      {reviewPanelOpen && (
+        <div className="review-panel-mask" role="dialog" aria-modal="true" aria-label={`${displayName}用户评价`} onClick={() => setReviewPanelOpen(false)}>
+          <section className="review-panel" onClick={(event) => event.stopPropagation()}>
+            <i className="review-panel-handle" />
+            <header>
+              <div><small>{displayName} · 独立口碑档案</small><h2>用户评价 <b>{reviewCount}</b></h2></div>
+              <strong>4.9 <span>★★★★★</span></strong>
+              <button type="button" onClick={() => setReviewPanelOpen(false)} aria-label="关闭评价">×</button>
+            </header>
+            <div className="review-panel-tags"><span>已购评价优先</span><span>按时间浏览</span><span>支持上下滑动</span></div>
+            <div className="review-scroll-list">
+              {displayReviews.map((review: any) => {
+                const reviewKey = String(review.id);
+                const liked = likedReviews.has(reviewKey);
+                return (
+                  <article className="review-card" key={reviewKey}>
+                    <div className="review-user"><i>{String(review.nickname || "用户").slice(0, 1)}</i><p><b>{review.nickname}</b><small>{review.source === "generated" ? "平台体验样本" : review.is_verified ? "已购认证" : "平台用户"} · {String(review.created_at || "").slice(0, 10)}</small></p><span>{"★".repeat(Number(review.rating || 5))}</span></div>
+                    <p>{review.content}</p>
+                    {Array.isArray(review.images) && review.images.length > 0 && <div className="review-media">{review.images.slice(0, 3).map((image: string, index: number) => <SmartImage key={`${reviewKey}-image-${index}`} src={resolveMediaUrl(image)} alt={`${review.nickname}评价图片${index + 1}`} />)}</div>}
+                    <button type="button" className={liked ? "liked" : ""} onClick={async () => { if (!liked && Number.isFinite(Number(review.id))) await fetch(`${API_BASE}/api/reviews/${review.id}/like`, { method: "POST" }).catch(() => {}); setLikedReviews((old) => { const next = new Set(old); if (liked) next.delete(reviewKey); else next.add(reviewKey); return next; }); }}>{liked ? "♥" : "♡"} 有帮助 {Number(review.likes || 0) + (liked ? 1 : 0)}</button>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      )}
+      {knowledgeViewerOpen && (
+        <div className="knowledge-viewer" role="dialog" aria-modal="true" aria-label={`${breed.name}科普图`} onClick={() => setKnowledgeViewerOpen(false)}>
+          <button type="button" onClick={() => setKnowledgeViewerOpen(false)} aria-label="关闭科普图">×</button>
+          <section onClick={(event) => event.stopPropagation()}>
+            <header><small>福宠品种图鉴</small><h2>{breed.name}</h2><span>{breed.knowledgeImage ? "完整科普图 · 可缩放查看" : "科普内容即将更新"}</span></header>
+            <div className={breed.knowledgeImage ? "knowledge-full-image" : "knowledge-placeholder"}>
+              <SmartImage src={knowledgeThumb} highres={breed.knowledgeImage || breed.image} alt={`${breed.name}品种科普图`} />
+              {!breed.knowledgeImage && <div><b>BREED NOTE</b><p>科普图与缩略图位置已经准备好<br />图片提供后即可按品种独立展示</p></div>}
+            </div>
+          </section>
+        </div>
+      )}
       </>
       ) : (
         <section className="detail-progressive">
