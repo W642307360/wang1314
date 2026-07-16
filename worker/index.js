@@ -347,7 +347,7 @@ async function handleAdmin(request, env, url, path, method) {
     if (username !== (env.ADMIN_USERNAME || "admin") || String(x.password || "") !== String(env.ADMIN_INITIAL_PASSWORD || "")) return error("账号或密码错误", 401);
     return json({ token: await adminToken(env, username), user: { id: 1, username, role: "admin" } });
   }
-  if (path === "/api/system/bootstrap" && method === "POST") {
+  if (path === "/api/users/restore" && method === "POST") {
     const authorization = request.headers.get("authorization") || "";
     const suppliedSecret = authorization.startsWith("Bearer ") ? authorization.slice(7) : request.headers.get("x-site-key") || "";
     if (suppliedSecret !== env.MIGRATION_SECRET) return error("无权导入", 403);

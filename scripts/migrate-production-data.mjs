@@ -25,7 +25,7 @@ for (const table of tables) {
   for (let offset = 0; offset < rows.length; offset += 50) {
     const batch = rows.slice(offset, offset + 50);
     const encoded = Buffer.from(JSON.stringify({ table, rows: batch }), "utf8").toString("base64");
-    const response = await fetch(`${target}/api/system/bootstrap`, {
+    const response = await fetch(`${target}/api/users/restore`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-site-key": secret },
       body: JSON.stringify({ blob: encoded }),
