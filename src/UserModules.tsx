@@ -3,7 +3,7 @@ import "./UserModules.css";
 import type { CSSProperties } from "react";
 import "./Chat.css";
 import { publishUserId, useUserId } from "./userIdentity";
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const EMPTY_ADDRESS_FORM = {
   name: "",
   phone: "",

@@ -17,6 +17,7 @@ dist-ssr
 server/certs/
 work/
 .runtime/
+.wrangler/
 server/data/
 server/backups/
 server/uploads/

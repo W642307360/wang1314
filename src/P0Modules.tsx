@@ -40,7 +40,7 @@ type ChatMessage = {
   created_at?: string;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
 const displayMedia = (url?: string) =>

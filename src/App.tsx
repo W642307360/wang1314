@@ -94,7 +94,7 @@ type ApiPet = {
 };
 const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const originMapPoint = (origin = "") => {
   const points: Array<[string[], number, number]> = [
     [["中国", "日本", "泰国", "缅甸", "新加坡", "东南亚", "亚洲"], 246, 62],

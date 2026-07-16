@@ -3,7 +3,7 @@ import { halls } from "./catalog";
 import "./Admin.css";
 import "./AdminLogin.css";
 import "./Feishu.css";
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const adminMediaUrl = (url?: string) =>
   url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
     ? `${API_BASE}/api/media/feishu?variant=thumb&url=${encodeURIComponent(url)}`
