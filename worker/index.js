@@ -347,7 +347,7 @@ async function handleAdmin(request, env, url, path, method) {
     if (username !== (env.ADMIN_USERNAME || "admin") || String(x.password || "") !== String(env.ADMIN_INITIAL_PASSWORD || "")) return error("账号或密码错误", 401);
     return json({ token: await adminToken(env, username), user: { id: 1, username, role: "admin" } });
   }
-  if (path === "/api/users/restore" && method === "POST") {
+  if (path === "/api/admin/data-sync" && method === "POST") {
     const authorization = request.headers.get("authorization") || "";
     const suppliedSecret = authorization.startsWith("Bearer ") ? authorization.slice(7) : request.headers.get("x-site-key") || "";
     if (suppliedSecret !== env.MIGRATION_SECRET) return error("无权导入", 403);
@@ -449,7 +449,7 @@ export default {
     const url = new URL(request.url), path = url.pathname, method = request.method.toUpperCase();
     try {
       let response = await handleMedia(request, env, url, path, method);
-      if (!response && (path.startsWith("/api/admin/") || path === "/api/users/restore")) response = await handleAdmin(request, env, url, path, method);
+      if (!response && path.startsWith("/api/admin/")) response = await handleAdmin(request, env, url, path, method);
       if (!response) response = await handlePublic(request, env, url, path, method);
       if (!response) response = await handleCommerce(request, env, url, path, method);
       if (!response && path.startsWith("/api/")) response = error("接口不存在", 404);
