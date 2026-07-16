@@ -25,9 +25,9 @@ for (const table of tables) {
   for (let offset = 0; offset < rows.length; offset += 50) {
     const batch = rows.slice(offset, offset + 50);
     const encoded = Buffer.from(JSON.stringify({ table, rows: batch }), "utf8").toString("base64");
-    const response = await fetch(`${target}/api/admin/import`, {
+    const response = await fetch(`${target}/api/system/bootstrap`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+      headers: { "content-type": "application/json", "x-site-key": secret },
       body: JSON.stringify({ blob: encoded }),
     });
     if (!response.ok) throw new Error(`${table} import failed: ${response.status} ${await response.text()}`);
