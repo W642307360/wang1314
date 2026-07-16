@@ -1,9 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const target = process.env.TARGET_URL?.replace(/\/$/, "");
 const secret = process.env.MIGRATION_SECRET;
 const dbPath = process.env.DB_PATH || "server/data/fuchong.db";
+const exportDir = process.env.EXPORT_DIR;
 if (!target || !secret) throw new Error("TARGET_URL and MIGRATION_SECRET are required");
+if (exportDir) mkdirSync(exportDir, { recursive: true });
 
 const db = new DatabaseSync(dbPath, { readOnly: true });
 const tables = [
@@ -22,9 +26,15 @@ for (const table of tables) {
   const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
   if (!exists) continue;
   const rows = db.prepare(`SELECT * FROM ${table} ORDER BY id`).all();
-  for (let offset = 0; offset < rows.length; offset += 50) {
-    const batch = rows.slice(offset, offset + 50);
+  for (let offset = 0; offset < rows.length; offset += 100) {
+    const batch = rows.slice(offset, offset + 100);
     const encoded = Buffer.from(JSON.stringify({ table, rows: batch }), "utf8").toString("base64");
+    if (exportDir) {
+      const filename = `${String(total).padStart(6, "0")}-${table}.json`;
+      writeFileSync(join(exportDir, filename), JSON.stringify({ blob: encoded }));
+      total += batch.length;
+      continue;
+    }
     const response = await fetch(`${target}/api/admin/data-sync`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-site-key": secret },
