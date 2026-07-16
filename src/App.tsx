@@ -19,6 +19,7 @@ import "./Stability.css";
 import "./ProductDetail.css";
 import "./ReviewKnowledge.css";
 import "./Charity.css";
+import "./MoreHall.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
@@ -429,10 +430,7 @@ function Home({
     <>
       <header>
         <div className="brand">
-          <span className="brand-logo" aria-hidden="true">
-            <i />
-            <b />
-          </span>
+          <img className="brand-logo" src="/assets/fuchong-logo.webp" alt="" aria-hidden="true" />
           <h1>福宠</h1>
         </div>
         <button className="search" onClick={() => go("search")}>
@@ -617,6 +615,216 @@ function SearchPage({
               <p>换个名称试试看</p>
             </div>
           )}
+        </>
+      )}
+    </div>
+  );
+}
+
+type MoreSectionKey = "application" | "archive" | "adoption" | "charity";
+
+const morePortalCards: Array<{
+  key: MoreSectionKey;
+  icon: string;
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  badge: string;
+  image: string;
+  tone: string;
+}> = [
+  {
+    key: "application",
+    icon: "✦",
+    eyebrow: "BREED CO-CREATION",
+    title: "新品种申请",
+    subtitle: "让值得被了解的新伙伴，拥有一份严谨、真实的公开档案。",
+    badge: "开放申请",
+    image: "/assets/catalog/savannah.webp",
+    tone: "amber",
+  },
+  {
+    key: "archive",
+    icon: "◇",
+    eyebrow: "RARE LIFE ARCHIVE",
+    title: "稀有宠物档案",
+    subtitle: "不猎奇、不跟风，从栖息环境到照护边界认真记录。",
+    badge: "36 份档案",
+    image: "/assets/catalog/artificial-peacock.webp",
+    tone: "indigo",
+  },
+  {
+    key: "adoption",
+    icon: "♡",
+    eyebrow: "SECOND HOME",
+    title: "领养专区",
+    subtitle: "不是免费获得，而是为一段生命关系重新找到合适的家。",
+    badge: "等待相遇",
+    image: "/assets/catalog/chinese-lihua.webp",
+    tone: "sage",
+  },
+  {
+    key: "charity",
+    icon: "∞",
+    eyebrow: "FUCHONG FOR GOOD",
+    title: "公益活动",
+    subtitle: "救助、绝育、医疗和回访，让每一份善意都可追踪。",
+    badge: "透明公益",
+    image: "/assets/catalog/lop-rabbit.webp",
+    tone: "rose",
+  },
+];
+
+function MoreHall({ go }: { go: (page: Page) => void }) {
+  const [active, setActive] = useState<MoreSectionKey | null>(null);
+  const [breedName, setBreedName] = useState("");
+  const [contact, setContact] = useState("");
+  const [applicationSent, setApplicationSent] = useState(false);
+  const activeCard = morePortalCards.find((card) => card.key === active);
+  const back = () => {
+    if (active) {
+      setActive(null);
+      scrollTo(0, 0);
+    } else go("home");
+  };
+
+  if (!active || !activeCard) {
+    return (
+      <div className="more-hall-page">
+        <div className="subhead more-subhead">
+          <Back onClick={back} />
+          <div><small>LIFE CO-CREATION</small><h2>更多馆</h2></div>
+          <span className="more-subhead-mark">∞</span>
+        </div>
+        <section className="more-hero">
+          <div className="more-orbit" aria-hidden="true"><i>✦</i><i>♡</i><i>◇</i></div>
+          <small>福宠生命共创馆</small>
+          <h1>让相遇之外的<br />每一件事，也值得认真</h1>
+          <p>从新品种建档、稀有生命科普，到负责任领养与透明公益。</p>
+          <div className="more-hero-metrics">
+            <span><b>175+</b><small>品种资料</small></span>
+            <span><b>36</b><small>稀有档案</small></span>
+            <span><b>1,129</b><small>成功领养</small></span>
+          </div>
+        </section>
+        <div className="more-section-heading">
+          <div><small>EXPLORE THE POSSIBILITIES</small><h2>选择你想参与的方向</h2></div>
+          <span>04</span>
+        </div>
+        <section className="more-portal-grid">
+          {morePortalCards.map((card, index) => (
+            <button
+              key={card.key}
+              className={`more-portal-card tone-${card.tone}`}
+              onClick={() => { setActive(card.key); scrollTo(0, 0); }}
+            >
+              <div className="more-card-image"><SmartImage src={card.image} alt={card.title} /></div>
+              <div className="more-card-content">
+                <header><i>{card.icon}</i><span>{card.badge}</span></header>
+                <small>{card.eyebrow}</small>
+                <h3>{card.title}</h3>
+                <p>{card.subtitle}</p>
+                <b>进入模块 <em>↗</em></b>
+              </div>
+              <strong>{String(index + 1).padStart(2, "0")}</strong>
+            </button>
+          ))}
+        </section>
+        <section className="more-promise-strip">
+          <span>不制造稀缺</span><i>·</i><span>不冲动领养</span><i>·</i><span>每一笔公益可查</span>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`more-detail-page tone-${activeCard.tone}`}>
+      <div className="subhead more-subhead">
+        <Back onClick={back} />
+        <div><small>{activeCard.eyebrow}</small><h2>{activeCard.title}</h2></div>
+        <span className="more-subhead-mark">{activeCard.icon}</span>
+      </div>
+      <section className="more-detail-hero">
+        <SmartImage src={activeCard.image} alt={activeCard.title} />
+        <div><span>{activeCard.badge}</span><h1>{activeCard.title}</h1><p>{activeCard.subtitle}</p></div>
+      </section>
+
+      {active === "application" && (
+        <>
+          <section className="more-story-card application-intro">
+            <small>HOW IT WORKS</small><h2>一份新档案，要经过三次认真确认</h2>
+            <div className="more-step-line">
+              <span><b>01</b><em>提交线索</em><small>名称、来源与真实影像</small></span>
+              <span><b>02</b><em>专家复核</em><small>物种、资质与照护要求</small></span>
+              <span><b>03</b><em>公开建档</em><small>科普内容与风险提示</small></span>
+            </div>
+          </section>
+          <form className="breed-application-form" onSubmit={(event: FormEvent) => { event.preventDefault(); setApplicationSent(true); }}>
+            <header><div><small>BREED APPLICATION</small><h2>新品种资料申请</h2></div><i>✦</i></header>
+            {applicationSent ? (
+              <div className="application-success"><b>✓</b><h3>申请线索已收录</h3><p>我们会先核对“{breedName || "该品种"}”的公开资料，审核进度将通过你留下的联系方式反馈。</p><button type="button" onClick={() => setApplicationSent(false)}>继续补充资料</button></div>
+            ) : (
+              <>
+                <label>申请品种名称<input required value={breedName} onChange={(e) => setBreedName(e.target.value)} placeholder="例如：某稀有猫种 / 鸟类 / 水族" /></label>
+                <label>来源与资料说明<textarea required placeholder="请说明品种来源、生活环境、照护难点，以及是否具备合法来源证明。" /></label>
+                <label>联系方式<input required value={contact} onChange={(e) => setContact(e.target.value)} placeholder="手机号或微信号，仅用于审核沟通" /></label>
+                <div className="application-checks"><span>✓ 不接受野生捕捉</span><span>✓ 不制造稀缺炒作</span><span>✓ 资料需真实可核验</span></div>
+                <button className="more-primary-action" type="submit">提交品种线索 <b>↗</b></button>
+              </>
+            )}
+          </form>
+        </>
+      )}
+
+      {active === "archive" && (
+        <>
+          <section className="rare-feature-card">
+            <div className="rare-feature-copy"><small>本周档案 · NO.036</small><h2>萨凡纳猫</h2><p>兼具野性外形与家猫行为，需要更大的活动空间、稳定互动和清晰的来源证明。</p><div><span>大型猫</span><span>高活动量</span><span>需专业评估</span></div></div>
+            <SmartImage src="/assets/catalog/savannah.webp" alt="萨凡纳猫稀有宠物档案" />
+          </section>
+          <section className="archive-index">
+            <header><div><small>ARCHIVE INDEX</small><h2>从“稀有”回到“适合”</h2></div><span>持续更新</span></header>
+            {[
+              ["A-12", "守宫与鬃狮蜥", "环境温区 · 光照 · 合法来源", "爬宠"],
+              ["B-07", "蜜袋鼯与龙猫", "群居需求 · 夜行习性 · 饮食边界", "小宠"],
+              ["C-09", "海马与异型鱼", "水体系统 · 混养风险 · 日常观察", "水族"],
+            ].map(([no, title, text, tag]) => <article key={no}><b>{no}</b><div><h3>{title}</h3><p>{text}</p></div><span>{tag}</span></article>)}
+          </section>
+          <section className="more-note-card"><i>!</i><div><h3>档案不是购买建议</h3><p>稀有物种可能受到地区法规、检疫要求和饲养资质限制，请先确认合法性与长期照护能力。</p></div></section>
+        </>
+      )}
+
+      {active === "adoption" && (
+        <>
+          <section className="adoption-manifesto"><small>ADOPT, DON'T SHOP BLINDLY</small><h2>先确认彼此合适，<br />再决定一起生活。</h2><p>所有领养档案需完成健康检查、性格观察和原主人/救助机构回访。</p></section>
+          <section className="adoption-list">
+            {[
+              ["小满", "2岁 · 已绝育 · 亲人", "/assets/catalog/chinese-lihua.webp", "上海"],
+              ["奶糖", "1岁 · 已免疫 · 慢热", "/assets/catalog/lop-rabbit.webp", "杭州"],
+              ["阿福", "3岁 · 已驱虫 · 稳定", "/assets/catalog/corgi.webp", "苏州"],
+            ].map(([name, meta, image, city]) => <article key={name}><SmartImage src={image} alt={`${name}领养档案`} /><div><span>{city} · 审核中</span><h3>{name}</h3><p>{meta}</p><b>查看领养条件 →</b></div></article>)}
+          </section>
+          <section className="adoption-process"><h2>负责任领养路径</h2><div><span><b>01</b>填写问卷</span><span><b>02</b>视频家访</span><span><b>03</b>双向匹配</span><span><b>04</b>30天回访</span></div></section>
+        </>
+      )}
+
+      {active === "charity" && (
+        <>
+          <section className="charity-ledger-card">
+            <header><div><small>PUBLIC WELFARE LEDGER</small><h2>本月公益进度</h2></div><b>07月</b></header>
+            <div className="charity-big-number"><span>累计投入</span><strong>¥ 186,420</strong><small>每笔去向均留存机构回执</small></div>
+            {[
+              ["流浪动物医疗援助", "78%", "78"],
+              ["社区绝育计划", "64%", "64"],
+              ["领养回访交通基金", "41%", "41"],
+            ].map(([name, label, value]) => <div className="charity-progress" key={name}><p><span>{name}</span><b>{label}</b></p><i><em style={{ width: `${value}%` }} /></i></div>)}
+          </section>
+          <section className="charity-action-grid">
+            <article><i>医</i><small>正在进行</small><h3>小动物紧急医疗池</h3><p>为合作救助机构提供检查、手术与恢复期支持。</p><b>已帮助 128 只</b></article>
+            <article><i>家</i><small>城市行动</small><h3>周末领养开放日</h3><p>现场科普、行为评估与领养家庭面对面沟通。</p><b>本月 6 场</b></article>
+          </section>
+          <button className="more-primary-action charity-action" onClick={() => go("charity")}>查看完整公益公示 <b>↗</b></button>
+          <section className="more-promise-strip"><span>机构可核验</span><i>·</i><span>票据可追溯</span><i>·</i><span>进度持续更新</span></section>
         </>
       )}
     </div>
@@ -2434,7 +2642,9 @@ export default function App() {
         <SearchPage go={go} openBreed={openBreed} openPet={openPet} />
       )}
       {page === "hall" && (
-        <Hall go={go} hallKey={hallKey} openBreed={openBreed} />
+        hallKey === "more"
+          ? <MoreHall go={go} />
+          : <Hall go={go} hallKey={hallKey} openBreed={openBreed} />
       )}{" "}
       {page === "breed" && <Breed go={go} breed={breed} openPet={openPet} />}{" "}
       {page === "detail" && (

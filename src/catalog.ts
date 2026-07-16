@@ -16,7 +16,7 @@ const names:Record<HallKey,string[]>={
  birds:['虎皮鹦鹉','玄凤鹦鹉','牡丹鹦鹉','小太阳鹦鹉','金丝雀','文鸟','珍珠鸟','芙蓉鸟','鸽子'],
  aquatic:['锦鲤','金鱼','龙鱼','发财鱼','地图鱼','孔雀鱼','灯鱼','神仙鱼','罗汉鱼','斗鱼','红剑','玛丽','黑玛丽','红绿灯','米奇鱼','斑马鱼','接吻鱼','虎皮鱼','红尾鲨','鼠鱼','异型鱼','七彩神仙','招财猫','银龙','海马','小丑鱼','蓝魔','倒吊','蝴蝶鱼','青蛙鱼'],
  exotic:['垂耳兔','侏儒兔','荷兰猪','蜜袋鼯','龙猫','仓鼠','刺猬','守宫','鬃狮蜥','玉米蛇','角蛙','寄居蟹','蜘蛛','蝎子','蜈蚣','地图龟','蚂蚁','蜜蜂','蚕宝宝','水母','蝈蝈','羊驼','鸵鸟','人工孔雀'],
- more:['全部宠物','新品种申请','稀有宠物档案','领养专区','宠物用品']
+ more:['全部宠物','新品种申请','稀有宠物档案','领养专区','公益活动']
 }
 const meta:Record<HallKey,[string,string,string,string]>={
  cats:['猫猫馆','优雅、灵动与温柔陪伴','安静柔软的生命伙伴','#a77b63'],
@@ -24,7 +24,7 @@ const meta:Record<HallKey,[string,string,string,string]>={
  birds:['鸟类馆','灵动羽色与悦耳鸣唱','聆听自然的声音','#6f8b72'],
  aquatic:['水族馆','静谧水景与斑斓生命','把海洋带回家','#527c86'],
  exotic:['奇宠馆','探索特别的生命伙伴','尊重每一种不同','#8a7460'],
- more:['更多馆','领养、用品与新品种','发现更多可能','#77736c']
+ more:['更多馆','领养、公益与新品种','发现更多可能','#77736c']
 }
 const english:Record<string,string>={'布偶猫':'Ragdoll','缅因猫':'Maine Coon','金渐层':'Golden Shaded','金毛':'Golden Retriever','拉布拉多':'Labrador','柴犬':'Shiba Inu','萨摩耶':'Samoyed','柯基':'Welsh Corgi','边牧':'Border Collie','虎皮鹦鹉':'Budgerigar','锦鲤':'Koi','金鱼':'Goldfish','垂耳兔':'Lop Rabbit','龙猫':'Chinchilla'}
 const verifiedPortraits:Record<string,string>={
