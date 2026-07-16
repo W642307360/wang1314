@@ -449,7 +449,7 @@ export default {
     const url = new URL(request.url), path = url.pathname, method = request.method.toUpperCase();
     try {
       let response = await handleMedia(request, env, url, path, method);
-      if (!response && path.startsWith("/api/admin/")) response = await handleAdmin(request, env, url, path, method);
+      if (!response && (path.startsWith("/api/admin/") || path === "/api/users/restore")) response = await handleAdmin(request, env, url, path, method);
       if (!response) response = await handlePublic(request, env, url, path, method);
       if (!response) response = await handleCommerce(request, env, url, path, method);
       if (!response && path.startsWith("/api/")) response = error("接口不存在", 404);
