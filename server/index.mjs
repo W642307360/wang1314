@@ -1683,6 +1683,20 @@ const server = createServer(async (req, res) => {
            ORDER BY p.id DESC LIMIT 200`,
         ),
       );
+    if (path === "/api/pets/breed-counts" && method === "GET")
+      return json(
+        res,
+        200,
+        rows(
+          `SELECT p.breed,COUNT(DISTINCT p.id) AS count
+           FROM pets p
+           LEFT JOIN pet_products pp ON pp.pet_id=p.id
+           WHERE p.status='published'
+             AND COALESCE(pp.status,'available')='available'
+           GROUP BY p.breed
+           ORDER BY p.breed`,
+        ),
+      );
     if (path === "/api/pets" && method === "GET") {
       const search = String(url.searchParams.get("q") || "").trim();
       const q = `%${search}%`;

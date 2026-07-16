@@ -637,13 +637,13 @@ function Hall({
   const [breedCounts, setBreedCounts] = useState<Record<string, number>>({});
   useEffect(() => {
     let active = true;
-    fetch(`${API_BASE}/api/pets?page=1&pageSize=100`)
+    fetch(`${API_BASE}/api/pets/breed-counts`)
       .then((response) => response.ok ? response.json() : [])
       .then((items) => {
         if (!active || !Array.isArray(items)) return;
         const counts = items.reduce((result: Record<string, number>, item: ApiPet) => {
           const key = String(item.breed || "").trim().replace(/[猫犬]$/, "");
-          result[key] = (result[key] || 0) + 1;
+          result[key] = (result[key] || 0) + Number((item as ApiPet & { count?: number }).count || 0);
           return result;
         }, {});
         setBreedCounts(counts);
