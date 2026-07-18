@@ -564,7 +564,7 @@ const mergeGuestData = (previousUserId, targetUserId) => {
     db.prepare("DELETE FROM cart_items WHERE user_id=?").run(previous.id);
     for (const table of [
       "footprints", "addresses", "orders", "messages", "user_coupons",
-      "customer_service_sessions", "seller_reports", "after_sales", "complaints",
+      "customer_service_sessions", "seller_reports", "community_applications", "after_sales", "complaints",
       "product_reviews", "seller_reviews",
     ])
       db.prepare(`UPDATE ${table} SET user_id=? WHERE user_id=?`).run(targetUserId, previous.id);
@@ -1667,6 +1667,9 @@ const server = createServer(async (req, res) => {
           pending_complaints: scalar(
             "SELECT COUNT(*) AS value FROM complaints WHERE status<>'completed'",
           ),
+          pending_community_applications: scalar(
+            "SELECT COUNT(*) AS value FROM community_applications WHERE status IN ('pending','processing')",
+          ),
           sync_errors: scalar("SELECT COUNT(*) AS value FROM sync_task_errors"),
         },
       });
@@ -1719,7 +1722,7 @@ const server = createServer(async (req, res) => {
           res,
           200,
           rows(
-            `${baseSelect} WHERE p.status=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            `${baseSelect} WHERE p.status=? AND COALESCE(pp.status,'available')='available' ORDER BY p.id DESC LIMIT ? OFFSET ?`,
             status,
             pageSize,
             offset,
@@ -1733,7 +1736,7 @@ const server = createServer(async (req, res) => {
           res,
           200,
           rows(
-            `${baseSelect} WHERE p.status=? AND p.breed=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            `${baseSelect} WHERE p.status=? AND COALESCE(pp.status,'available')='available' AND p.breed=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
             status,
             search,
             pageSize,
@@ -1748,7 +1751,7 @@ const server = createServer(async (req, res) => {
           res,
           200,
           rows(
-            `${baseSelect} WHERE p.status=? AND p.category_id=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
+            `${baseSelect} WHERE p.status=? AND COALESCE(pp.status,'available')='available' AND p.category_id=? ORDER BY p.id DESC LIMIT ? OFFSET ?`,
             status,
             exactCategory.id,
             pageSize,
@@ -1760,7 +1763,7 @@ const server = createServer(async (req, res) => {
         200,
         rows(
           `${baseSelect}
-           WHERE p.status=?
+           WHERE p.status=? AND COALESCE(pp.status,'available')='available'
              AND (p.name LIKE ? OR p.breed LIKE ? OR p.description LIKE ? OR c.name LIKE ?)
            ORDER BY p.id DESC
            LIMIT ? OFFSET ?`,
@@ -1831,6 +1834,66 @@ const server = createServer(async (req, res) => {
           "SELECT * FROM categories WHERE status='active' ORDER BY sort_order,id",
         ),
       );
+    if (path === "/api/community-applications" && method === "POST") {
+      const d = await body(req);
+      const applicationType = String(d.application_type || "").trim();
+      if (!["breed", "adoption", "charity"].includes(applicationType))
+        return json(res, 400, { message: "申请类型不合法" });
+      const subject = String(d.subject || "").trim().slice(0, 80);
+      const applicantName = String(d.applicant_name || "").trim().slice(0, 40);
+      const contact = String(d.contact || "").trim().slice(0, 80);
+      const details = String(d.details || "").trim().slice(0, 2000);
+      if (subject.length < 2 || applicantName.length < 2)
+        return json(res, 400, { message: "请填写完整的申请主题和姓名" });
+      if (contact.length < 5)
+        return json(res, 400, { message: "请填写可联系到您的手机号或微信号" });
+      if (details.length < 10)
+        return json(res, 400, { message: "申请说明至少需要10个字" });
+      const userId = db.prepare("SELECT id FROM users WHERE id=?").get(Number(d.user_id))?.id || null;
+      const duplicate = db.prepare(
+        `SELECT id,application_no,status FROM community_applications
+         WHERE application_type=? AND subject=? AND contact=?
+           AND datetime(created_at)>=datetime('now','-2 minutes')
+         ORDER BY id DESC LIMIT 1`,
+      ).get(applicationType, subject, contact);
+      if (duplicate)
+        return json(res, 200, { ...duplicate, message: "申请已经收到，请勿重复提交" });
+      const applicationNo = `FC${new Date().toISOString().slice(0, 10).replaceAll("-", "")}${randomBytes(4).toString("hex").toUpperCase()}`;
+      const created = db.prepare(
+        `INSERT INTO community_applications(
+           application_no,user_id,application_type,subject,applicant_name,contact,city,
+           details,availability,experience,metadata_json,status
+         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending')`,
+      ).run(
+        applicationNo,
+        userId,
+        applicationType,
+        subject,
+        applicantName,
+        contact,
+        String(d.city || "").trim().slice(0, 60) || null,
+        details,
+        String(d.availability || "").trim().slice(0, 200) || null,
+        String(d.experience || "").trim().slice(0, 1000) || null,
+        JSON.stringify(d.metadata && typeof d.metadata === "object" ? d.metadata : {}),
+      );
+      return json(res, 201, {
+        id: Number(created.lastInsertRowid),
+        application_no: applicationNo,
+        status: "pending",
+        message: "申请已提交，运营团队会在后台跟进",
+      });
+    }
+    if (path === "/api/community-applications" && method === "GET") {
+      const userId = Number(url.searchParams.get("user_id"));
+      if (!Number.isInteger(userId) || userId <= 0)
+        return json(res, 400, { message: "用户信息无效" });
+      return json(res, 200, rows(
+        `SELECT id,application_no,application_type,subject,status,admin_reply,created_at,updated_at
+         FROM community_applications WHERE user_id=? ORDER BY id DESC LIMIT 100`,
+        userId,
+      ));
+    }
     const sellerReportRoute = path.match(/^\/api\/sellers\/(\d+)\/reports$/);
     if (sellerReportRoute && method === "POST") {
       const sellerId = Number(sellerReportRoute[1]);
@@ -1874,24 +1937,42 @@ const server = createServer(async (req, res) => {
         ),
       });
     }
-    if (path === "/api/admin/pets" && method === "GET")
+    if (path === "/api/admin/pets" && method === "GET") {
+      const paging = pageParams(url, { pageSize: 100, max: 500 });
+      const search = String(url.searchParams.get("q") || "").trim();
+      const status = String(url.searchParams.get("status") || "").trim();
+      const query = `%${search}%`;
       return json(
         res,
         200,
         rows(
-          `SELECT p.*,
-                  (SELECT pi.url FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1) AS image,
+          `SELECT p.*,pp.status AS product_status,
+                  COALESCE((SELECT SUM(i.total_stock) FROM inventory i WHERE i.pet_id=p.id),0) AS total_stock,
+                  COALESCE((SELECT SUM(i.available_stock) FROM inventory i WHERE i.pet_id=p.id),0) AS available_stock,
+                  COALESCE(p.thumbnail_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) AS image,
                   (SELECT COUNT(*) FROM pet_images pi WHERE pi.pet_id=p.id) AS image_count,
                   (SELECT COUNT(*) FROM pet_videos pv WHERE pv.pet_id=p.id) AS video_count
-           FROM pets p
+           FROM pets p LEFT JOIN pet_products pp ON pp.pet_id=p.id
            WHERE p.name NOT LIKE '%验收%'
              AND p.name NOT LIKE 'P0%'
              AND (p.external_id IS NULL OR p.external_id NOT LIKE 'mock-%')
-           ORDER BY p.id DESC LIMIT ? OFFSET ?`,
-          pageParams(url, { pageSize: 50, max: 500 }).pageSize,
-          pageParams(url, { pageSize: 50, max: 500 }).offset,
+             AND (?='' OR p.status=?)
+             AND (?='' OR CAST(p.id AS TEXT)=? OR p.name LIKE ? OR p.breed LIKE ? OR COALESCE(p.seller_name,'') LIKE ? OR COALESCE(p.business_id,'') LIKE ? OR COALESCE(p.external_id,'') LIKE ?)
+           ORDER BY p.updated_at DESC,p.id DESC LIMIT ? OFFSET ?`,
+          status,
+          status,
+          search,
+          search,
+          query,
+          query,
+          query,
+          query,
+          query,
+          paging.pageSize,
+          paging.offset,
         ),
       );
+    }
     if (path === "/api/admin/pets/bulk-status" && method === "PATCH") {
       const d = await body(req);
       const status = String(d.status || "");
@@ -1905,13 +1986,14 @@ const server = createServer(async (req, res) => {
       db.exec("BEGIN IMMEDIATE");
       try {
         let result;
+        const productStatus = status === "published" ? "available" : status === "sold" ? "sold" : "offline";
         if (d.scope === "all") {
           result = db
             .prepare("UPDATE pets SET status=?,updated_at=CURRENT_TIMESTAMP WHERE status<>'deleted'")
             .run(status);
           db.prepare(
             "UPDATE pet_products SET status=?,updated_at=CURRENT_TIMESTAMP WHERE pet_id IN (SELECT id FROM pets WHERE status<>'deleted')",
-          ).run(status);
+          ).run(productStatus);
         } else {
           const placeholders = ids.map(() => "?").join(",");
           result = db
@@ -1919,7 +2001,7 @@ const server = createServer(async (req, res) => {
             .run(status, ...ids);
           db.prepare(
             `UPDATE pet_products SET status=?,updated_at=CURRENT_TIMESTAMP WHERE pet_id IN (${placeholders})`,
-          ).run(status, ...ids);
+          ).run(productStatus, ...ids);
         }
         db.exec("COMMIT");
         logAdmin(admin, req, "bulk_status", "pets", null, {
@@ -1928,7 +2010,7 @@ const server = createServer(async (req, res) => {
           ids: d.scope === "all" ? undefined : ids,
           changed: Number(result.changes || 0),
         });
-        return json(res, 200, { ok: true, status, changed: Number(result.changes || 0) });
+        return json(res, 200, { ok: true, status, product_status: productStatus, changed: Number(result.changes || 0) });
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
@@ -1936,11 +2018,11 @@ const server = createServer(async (req, res) => {
     }
     if (path === "/api/admin/pets" && method === "POST") {
       const d = await body(req);
-      const r = db
-        .prepare(
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const r = db.prepare(
           `INSERT INTO pets(name,category_id,breed,gender,age_months,color,body_type,personality,health_status,vaccine_record,father_info,mother_info,description,price,seller_name,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
+        ).run(
           d.name,
           d.category_id,
           d.breed,
@@ -1958,14 +2040,22 @@ const server = createServer(async (req, res) => {
           d.seller_name ?? null,
           d.status || "draft",
         );
-      db.prepare(
-        "INSERT OR IGNORE INTO inventory(pet_id,total_stock,available_stock) VALUES(?,?,?)",
-      ).run(r.lastInsertRowid, Number(d.stock || 1), Number(d.stock || 1));
-      logAdmin(admin, req, "create", "pets", r.lastInsertRowid, {
-        name: d.name,
-        breed: d.breed,
-      });
-      return json(res, 201, petDetail(r.lastInsertRowid));
+        const petId = Number(r.lastInsertRowid);
+        const petStatus = d.status || "draft";
+        db.prepare(
+          "INSERT INTO pet_products(pet_id,breed_id,seller_id,product_name,status) VALUES(?,?,?,?,?)",
+        ).run(petId, d.breed_id ?? null, d.seller_id ?? null, d.name, petStatus === "published" ? "available" : petStatus === "sold" ? "sold" : "offline");
+        const stock = Math.max(0, Number(d.stock ?? 1));
+        db.prepare(
+          "INSERT INTO inventory(pet_id,total_stock,available_stock) VALUES(?,?,?)",
+        ).run(petId, stock, stock);
+        db.exec("COMMIT");
+        logAdmin(admin, req, "create", "pets", petId, { name: d.name, breed: d.breed });
+        return json(res, 201, petDetail(petId));
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
     const petMatch = path.match(/^\/api\/admin\/pets\/(\d+)$/);
     if (petMatch && method === "GET")
@@ -2107,6 +2197,40 @@ const server = createServer(async (req, res) => {
         url: `${process.env.PUBLIC_API_BASE || `http://${req.headers.host || "127.0.0.1:3001"}`}/uploads/${safe}`,
         type: d.type || "file",
       });
+    }
+    if (path === "/api/admin/community-applications" && method === "GET")
+      return json(res, 200, rows(
+        `SELECT ca.*,u.nickname AS user_nickname,u.phone AS user_phone
+         FROM community_applications ca
+         LEFT JOIN users u ON u.id=ca.user_id
+         ORDER BY CASE ca.status WHEN 'pending' THEN 0 WHEN 'processing' THEN 1 WHEN 'approved' THEN 2 ELSE 3 END,
+                  ca.id DESC`,
+      ));
+    const communityApplicationAdmin = path.match(/^\/api\/admin\/community-applications\/(\d+)$/);
+    if (communityApplicationAdmin && method === "PATCH") {
+      const d = await body(req);
+      const status = ["pending", "processing", "approved", "rejected", "completed"].includes(d.status)
+        ? d.status
+        : "processing";
+      const result = db.prepare(
+        `UPDATE community_applications
+         SET status=?,admin_reply=?,assigned_admin_id=?,updated_at=CURRENT_TIMESTAMP
+         WHERE id=?`,
+      ).run(
+        status,
+        String(d.admin_reply || "").trim().slice(0, 1000) || null,
+        Number(admin.id || admin.sub),
+        Number(communityApplicationAdmin[1]),
+      );
+      if (!result.changes) return json(res, 404, { message: "申请记录不存在" });
+      logAdmin(admin, req, "resolve", "community_applications", Number(communityApplicationAdmin[1]), { status });
+      return json(res, 200, db.prepare("SELECT * FROM community_applications WHERE id=?").get(Number(communityApplicationAdmin[1])));
+    }
+    if (communityApplicationAdmin && method === "DELETE") {
+      const result = db.prepare("DELETE FROM community_applications WHERE id=?").run(Number(communityApplicationAdmin[1]));
+      if (!result.changes) return json(res, 404, { message: "申请记录不存在" });
+      logAdmin(admin, req, "delete", "community_applications", Number(communityApplicationAdmin[1]));
+      return json(res, 200, { ok: true });
     }
     if (path === "/api/admin/complaints")
       return json(res, 200, rows("SELECT * FROM complaints ORDER BY id DESC"));
@@ -3226,6 +3350,66 @@ const server = createServer(async (req, res) => {
         .run(petId, d.url, d.cover_url, d.duration || 0);
       return json(res, 201, { id: r.lastInsertRowid });
     }
+    const markOrderPaidRoute = path.match(/^\/api\/admin\/orders\/(\d+)\/payment$/);
+    if (markOrderPaidRoute && method === "POST") {
+      const orderId = Number(markOrderPaidRoute[1]);
+      let transactionOpen = false;
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        transactionOpen = true;
+        const existing = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+        if (!existing) {
+          db.exec("ROLLBACK");
+          transactionOpen = false;
+          return json(res, 404, { message: "订单不存在" });
+        }
+        if (existing.payment_status === "paid") {
+          db.exec("COMMIT");
+          transactionOpen = false;
+          return json(res, 200, { ...existing, idempotent: true });
+        }
+        if (["cancelled", "completed", "after_sale"].includes(existing.status) || existing.payment_status === "refunded") {
+          db.exec("ROLLBACK");
+          transactionOpen = false;
+          return json(res, 409, { message: "当前订单状态不能确认付款" });
+        }
+        const paymentNo = `MANUAL${Date.now()}${orderId}`;
+        db.prepare(
+          "INSERT INTO payments(order_id,payment_no,channel,amount,status,paid_at,raw_payload) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?)",
+        ).run(
+          orderId,
+          paymentNo,
+          "admin_manual",
+          existing.total_amount,
+          "paid",
+          JSON.stringify({ operator: admin.username, source: "admin_payment_confirm" }),
+        );
+        const nextStatus = existing.status === "pending_payment" ? "pending_confirm" : existing.status;
+        db.prepare(
+          "UPDATE orders SET payment_status='paid',status=?,paid_at=COALESCE(paid_at,CURRENT_TIMESTAMP),updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(nextStatus, orderId);
+        if (nextStatus !== existing.status)
+          db.prepare(
+            "INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,?,?,?,?,?)",
+          ).run(orderId, existing.status, nextStatus, "admin", Number(admin.sub), "管理员核实到账，订单进入待确认");
+        const updated = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+        db.exec("COMMIT");
+        transactionOpen = false;
+        try {
+          logAdmin(admin, req, "mark_paid", "orders", orderId, { payment_no: paymentNo, from: existing.status, to: nextStatus });
+        } catch (auditError) {
+          console.error("付款确认已成功，但审计日志写入失败", auditError);
+        }
+        return json(res, 200, { ...updated, payment_no: paymentNo, idempotent: false });
+      } catch (error) {
+        if (transactionOpen) {
+          try { db.exec("ROLLBACK"); } catch {}
+        }
+        if (/busy|locked/i.test(String(error?.message || "")))
+          return json(res, 503, { message: "订单付款正在同步，请稍后重试", retryable: true });
+        throw error;
+      }
+    }
     const confirmOrderRoute = path.match(/^\/api\/admin\/orders\/(\d+)\/confirm$/);
     if (confirmOrderRoute && method === "POST") {
       const orderId = Number(confirmOrderRoute[1]);
@@ -3359,6 +3543,8 @@ const server = createServer(async (req, res) => {
       )
         return json(res, 409, { message: `订单不能从 ${existing.status} 直接变更为 ${d.status}` });
       const nextPaymentStatus = d.payment_status || existing.payment_status;
+      if (d.payment_status && !["unpaid", "paid", "refunded"].includes(d.payment_status))
+        return json(res, 400, { message: "支付状态不合法" });
       if (["pending_ship", "packed", "shipped", "in_transit", "delivering", "pending_receive", "completed"].includes(d.status) && nextPaymentStatus !== "paid")
         return json(res, 409, { message: "未付款订单不能进入发货或完成状态" });
       if (existing.payment_status === "paid" && d.payment_status === "unpaid")
@@ -3381,7 +3567,7 @@ const server = createServer(async (req, res) => {
         }
         db.prepare(
           "UPDATE orders SET status=COALESCE(?,status),payment_status=COALESCE(?,payment_status),paid_at=CASE WHEN ?='paid' THEN COALESCE(paid_at,CURRENT_TIMESTAMP) ELSE paid_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        ).run(d.status, d.payment_status, d.payment_status, orderId);
+        ).run(d.status ?? null, d.payment_status ?? null, d.payment_status ?? null, orderId);
         if (d.status && d.status !== existing.status)
           db.prepare(
             "INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,?,?,?,?,?)",
@@ -3393,7 +3579,7 @@ const server = createServer(async (req, res) => {
         throw e;
       }
       logAdmin(admin, req, "update", "orders", orderId, d);
-      return json(res, 200, { ok: true });
+      return json(res, 200, db.prepare("SELECT * FROM orders WHERE id=?").get(orderId));
     }
     const userRoute = path.match(/^\/api\/admin\/users\/(\d+)$/);
     if (userRoute && method === "GET") {

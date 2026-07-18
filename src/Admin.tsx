@@ -3,6 +3,8 @@ import { halls } from "./catalog";
 import "./Admin.css";
 import "./AdminLogin.css";
 import "./Feishu.css";
+import "./AdminCommunity.css";
+import { announceDataChange, subscribeDataChange } from "./dataEvents";
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const adminMediaUrl = (url?: string) =>
   url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
@@ -17,6 +19,7 @@ type AdminTab =
   | "transactions"
   | "logistics"
   | "afterSales"
+  | "other"
   | "reviews"
   | "content"
   | "feishu";
@@ -161,8 +164,10 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
-  useEffect(() => {
-    fetch(`${API_BASE}/api/admin/pets`, {
+  const loadProducts = useCallback(() => {
+    setProductsLoading(true);
+    setProductsError("");
+    fetch(`${API_BASE}/api/admin/pets?pageSize=500`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then(async (r) => {
@@ -173,6 +178,10 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
       .catch((e) => setProductsError(e instanceof Error ? e.message : "商品加载失败"))
       .finally(() => setProductsLoading(false));
   }, [token]);
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
+  useEffect(() => subscribeDataChange("products", loadProducts), [loadProducts]);
   const breeds = useMemo(
     () => halls.find((h) => h.key === form.hall)?.breeds || [],
     [form.hall],
@@ -324,6 +333,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
             ["transactions", "¥", "交易中心"],
             ["logistics", "⌖", "物流管理"],
             ["afterSales", "↻", "客诉售后"],
+            ["other", "✦", "其他申请"],
             ["reviews", "言", "评价内容"],
             ["content", "▤", "首页内容"],
             ["feishu", "云", "飞书同步"],
@@ -354,6 +364,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                   transactions: "交易中心",
                   logistics: "物流管理",
                   afterSales: "客诉与售后",
+                  other: "其他申请",
                   reviews: "评价内容",
                   content: "首页内容",
                   feishu: "飞书同步",
@@ -373,6 +384,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
               open={openNewProduct}
               edit={openEditProduct}
               token={token}
+              reload={loadProducts}
               update={(id, patch) =>
                 setProducts((v) =>
                   v.map((p) => (p.id === id ? { ...p, ...patch } : p)),
@@ -392,6 +404,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         {tab === "transactions" && <Transactions token={token} />}
         {tab === "logistics" && <Logistics token={token} />}
         {tab === "afterSales" && <AfterSales token={token} />}
+        {tab === "other" && <CommunityApplications token={token} />}
         {tab === "reviews" && <ReviewsManager token={token} products={products} />}
         {tab === "content" && <ContentManager token={token} />}
         {tab === "feishu" && <FeishuManager token={token} />}
@@ -653,6 +666,7 @@ function Products({
   remove,
   update,
   token,
+  reload,
 }: {
   products: any[];
   open: () => void;
@@ -660,21 +674,32 @@ function Products({
   remove: (id: number) => void;
   update: (id: number, patch: any) => void;
   token: string;
+  reload: () => void;
 }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [batching, setBatching] = useState(false);
   const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const headers = {
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
   };
   const patch = async (id: number, data: any) => {
-    const r = await fetch(`${API_BASE}/api/admin/pets/${id}`, {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify(data),
-    });
-    if (r.ok) update(id, data);
+    try {
+      const r = await fetch(`${API_BASE}/api/admin/pets/${id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify(data),
+      });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(result.message || "商品状态更新失败");
+      update(id, result);
+      setNotice(result.product_status === "available" ? "商品已上架，前台已同步显示。" : "商品已下架，用户端已同步更新。");
+      announceDataChange("products");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "商品状态更新失败");
+    }
   };
   const sku = async (p: any) => {
     const name = prompt("SKU 名称", "标准档案");
@@ -711,7 +736,9 @@ function Products({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message || "批量更新失败");
-      selected.forEach((id) => update(id, { status }));
+      const productStatus = result.product_status || (status === "published" ? "available" : "offline");
+      selected.forEach((id) => update(id, { status, product_status: productStatus }));
+      announceDataChange("products");
       setSelected([]);
       setNotice(`已更新 ${result.changed} 个商品。`);
     } catch (error) {
@@ -732,7 +759,8 @@ function Products({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message || "全部下架失败");
-      products.forEach((product) => update(product.id, { status: "offline" }));
+      products.forEach((product) => update(product.id, { status: "offline", product_status: "offline" }));
+      announceDataChange("products");
       setSelected([]);
       setNotice(`全部商品已下架，共处理 ${result.changed} 个商品。`);
     } catch (error) {
@@ -758,6 +786,16 @@ function Products({
       alert("JSON 格式错误");
     }
   };
+  const visibleProducts = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return products.filter((product) => {
+      const productStatus = product.product_status || (product.status === "published" ? "available" : "offline");
+      if (statusFilter !== "all" && productStatus !== statusFilter) return false;
+      if (!needle) return true;
+      return [product.id, product.name, product.breed, product.seller_name, product.business_id, product.external_id]
+        .some((value) => String(value || "").toLowerCase().includes(needle));
+    });
+  }, [products, query, statusFilter]);
   return (
     <section className="admin-table">
       <div>
@@ -769,6 +807,17 @@ function Products({
           <button className="danger" disabled={batching || !products.length} onClick={offlineAll}>{batching ? "处理中…" : "一键下架全部"}</button>{" "}
           <button onClick={open}>＋ 新增宠物</button>
         </span>
+      </div>
+      <div className="product-search-toolbar">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索商品名、品种、商家或商品 ID" />
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">全部状态</option>
+          <option value="available">前台在售</option>
+          <option value="offline">已下架</option>
+          <option value="sold">已售出</option>
+        </select>
+        <span>找到 {visibleProducts.length} / {products.length} 个商品</span>
+        <button onClick={reload}>刷新商品</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
       <table>
@@ -782,7 +831,7 @@ function Products({
           </tr>
         </thead>
         <tbody>
-          {products.map((p) => (
+          {visibleProducts.map((p) => (
             <tr key={p.id}>
               <td>
                 <input
@@ -805,7 +854,8 @@ function Products({
               <td>{p.breed}</td>
               <td>¥{p.price}</td>
               <td>
-                <span>{p.status}</span>
+                <span>{p.product_status === "available" && p.status === "published" ? "前台在售" : p.product_status === "sold" ? "已售出" : "已下架"}</span>
+                <small>{p.status} / {p.product_status || "未建销售记录"}</small>
               </td>
               <td>
                 <button onClick={() => edit(p)}>编辑资料</button>
@@ -1069,9 +1119,40 @@ function OrdersManager({ token }: { token: string }) {
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message || `订单更新失败（${response.status}）`);
-      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...patch } : order)));
+      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...result } : order)));
+      announceDataChange("orders");
     } catch (updateError) {
       alert(updateError instanceof Error ? updateError.message : "订单更新失败");
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  };
+  const markPaid = async (id: number) => {
+    setBusyId(id);
+    try {
+      let paidOrder: any = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetch(`${API_BASE}/api/admin/orders/${id}/payment`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ method: "admin_manual", note: "管理员确认已付款" }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok) {
+          paidOrder = result;
+          break;
+        }
+        if ((response.status < 500 && !result.retryable) || attempt === 2)
+          throw new Error(result.message || `确认付款失败（${response.status}）`);
+        await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+      }
+      if (!paidOrder) throw new Error("付款状态暂未确认，请刷新后重试");
+      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...paidOrder } : order)));
+      if (detail?.id === id) setDetail((current: any) => current ? { ...current, ...paidOrder } : current);
+      announceDataChange("orders");
+    } catch (paymentError) {
+      alert(paymentError instanceof Error ? paymentError.message : "确认付款失败");
       await load();
     } finally {
       setBusyId(null);
@@ -1099,6 +1180,7 @@ function OrdersManager({ token }: { token: string }) {
       if (!confirmed) throw new Error("确认订单暂未完成，请刷新后重试");
       setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...confirmed } : order)));
       if (detail?.id === id) setDetail((current: any) => current ? { ...current, ...confirmed } : current);
+      announceDataChange("orders");
     } catch (confirmError) {
       alert(confirmError instanceof Error ? confirmError.message : "确认订单失败");
       await load();
@@ -1157,12 +1239,7 @@ function OrdersManager({ token }: { token: string }) {
                 <button disabled={busyId === o.id} onClick={() => open(o.id)}>详情</button>
                 <button
                   disabled={busyId === o.id || o.payment_status === "paid"}
-                  onClick={() =>
-                    update(o.id, {
-                      status: "pending_confirm",
-                      payment_status: "paid",
-                    })
-                  }
+                  onClick={() => markPaid(o.id)}
                 >
                   确认付款
                 </button>
@@ -1394,6 +1471,66 @@ function AfterSales({ token }: { token: string }) {
           ))}
         </tbody>
       </table>
+    </section>
+  );
+}
+function CommunityApplications({ token }: { token: string }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const headers = useMemo(() => ({ authorization: `Bearer ${token}`, "content-type": "application/json" }), [token]);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/community-applications`, { headers });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || payload.error || "申请数据加载失败");
+      setItems(Array.isArray(payload) ? payload : []);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "申请数据加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [headers]);
+  useEffect(() => { void load(); }, [load]);
+  const resolve = async (item: any, status: "processing" | "approved" | "rejected" | "completed") => {
+    const reply = prompt(
+      status === "processing" ? "填写受理备注" : status === "approved" ? "填写通过说明" : status === "rejected" ? "填写未通过原因" : "填写完成说明",
+      status === "processing" ? "已受理，运营人员将尽快联系" : status === "approved" ? "资料审核通过，请留意后续联系" : status === "rejected" ? "当前资料暂不符合申请条件" : "申请事项已处理完成",
+    );
+    if (!reply) return;
+    const response = await fetch(`${API_BASE}/api/admin/community-applications/${item.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, admin_reply: reply }) });
+    const payload = await response.json();
+    if (!response.ok) return alert(payload.message || payload.error || "处理失败");
+    setItems((current) => current.map((record) => record.id === item.id ? payload : record));
+  };
+  const remove = async (item: any) => {
+    if (!confirm(`确认删除申请 ${item.application_no}？此操作仅建议用于测试或无效记录。`)) return;
+    const response = await fetch(`${API_BASE}/api/admin/community-applications/${item.id}`, { method: "DELETE", headers });
+    if (!response.ok) return alert("删除失败");
+    setItems((current) => current.filter((record) => record.id !== item.id));
+  };
+  const typeNames: Record<string, string> = { breed: "新品种申请", adoption: "领养申请", charity: "公益报名" };
+  const statusNames: Record<string, string> = { pending: "待处理", processing: "处理中", approved: "已通过", rejected: "未通过", completed: "已完成" };
+  const visible = typeFilter === "all" ? items : items.filter((item) => item.application_type === typeFilter);
+  return (
+    <section className="admin-table community-admin-table">
+      <div className="community-admin-head"><div><h3>其他申请</h3><small>新品种、领养与公益报名统一进入这里处理</small></div><div className="community-admin-filters">{[["all","全部"],["breed","新品种"],["adoption","领养"],["charity","公益"]].map(([value,label]) => <button type="button" key={value} className={typeFilter === value ? "on" : ""} onClick={() => setTypeFilter(value)}>{label}</button>)}</div></div>
+      {loading ? <div className="admin-state">申请数据加载中…</div> : error ? <div className="admin-state error">{error}<button type="button" onClick={() => void load()}>重试</button></div> : <table>
+        <thead><tr><th>申请</th><th>申请人</th><th>内容</th><th>状态</th><th>处理</th></tr></thead>
+        <tbody>
+          {!visible.length && <EmptyRow cols={5} text="暂无对应申请" />}
+          {visible.map((item) => <tr key={item.id}>
+            <td><b>{typeNames[item.application_type] || item.application_type}</b><small>{item.application_no}<br />{new Date(`${item.created_at}Z`).toLocaleString("zh-CN")}</small></td>
+            <td>{item.applicant_name}<small>{item.city || "未填写城市"} · {item.contact}<br />{item.user_nickname || "访客提交"}</small></td>
+            <td><b>{item.subject}</b><small>{item.details}</small>{item.availability && <small>可参与：{item.availability}</small>}{item.experience && <details><summary>补充经历</summary>{item.experience}</details>}</td>
+            <td><span className={`community-status ${item.status}`}>{statusNames[item.status] || item.status}</span>{item.admin_reply && <small>回复：{item.admin_reply}</small>}</td>
+            <td><div className="community-admin-actions">{item.status === "pending" && <button onClick={() => resolve(item, "processing")}>受理</button>}{["pending","processing"].includes(item.status) && <button onClick={() => resolve(item, "approved")}>通过</button>}{["pending","processing"].includes(item.status) && <button onClick={() => resolve(item, "rejected")}>驳回</button>}<button onClick={() => resolve(item, "completed")}>完成</button>{["rejected","completed"].includes(item.status) && <button onClick={() => remove(item)}>删除</button>}</div></td>
+          </tr>)}
+        </tbody>
+      </table>}
     </section>
   );
 }
@@ -1847,7 +1984,10 @@ function FeishuManager({ token }: { token: string }) {
       if (!response.ok) throw new Error(result.message || "正式同步提交失败");
       setActivePreview(null);
       setNotice(`正式任务 #${result.taskId} 已进入队列，共 ${result.total} 条${publishAfterSync ? "，完成后自动上架" : "，同步后进入商品管理"}。`);
-      window.setTimeout(load, 500);
+      window.setTimeout(() => {
+        load();
+        announceDataChange("products");
+      }, 500);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "正式同步提交失败");
     } finally {

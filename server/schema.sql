@@ -22,8 +22,15 @@ CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, user_id INTEGER NOT 
 CREATE TABLE IF NOT EXISTS banners(id INTEGER PRIMARY KEY, title TEXT, image TEXT NOT NULL, link TEXT, sort_order INTEGER DEFAULT 0, status TEXT DEFAULT 'active');
 CREATE TABLE IF NOT EXISTS feishu_sync_configs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, document_url TEXT NOT NULL, app_token TEXT, table_id TEXT, field_mapping TEXT DEFAULT '{}', status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS feishu_sync_tasks(id INTEGER PRIMARY KEY, config_id INTEGER REFERENCES feishu_sync_configs(id), mode TEXT DEFAULT 'incremental', status TEXT DEFAULT 'pending', total INTEGER DEFAULT 0, success INTEGER DEFAULT 0, failed INTEGER DEFAULT 0, error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, finished_at TEXT);
+CREATE TABLE IF NOT EXISTS community_applications(id INTEGER PRIMARY KEY, application_no TEXT NOT NULL UNIQUE, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, application_type TEXT NOT NULL CHECK(application_type IN ('breed','adoption','charity')), subject TEXT NOT NULL, applicant_name TEXT NOT NULL, contact TEXT NOT NULL, city TEXT, details TEXT NOT NULL, availability TEXT, experience TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','approved','rejected','completed')), admin_reply TEXT, assigned_admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX IF NOT EXISTS idx_pets_search ON pets(status, category_id, breed, name);
 CREATE INDEX IF NOT EXISTS idx_orders_user_status ON orders(user_id,status,created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id,created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_images_unique ON pet_images(pet_id,url);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_videos_unique ON pet_videos(pet_id,url);
+CREATE INDEX IF NOT EXISTS idx_community_applications_status ON community_applications(status,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_community_applications_type ON community_applications(application_type,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_community_applications_user ON community_applications(user_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS idx_pet_products_visibility ON pet_products(status,pet_id);
+CREATE INDEX IF NOT EXISTS idx_pets_admin_search ON pets(status,breed,name,seller_name,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_payment_status_updated ON orders(payment_status,status,updated_at DESC,id DESC);

@@ -3,6 +3,7 @@ import "./UserModules.css";
 import type { CSSProperties } from "react";
 import "./Chat.css";
 import { publishUserId, useUserId } from "./userIdentity";
+import { subscribeDataChange } from "./dataEvents";
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const EMPTY_ADDRESS_FORM = {
   name: "",
@@ -724,7 +725,8 @@ export function OrdersPage({
     if (!response.ok) return setActionError(result.message || "售后申请失败");
     setRefreshKey((value) => value + 1);
   };
-  useEffect(() => {
+  const loadOrders = useCallback(() => {
+    setLoading(true);
     fetch(`${API_BASE}/api/orders?user_id=${userId}`)
       .then((r) => r.json())
       .then(
@@ -760,7 +762,11 @@ export function OrdersPage({
       )
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [userId, refreshKey]);
+  }, [userId]);
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders, refreshKey]);
+  useEffect(() => subscribeDataChange("orders", loadOrders), [loadOrders]);
   const visible = orders.filter((order) => {
     if (tab === "全部") return true;
     if (tab === "待发货") return ["pending_ship", "packed"].includes(order.rawStatus || "");

@@ -13,6 +13,7 @@ import "./Catalog.css";
 import "./DetailEnhance.css";
 import "./Commerce.css";
 import "./AdminEntry.css";
+import { subscribeDataChange } from "./dataEvents";
 import "./SearchPage.css";
 import "./HomeLayout.css";
 import "./Stability.css";
@@ -20,6 +21,7 @@ import "./ProductDetail.css";
 import "./ReviewKnowledge.css";
 import "./Charity.css";
 import "./MoreHall.css";
+import "./Community.css";
 import { RefreshHint } from "./UIStates";
 import {
   AddressesPage,
@@ -675,11 +677,113 @@ const morePortalCards: Array<{
   },
 ];
 
+type CommunityApplicationType = "breed" | "adoption" | "charity";
+type CommunityApplicationFormProps = {
+  applicationType: CommunityApplicationType;
+  subject?: string;
+  subjectLabel: string;
+  title: string;
+  description: string;
+  submitLabel: string;
+  metadata?: Record<string, unknown>;
+};
+
+function CommunityApplicationForm({
+  applicationType,
+  subject = "",
+  subjectLabel,
+  title,
+  description,
+  submitLabel,
+  metadata = {},
+}: CommunityApplicationFormProps) {
+  const userId = useUserId();
+  const [form, setForm] = useState({
+    subject,
+    applicantName: "",
+    contact: "",
+    city: "",
+    details: "",
+    availability: "",
+    experience: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState<{ application_no: string; message: string } | null>(null);
+  useEffect(() => setForm((current) => ({ ...current, subject })), [subject]);
+  const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/community-applications`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId || undefined,
+          application_type: applicationType,
+          subject: form.subject,
+          applicant_name: form.applicantName,
+          contact: form.contact,
+          city: form.city,
+          details: form.details,
+          availability: form.availability,
+          experience: form.experience,
+          metadata,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || payload.error || "提交失败，请稍后重试");
+      setReceipt({ application_no: payload.application_no, message: payload.message || "申请已提交" });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "提交失败，请稍后重试");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <form className="community-application-form" onSubmit={submit}>
+      <header><div><small>REAL APPLICATION</small><h2>{title}</h2><p>{description}</p></div><i>↗</i></header>
+      {receipt ? (
+        <div className="community-application-success">
+          <b>✓</b><small>申请编号</small><strong>{receipt.application_no}</strong><h3>{receipt.message}</h3>
+          <p>资料已经写入福宠后台“其他申请”，运营人员可以受理、回复并更新处理状态。</p>
+          <button type="button" onClick={() => { setReceipt(null); setForm((current) => ({ ...current, details: "", experience: "" })); }}>继续提交一份</button>
+        </div>
+      ) : (
+        <>
+          <label>{subjectLabel}<input required value={form.subject} onChange={(event) => update("subject", event.target.value)} readOnly={Boolean(subject)} placeholder="请填写申请主题" /></label>
+          <div className="community-form-row"><label>您的称呼<input required value={form.applicantName} onChange={(event) => update("applicantName", event.target.value)} placeholder="方便工作人员与您沟通" /></label><label>所在城市<input value={form.city} onChange={(event) => update("city", event.target.value)} placeholder="例如：杭州" /></label></div>
+          <label>联系方式<input required value={form.contact} onChange={(event) => update("contact", event.target.value)} placeholder="手机号或微信号，仅用于审核联系" /></label>
+          <label>申请说明<textarea required value={form.details} onChange={(event) => update("details", event.target.value)} placeholder="请至少用10个字说明您的情况、计划与希望参与的原因。" /></label>
+          {applicationType !== "breed" && <label>可参与时间<input value={form.availability} onChange={(event) => update("availability", event.target.value)} placeholder="例如：周末全天 / 工作日晚间" /></label>}
+          <label>{applicationType === "breed" ? "资料与来源补充" : "照护或志愿经历"}<textarea value={form.experience} onChange={(event) => update("experience", event.target.value)} placeholder={applicationType === "breed" ? "可补充合法来源、公开资料或影像线索。" : "没有相关经历也可以如实填写，平台会提供指引。"} /></label>
+          {error && <p className="community-form-error">{error}</p>}
+          <div className="application-checks"><span>✓ 信息仅用于本次审核</span><span>✓ 提交后可由后台追踪</span><span>✓ 平台不会公开联系方式</span></div>
+          <button className="more-primary-action" type="submit" disabled={submitting}>{submitting ? "正在安全提交…" : submitLabel}<b>↗</b></button>
+        </>
+      )}
+    </form>
+  );
+}
+
+const adoptionDossiers = [
+  { name: "小满", meta: "2岁 · 已绝育 · 亲人", image: "/assets/catalog/chinese-lihua.webp", city: "上海", code: "ADP-021", story: "救助于社区车库，体检和社会化评估均已完成，喜欢安静陪伴。", conditions: ["全屋封窗", "接受30天回访", "家庭成员一致同意"], match: "安静家庭 · 有养猫经验优先" },
+  { name: "奶糖", meta: "1岁 · 已免疫 · 慢热", image: "/assets/catalog/lop-rabbit.webp", city: "杭州", code: "ADP-034", story: "原家庭因搬迁送养，饮食和排便记录完整，需要持续提供无限量牧草。", conditions: ["室内科学饲养", "每日观察进食排便", "不与高攻击性动物混养"], match: "耐心陪伴 · 了解兔类照护" },
+  { name: "阿福", meta: "3岁 · 已驱虫 · 稳定", image: "/assets/catalog/corgi.webp", city: "苏州", code: "ADP-047", story: "完成基础服从训练，外出牵引稳定，希望找到作息规律的长期家庭。", conditions: ["每日稳定遛行", "办理犬证并牵引", "接受视频家访"], match: "作息稳定 · 有固定活动空间" },
+];
+
+const charityProjects = [
+  { icon: "医", title: "生命急救站", summary: "为流浪与受伤动物提供检查、治疗和康复支持。", stat: "本月救助 126 只", city: "杭州 · 上海", date: "每周六 09:00–17:00", capacity: "尚余 18 个志愿名额", image: "/assets/catalog/chinese-lihua.webp", needs: ["现场秩序与信息登记", "康复动物陪伴与清洁", "救助影像归档"], steps: ["线上报名与基础培训", "现场签到和岗位分配", "服务记录进入公益档案"] },
+  { icon: "家", title: "周末领养开放日", summary: "现场科普、行为评估与领养家庭面对面沟通。", stat: "本月 6 场", city: "苏州 · 杭州", date: "7月26日 10:00–16:00", capacity: "开放参观与志愿报名", image: "/assets/catalog/corgi.webp", needs: ["领养家庭接待", "动物状态观察", "科普资料讲解"], steps: ["选择城市和参与时间", "完成线上安全须知", "活动后协助回访记录"] },
+  { icon: "护", title: "社区共护计划", summary: "连接医院、救助机构、志愿者和负责任的养宠家庭。", stat: "86 家伙伴同行", city: "全国线上协作", date: "长期开放", capacity: "机构与个人均可申请", image: "/assets/catalog/lop-rabbit.webp", needs: ["社区动物线索整理", "绝育与免疫协助", "文明养宠宣传"], steps: ["提交所在城市和能力", "平台进行角色匹配", "每月汇总可追踪成果"] },
+];
+
 function MoreHall({ go }: { go: (page: Page) => void }) {
   const [active, setActive] = useState<MoreSectionKey | null>(null);
-  const [breedName, setBreedName] = useState("");
-  const [contact, setContact] = useState("");
-  const [applicationSent, setApplicationSent] = useState(false);
+  const [selectedAdoption, setSelectedAdoption] = useState<(typeof adoptionDossiers)[number] | null>(null);
+  const [selectedCharity, setSelectedCharity] = useState<(typeof charityProjects)[number] | null>(null);
   const activeCard = morePortalCards.find((card) => card.key === active);
   const back = () => {
     if (active) {
@@ -759,20 +863,14 @@ function MoreHall({ go }: { go: (page: Page) => void }) {
               <span><b>03</b><em>公开建档</em><small>科普内容与风险提示</small></span>
             </div>
           </section>
-          <form className="breed-application-form" onSubmit={(event: FormEvent) => { event.preventDefault(); setApplicationSent(true); }}>
-            <header><div><small>BREED APPLICATION</small><h2>新品种资料申请</h2></div><i>✦</i></header>
-            {applicationSent ? (
-              <div className="application-success"><b>✓</b><h3>申请线索已收录</h3><p>我们会先核对“{breedName || "该品种"}”的公开资料，审核进度将通过你留下的联系方式反馈。</p><button type="button" onClick={() => setApplicationSent(false)}>继续补充资料</button></div>
-            ) : (
-              <>
-                <label>申请品种名称<input required value={breedName} onChange={(e) => setBreedName(e.target.value)} placeholder="例如：某稀有猫种 / 鸟类 / 水族" /></label>
-                <label>来源与资料说明<textarea required placeholder="请说明品种来源、生活环境、照护难点，以及是否具备合法来源证明。" /></label>
-                <label>联系方式<input required value={contact} onChange={(e) => setContact(e.target.value)} placeholder="手机号或微信号，仅用于审核沟通" /></label>
-                <div className="application-checks"><span>✓ 不接受野生捕捉</span><span>✓ 不制造稀缺炒作</span><span>✓ 资料需真实可核验</span></div>
-                <button className="more-primary-action" type="submit">提交品种线索 <b>↗</b></button>
-              </>
-            )}
-          </form>
+          <CommunityApplicationForm
+            applicationType="breed"
+            subjectLabel="申请品种名称"
+            title="新品种资料申请"
+            description="提交后会生成真实申请编号，并进入后台运营审核队列。"
+            submitLabel="提交品种线索"
+            metadata={{ source: "more-hall", review_flow: "breed-archive" }}
+          />
         </>
       )}
 
@@ -798,12 +896,13 @@ function MoreHall({ go }: { go: (page: Page) => void }) {
         <>
           <section className="adoption-manifesto"><small>ADOPT, DON'T SHOP BLINDLY</small><h2>先确认彼此合适，<br />再决定一起生活。</h2><p>所有领养档案需完成健康检查、性格观察和原主人/救助机构回访。</p></section>
           <section className="adoption-list">
-            {[
-              ["小满", "2岁 · 已绝育 · 亲人", "/assets/catalog/chinese-lihua.webp", "上海"],
-              ["奶糖", "1岁 · 已免疫 · 慢热", "/assets/catalog/lop-rabbit.webp", "杭州"],
-              ["阿福", "3岁 · 已驱虫 · 稳定", "/assets/catalog/corgi.webp", "苏州"],
-            ].map(([name, meta, image, city]) => <article key={name}><SmartImage src={image} alt={`${name}领养档案`} /><div><span>{city} · 审核中</span><h3>{name}</h3><p>{meta}</p><b>查看领养条件 →</b></div></article>)}
+            {adoptionDossiers.map((item) => <button type="button" key={item.code} className={selectedAdoption?.code === item.code ? "selected" : ""} onClick={() => setSelectedAdoption(item)}><SmartImage src={item.image} alt={`${item.name}领养档案`} /><div><span>{item.city} · {item.code}</span><h3>{item.name}</h3><p>{item.meta}</p><b>查看领养条件 →</b></div></button>)}
           </section>
+          {selectedAdoption && <section className="adoption-detail-panel">
+            <header><div><small>{selectedAdoption.code} · 双向匹配</small><h2>{selectedAdoption.name}正在等待合适的家</h2></div><button type="button" onClick={() => setSelectedAdoption(null)}>×</button></header>
+            <p>{selectedAdoption.story}</p><div className="adoption-condition-grid">{selectedAdoption.conditions.map((condition) => <span key={condition}>✓ {condition}</span>)}</div><b>适配建议：{selectedAdoption.match}</b>
+            <CommunityApplicationForm applicationType="adoption" subject={selectedAdoption.name} subjectLabel="领养档案" title={`申请领养 ${selectedAdoption.name}`} description="平台将核对家庭环境、照护安排并进行双向匹配，不收取宠物购买费用。" submitLabel="提交领养申请" metadata={{ dossier_code: selectedAdoption.code, city: selectedAdoption.city }} />
+          </section>}
           <section className="adoption-process"><h2>负责任领养路径</h2><div><span><b>01</b>填写问卷</span><span><b>02</b>视频家访</span><span><b>03</b>双向匹配</span><span><b>04</b>30天回访</span></div></section>
         </>
       )}
@@ -820,9 +919,9 @@ function MoreHall({ go }: { go: (page: Page) => void }) {
             ].map(([name, label, value]) => <div className="charity-progress" key={name}><p><span>{name}</span><b>{label}</b></p><i><em style={{ width: `${value}%` }} /></i></div>)}
           </section>
           <section className="charity-action-grid">
-            <article><i>医</i><small>正在进行</small><h3>小动物紧急医疗池</h3><p>为合作救助机构提供检查、手术与恢复期支持。</p><b>已帮助 128 只</b></article>
-            <article><i>家</i><small>城市行动</small><h3>周末领养开放日</h3><p>现场科普、行为评估与领养家庭面对面沟通。</p><b>本月 6 场</b></article>
+            {charityProjects.slice(0, 2).map((project) => <button type="button" key={project.title} className={selectedCharity?.title === project.title ? "selected" : ""} onClick={() => setSelectedCharity(project)}><i>{project.icon}</i><small>{project.city}</small><h3>{project.title}</h3><p>{project.summary}</p><b>{project.stat}　→</b></button>)}
           </section>
+          {selectedCharity && <section className="charity-quick-detail"><header><div><small>{selectedCharity.date}</small><h2>{selectedCharity.title}</h2></div><button type="button" onClick={() => setSelectedCharity(null)}>×</button></header><p>{selectedCharity.capacity}</p><div>{selectedCharity.needs.map((need) => <span key={need}>◇ {need}</span>)}</div><CommunityApplicationForm applicationType="charity" subject={selectedCharity.title} subjectLabel="公益项目" title="报名参与公益行动" description="报名信息会直接进入后台，运营人员确认场次与岗位后联系您。" submitLabel="提交公益报名" metadata={{ city: selectedCharity.city, schedule: selectedCharity.date }} /></section>}
           <button className="more-primary-action charity-action" onClick={() => go("charity")}>查看完整公益公示 <b>↗</b></button>
           <section className="more-promise-strip"><span>机构可核验</span><i>·</i><span>票据可追溯</span><i>·</i><span>进度持续更新</span></section>
         </>
@@ -843,7 +942,7 @@ function Hall({
   const hall = hallByKey(hallKey);
   const [query, setQuery] = useState("");
   const [breedCounts, setBreedCounts] = useState<Record<string, number>>({});
-  useEffect(() => {
+  const loadBreedCounts = useCallback(() => {
     let active = true;
     fetch(`${API_BASE}/api/pets/breed-counts`)
       .then((response) => response.ok ? response.json() : [])
@@ -858,7 +957,15 @@ function Hall({
       })
       .catch(() => active && setBreedCounts({}));
     return () => { active = false; };
-  }, [hallKey]);
+  }, []);
+  useEffect(() => {
+    const cancelRequest = loadBreedCounts();
+    const unsubscribe = subscribeDataChange("products", loadBreedCounts);
+    return () => {
+      cancelRequest?.();
+      unsubscribe();
+    };
+  }, [hallKey, loadBreedCounts]);
   const visible = useMemo(
     () =>
       hall.breeds.filter(
@@ -2391,11 +2498,19 @@ const careGuides: CareGuide[] = [
   },
 ];
 
+const careRoutes = [
+  { icon: "食", title: "营养路线", text: "分龄喂养、换粮、饮水与体重记录", group: "猫猫" },
+  { icon: "习", title: "行为路线", text: "社会化、独处、牵引与环境适应", group: "狗狗" },
+  { icon: "净", title: "环境路线", text: "笼舍、水质、温湿度与日常清洁", group: "水族" },
+  { icon: "安", title: "健康路线", text: "异常观察、健康档案与紧急判断", group: "通用" },
+];
+
 function CareManual({ go }: { go: (p: Page) => void }) {
   const [active, setActive] = useState("全部");
+  const [careQuery, setCareQuery] = useState("");
   const [selectedGuide, setSelectedGuide] = useState<CareGuide | null>(null);
   const groups = ["全部", ...Array.from(new Set(careGuides.map((item) => item.group)))];
-  const list = active === "全部" ? careGuides : careGuides.filter((item) => item.group === active);
+  const list = (active === "全部" ? careGuides : careGuides.filter((item) => item.group === active)).filter((item) => !careQuery.trim() || `${item.title}${item.desc}${item.group}${item.tone}`.includes(careQuery.trim()));
   return (
     <div className="care-page">
       <div className="subhead">
@@ -2404,7 +2519,7 @@ function CareManual({ go }: { go: (p: Page) => void }) {
           <small>照护地图</small>
           <h2>养宠照护地图</h2>
         </div>
-        <button>⌕</button>
+        <span className="care-live-mark">LIVE</span>
       </div>
       <section className="care-hero">
         <div>
@@ -2417,6 +2532,11 @@ function CareManual({ go }: { go: (p: Page) => void }) {
           篇手册
         </span>
       </section>
+      <section className="care-route-map">
+        <header><div><small>CARE COMPASS</small><h2>从今天最需要的方向出发</h2></div><span>4 条路线</span></header>
+        <div>{careRoutes.map((route) => <button type="button" key={route.title} onClick={() => { setActive(route.group); setCareQuery(""); }}><i>{route.icon}</i><span><b>{route.title}</b><small>{route.text}</small></span><em>→</em></button>)}</div>
+      </section>
+      <label className="care-search"><span>⌕</span><input value={careQuery} onChange={(event) => setCareQuery(event.target.value)} placeholder="搜索喂养、训练、健康或具体问题" />{careQuery && <button type="button" onClick={() => setCareQuery("")}>清除</button>}</label>
       <div className="care-tabs">
         {groups.map((group) => (
           <button key={group} className={active === group ? "on" : ""} onClick={() => setActive(group)}>
@@ -2436,6 +2556,12 @@ function CareManual({ go }: { go: (p: Page) => void }) {
             </div>
           </button>
         ))}
+      </section>
+      {!list.length && <section className="care-empty-result"><b>没有找到完全匹配的手册</b><p>可以换一个关键词，或从上方四条照护路线重新开始。</p><button type="button" onClick={() => { setCareQuery(""); setActive("全部"); }}>查看全部手册</button></section>}
+      <section className="care-emergency-compass">
+        <div><small>QUICK SAFETY CHECK</small><h2>先判断，是观察还是立即行动</h2><p>紧急入口不会替代专业诊疗，但能帮助您更快整理症状与下一步。</p></div>
+        <button type="button" onClick={() => setSelectedGuide(careGuides.find((item) => item.id === "general-emergency") || null)}><i>!</i><span><b>紧急异常信号</b><small>呼吸、意识、出血、排尿</small></span><em>立即查看 →</em></button>
+        <button type="button" onClick={() => setSelectedGuide(careGuides.find((item) => item.id === "health-archive") || null)}><i>＋</i><span><b>建立健康档案</b><small>疫苗、体重、饮食、影像</small></span><em>开始记录 →</em></button>
       </section>
       <section className="care-upload-hint">
         <b>持续更新</b>
@@ -2461,11 +2587,7 @@ function CareManual({ go }: { go: (p: Page) => void }) {
 }
 
 function Charity({ go }: { go: (p: Page) => void }) {
-  const projects = [
-    { icon: "医", title: "生命急救站", text: "为流浪与受伤动物提供紧急检查、治疗和康复支持。", stat: "本月救助 126 只" },
-    { icon: "家", title: "回家计划", text: "完成健康评估、性格观察、领养匹配与长期回访。", stat: "持续回访 365 天" },
-    { icon: "伴", title: "社区共护", text: "连接医院、救助机构、志愿者和负责任的养宠家庭。", stat: "86 家伙伴同行" },
-  ];
+  const [selectedProject, setSelectedProject] = useState<(typeof charityProjects)[number] | null>(null);
   return (
     <div className="charity-page">
       <section className="charity-hero">
@@ -2488,13 +2610,20 @@ function Charity({ go }: { go: (p: Page) => void }) {
       </section>
       <section className="charity-projects">
         <header><small>正在发生</small><h2>三条生命守护线</h2></header>
-        {projects.map((project, index) => (
-          <article key={project.title} className={index === 0 ? "featured" : ""}>
+        {charityProjects.map((project, index) => (
+          <button type="button" key={project.title} className={`${index === 0 ? "featured" : ""} ${selectedProject?.title === project.title ? "selected" : ""}`} onClick={() => setSelectedProject(project)}>
             <i>{project.icon}</i>
-            <div><h3>{project.title}</h3><p>{project.text}</p><b>{project.stat}</b></div>
-          </article>
+            <div><h3>{project.title}</h3><p>{project.summary}</p><b>{project.stat}　查看详情 →</b></div>
+          </button>
         ))}
       </section>
+      {selectedProject && <section className="charity-project-detail">
+        <header><div><small>OPEN PROJECT · {selectedProject.city}</small><h2>{selectedProject.title}</h2><p>{selectedProject.summary}</p></div><button type="button" onClick={() => setSelectedProject(null)}>×</button></header>
+        <SmartImage src={selectedProject.image} alt={selectedProject.title} />
+        <div className="charity-detail-meta"><span><small>活动时间</small><b>{selectedProject.date}</b></span><span><small>报名状态</small><b>{selectedProject.capacity}</b></span></div>
+        <div className="charity-detail-columns"><div><small>当前需要</small>{selectedProject.needs.map((need) => <p key={need}>◇ {need}</p>)}</div><div><small>参与路径</small>{selectedProject.steps.map((step, index) => <p key={step}><b>{String(index + 1).padStart(2, "0")}</b>{step}</p>)}</div></div>
+        <CommunityApplicationForm applicationType="charity" subject={selectedProject.title} subjectLabel="公益项目" title="报名成为行动伙伴" description="资料会直接写入后台“其他申请”，由公益运营人员确认城市、时间和岗位。" submitLabel="提交公益报名" metadata={{ city: selectedProject.city, schedule: selectedProject.date, source: "charity-page" }} />
+      </section>}
       <section className="charity-ledger">
         <div><small>透明行动账本</small><h2>每一份善意，都有回声</h2></div>
         <span>最近更新　今天 09:30</span>
@@ -2507,7 +2636,7 @@ function Charity({ go }: { go: (p: Page) => void }) {
       <section className="charity-join">
         <small>一起参与</small>
         <h2>不必宏大，也能改变一个生命</h2>
-        <div><button onClick={() => go("service")}>联系公益顾问</button><button onClick={() => go("home")}>浏览公益伙伴</button></div>
+        <div><button onClick={() => { setSelectedProject(charityProjects[0]); scrollTo(0, 900); }}>报名公益行动</button><button onClick={() => go("service")}>联系公益顾问</button></div>
         <p>领养代替购买 · 文明养宠 · 不遗弃 · 为每次选择负责</p>
       </section>
     </div>
