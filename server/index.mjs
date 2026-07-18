@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { spawn } from "node:child_process";
 import ffmpegPath from "ffmpeg-static";
+import { generateShowcaseThumbnail } from "./showcase-thumbnail.mjs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -38,6 +39,8 @@ const compatibleMediaDir = join(root, "data", "compatible-media");
 mkdirSync(compatibleMediaDir, { recursive: true });
 const feishuImageCacheDir = join(root, "data", "feishu-image-cache");
 mkdirSync(feishuImageCacheDir, { recursive: true });
+const showcaseImageCacheDir = join(root, "data", "showcase-image-cache");
+mkdirSync(showcaseImageCacheDir, { recursive: true });
 const dbPath = process.env.DB_PATH || join(root, "data", "fuchong.db");
 const backupDir = join(root, "backups");
 mkdirSync(backupDir, { recursive: true });
@@ -774,6 +777,122 @@ const ensureFeishuImage = async (mediaUrl, variant, config) => {
   feishuImageTasks.set(taskKey, task);
   return task;
 };
+const showcaseImageTasks = new Map();
+let activeShowcaseImageJobs = 0;
+const showcaseImageWaiters = [];
+const withShowcaseImageSlot = async (work) => {
+  if (activeShowcaseImageJobs >= 1)
+    await new Promise((resolve) => showcaseImageWaiters.push(resolve));
+  activeShowcaseImageJobs++;
+  try {
+    return await work();
+  } finally {
+    activeShowcaseImageJobs--;
+    showcaseImageWaiters.shift()?.();
+  }
+};
+const ensureShowcaseImage = async (petId) => {
+  const pet = db.prepare(
+    `SELECT p.id,p.source,COALESCE(
+       (SELECT COALESCE(pi.url,pi.webp_url,pi.thumbnail_url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1),
+       p.highres_url,p.thumbnail_url) AS image
+     FROM pets p WHERE p.id=?`,
+  ).get(petId);
+  if (!pet?.image) throw new Error("商品尚未同步主图");
+  const identity = createHash("sha256").update(`v3:${pet.image}`).digest("hex");
+  const target = join(showcaseImageCacheDir, `${identity}.webp`);
+  if (existsSync(target) && statSync(target).size > 1024) return target;
+  if (showcaseImageTasks.has(identity)) return showcaseImageTasks.get(identity);
+  const task = withShowcaseImageSlot(async () => {
+    let source = pet.image;
+    if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(source)) {
+      const config = db.prepare("SELECT * FROM feishu_sync_configs WHERE status='active' ORDER BY id DESC LIMIT 1").get() || {};
+      source = (await ensureFeishuImage(source, "original", config)).file;
+    } else if (source.startsWith("/uploads/")) {
+      source = join(root, "uploads", source.slice(9));
+    } else if (!existsSync(source)) {
+      throw new Error("商品主图暂不支持本地抠图");
+    }
+    return generateShowcaseThumbnail(source, target);
+  }).finally(() => showcaseImageTasks.delete(identity));
+  showcaseImageTasks.set(identity, task);
+  return task;
+};
+const commitShowcaseResult = (itemId, taskId, status, error = null) => {
+  db.exec("BEGIN");
+  try {
+    db.prepare(
+      `UPDATE feishu_sync_task_items SET showcase_status=?,showcase_error=?,showcase_processed_at=CURRENT_TIMESTAMP WHERE id=?`,
+    ).run(status, error, itemId);
+    db.prepare(
+      `UPDATE feishu_sync_tasks SET media_processed=media_processed+1,
+       media_success=media_success+?,media_failed=media_failed+? WHERE id=?`,
+    ).run(status === "success" ? 1 : 0, status === "failed" ? 1 : 0, taskId);
+    db.exec("COMMIT");
+  } catch (databaseError) {
+    db.exec("ROLLBACK");
+    throw databaseError;
+  }
+};
+const processShowcaseTask = async (taskId) => {
+  const state = syncQueues.get(taskId);
+  if (!state || state.paused) return;
+  const task = db.prepare("SELECT * FROM feishu_sync_tasks WHERE id=?").get(taskId);
+  if (!task || task.status !== "processing_images") return;
+  const item = db.prepare(
+    `SELECT id,pet_id FROM feishu_sync_task_items
+     WHERE task_id=? AND showcase_status IN ('pending','processing')
+     ORDER BY CASE showcase_status WHEN 'processing' THEN 0 ELSE 1 END,row_no LIMIT 1`,
+  ).get(taskId);
+  if (!item) {
+    const failed = Number(task.media_failed || 0);
+    db.prepare(
+      `UPDATE feishu_sync_tasks SET status=?,media_status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?`,
+    ).run(failed ? "completed_with_warnings" : "completed", failed ? "completed_with_warnings" : "completed", taskId);
+    syncQueues.delete(taskId);
+    return;
+  }
+  db.prepare(
+    "UPDATE feishu_sync_task_items SET showcase_status='processing',showcase_error=NULL WHERE id=?",
+  ).run(item.id);
+  try {
+    await ensureShowcaseImage(item.pet_id);
+    commitShowcaseResult(item.id, taskId, "success");
+  } catch (error) {
+    try {
+      commitShowcaseResult(item.id, taskId, "failed", error instanceof Error ? error.message : String(error));
+    } catch (databaseError) {
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET status='failed',media_status='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(databaseError instanceof Error ? databaseError.message : String(databaseError), taskId);
+      syncQueues.delete(taskId);
+      return;
+    }
+  }
+  setTimeout(() => processShowcaseTask(taskId), 0);
+};
+const beginShowcaseStage = (taskId) => {
+  const stats = db.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN showcase_status='success' THEN 1 ELSE 0 END) AS success,
+            SUM(CASE WHEN showcase_status='failed' THEN 1 ELSE 0 END) AS failed
+     FROM feishu_sync_task_items WHERE task_id=? AND showcase_status<>'not_required'`,
+  ).get(taskId);
+  const total = Number(stats?.total || 0);
+  if (!total) {
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='completed',media_status='not_required',finished_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(taskId);
+    syncQueues.delete(taskId);
+    return;
+  }
+  const success = Number(stats.success || 0);
+  const failed = Number(stats.failed || 0);
+  db.prepare(
+    `UPDATE feishu_sync_tasks SET status='processing_images',media_status='running',media_total=?,media_processed=?,media_success=?,media_failed=?,finished_at=NULL WHERE id=?`,
+  ).run(total, success + failed, success, failed, taskId);
+  setTimeout(() => processShowcaseTask(taskId), 0);
+};
 const generateSyncItems = (total = 500) =>
   Array.from({ length: total }, (_, i) => ({
     name: `同步宠物 ${i + 1}`,
@@ -1087,15 +1206,12 @@ const processSyncTask = (taskId, items) => {
   const task = db
     .prepare("SELECT * FROM feishu_sync_tasks WHERE id=?")
     .get(taskId);
-  if (!task || ["completed", "paused"].includes(task.status)) return;
+  if (!task || ["completed", "completed_with_warnings", "paused", "processing_images"].includes(task.status)) return;
   const batchSize = Number(task.batch_size || 500);
   const start = Number(task.processed || 0);
   const batch = items.slice(start, start + batchSize);
   if (!batch.length) {
-    db.prepare(
-      "UPDATE feishu_sync_tasks SET status='completed',finished_at=CURRENT_TIMESTAMP WHERE id=?",
-    ).run(taskId);
-    syncQueues.delete(taskId);
+    beginShowcaseStage(taskId);
     return;
   }
   db.exec("BEGIN");
@@ -1238,8 +1354,10 @@ const processSyncTask = (taskId, items) => {
             ).run(petId, String(videoUrl), "pending_transcode");
         }
         db.prepare(
-          "UPDATE feishu_sync_task_items SET status='success',error=NULL,processed_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
-        ).run(taskId, start + i + 1);
+          `UPDATE feishu_sync_task_items
+           SET status='success',error=NULL,processed_at=CURRENT_TIMESTAMP,pet_id=?,showcase_status=?,showcase_error=NULL,showcase_processed_at=NULL
+           WHERE task_id=? AND row_no=?`,
+        ).run(petId || null, petId && item.images?.length ? "pending" : "not_required", taskId, start + i + 1);
         db.exec("RELEASE SAVEPOINT feishu_sync_row");
         success++;
       } catch (e) {
@@ -1311,6 +1429,15 @@ const server = createServer(async (req, res) => {
         return json(res, 502, {
           message: error instanceof Error ? error.message : "飞书媒体代理异常",
         });
+      }
+    }
+    const showcaseMedia = path.match(/^\/api\/media\/product-showcase\/(\d+)$/);
+    if (showcaseMedia && method === "GET") {
+      try {
+        const file = await ensureShowcaseImage(Number(showcaseMedia[1]));
+        return serveRangeFile(req, res, file, "image/webp");
+      } catch (error) {
+        return json(res, 404, { message: error instanceof Error ? error.message : "橱窗缩略图暂不可用" });
       }
     }
     if (path.startsWith("/uploads/") && method === "GET") {
@@ -1708,6 +1835,7 @@ const server = createServer(async (req, res) => {
       const baseSelect = `SELECT p.id,p.name,p.category_id,p.breed,p.gender,p.age_months,p.color,
                                  p.health_status,p.price,p.seller_name,p.status,p.thumbnail_url,p.highres_url,
                                  p.breed_id,p.seller_id,p.updated_at,
+                                 CASE WHEN p.source='feishu' THEN '/api/media/product-showcase/' || p.id END AS showcase_image,
                                  c.name AS category_name,pp.status AS product_status,
                                  COALESCE(p.thumbnail_url,
                                    (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
@@ -4149,9 +4277,13 @@ const server = createServer(async (req, res) => {
           return json(res, 409, { message: "同步任务缺少持久化数据，请重新创建同步预览" });
         syncQueues.set(taskId, { items, paused: false });
         if (action === "retry") {
-          db.prepare("UPDATE feishu_sync_task_items SET status='pending',error=NULL,processed_at=NULL WHERE task_id=?").run(taskId);
           db.prepare(
-            "UPDATE feishu_sync_tasks SET status='running',processed=0,success=0,failed=0,error=NULL,paused_at=NULL,retry_count=retry_count+1,finished_at=NULL WHERE id=?",
+            `UPDATE feishu_sync_task_items SET status='pending',error=NULL,processed_at=NULL,pet_id=NULL,
+             showcase_status='not_required',showcase_error=NULL,showcase_processed_at=NULL WHERE task_id=?`,
+          ).run(taskId);
+          db.prepare(
+            `UPDATE feishu_sync_tasks SET status='running',processed=0,success=0,failed=0,error=NULL,paused_at=NULL,
+             retry_count=retry_count+1,finished_at=NULL,media_total=0,media_processed=0,media_success=0,media_failed=0,media_status='pending' WHERE id=?`,
           ).run(taskId);
         } else
           db.prepare(
@@ -4181,14 +4313,19 @@ const server = createServer(async (req, res) => {
   }
 });
 
-for (const task of rows("SELECT id FROM feishu_sync_tasks WHERE status IN ('pending','running') ORDER BY id")) {
+for (const task of rows("SELECT id,status FROM feishu_sync_tasks WHERE status IN ('pending','running','processing_images') ORDER BY id")) {
   const items = persistedSyncItems(task.id);
   if (!items.length) {
     db.prepare("UPDATE feishu_sync_tasks SET status='failed',error='服务重启后未找到持久化同步数据',finished_at=CURRENT_TIMESTAMP WHERE id=?").run(task.id);
     continue;
   }
   syncQueues.set(task.id, { items, paused: false });
-  setTimeout(() => processSyncTask(task.id, items), 0);
+  if (task.status === "processing_images") {
+    db.prepare(
+      "UPDATE feishu_sync_task_items SET showcase_status='pending' WHERE task_id=? AND showcase_status='processing'",
+    ).run(task.id);
+    setTimeout(() => processShowcaseTask(task.id), 0);
+  } else setTimeout(() => processSyncTask(task.id, items), 0);
 }
 
 server.listen(Number(process.env.PORT || 3001), () =>

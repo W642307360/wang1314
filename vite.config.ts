@@ -18,6 +18,11 @@ const staticAssetCache = (): Plugin => ({
 export default defineConfig(async () => {
   const { cloudflare } = await import('@cloudflare/vite-plugin')
   return {
+    server: {
+      watch: {
+        ignored: ['**/server/data/**', '**/server/uploads/**', '**/server/backups/**'],
+      },
+    },
     plugins: [
       react(),
       staticAssetCache(),

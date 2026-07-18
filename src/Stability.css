@@ -128,6 +128,7 @@
   color: inherit !important;
   border-radius: 17px 17px 12px 12px;
 }
+.available button > .smart-image.showcase-product-image{background:#fff}.available button > .smart-image.showcase-product-image>img{object-fit:contain!important;mix-blend-mode:normal!important;filter:none!important}
 
 .available button > span:not(.smart-image) {
   position: absolute;

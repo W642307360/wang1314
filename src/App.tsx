@@ -84,6 +84,7 @@ type ApiPet = {
   thumbnail_url?: string;
   highres_url?: string;
   image?: string;
+  showcase_image?: string;
   images?: Array<{ id?: number; url: string; type?: string; thumbnail_url?: string; webp_url?: string }>;
   videos?: Array<{ id?: number; url: string; cover_url?: string }>;
   reviews?: Array<any>;
@@ -235,6 +236,7 @@ function FurColorArchive({ src, color }: { src: string; color?: string }) {
 }
 const resolveMediaUrl = (url?: string, variant: "thumb" | "original" = "thumb") => {
   if (!url) return "";
+  if (url.startsWith("/api/")) return `${API_BASE}${url}`;
   if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
     return `${API_BASE}/api/media/feishu?variant=${variant}&url=${encodeURIComponent(url)}`;
   return url;
@@ -284,6 +286,7 @@ function SmartImage({
   className,
   eager = false,
   highres,
+  fallback,
   style,
 }: {
   src?: string;
@@ -291,14 +294,17 @@ function SmartImage({
   className?: string;
   eager?: boolean;
   highres?: string;
+  fallback?: string;
   style?: CSSProperties;
 }) {
   const small = thumbImage(src);
+  const fallbackSmall = fallback ? thumbImage(fallback) : "";
   const large = highres ? coverImage(highres, src) : undefined;
   const initialLoaded = imageMemoryCache.has(small);
   const [loaded, setLoaded] = useState(initialLoaded);
   const [error, setError] = useState(false);
   const [highresFailed, setHighresFailed] = useState(false);
+  const [fallbackUsed, setFallbackUsed] = useState(false);
   const [current, setCurrent] = useState(small);
   useEffect(() => {
     const next = thumbImage(src);
@@ -306,6 +312,7 @@ function SmartImage({
     setLoaded(imageMemoryCache.has(next));
     setError(false);
     setHighresFailed(false);
+    setFallbackUsed(false);
   }, [src]);
   useEffect(() => {
     if (!large || current === large || !loaded || highresFailed) return;
@@ -343,9 +350,14 @@ function SmartImage({
             setLoaded(true);
           }}
           onError={() => {
-            if (current !== small) {
+            if (large && current === large) {
               setHighresFailed(true);
               setCurrent(small);
+              return;
+            }
+            if (fallbackSmall && !fallbackUsed && current !== fallbackSmall) {
+              setFallbackUsed(true);
+              setCurrent(fallbackSmall);
               return;
             }
             setError(true);
@@ -1165,7 +1177,7 @@ function Breed({
             ))
           : pets.map((pet) => (
               <button key={pet.id} onClick={() => openPet(pet, b)}>
-                <SmartImage src={petImage(pet, b.image)} alt={pet.name} />
+                <SmartImage className={pet.showcase_image ? "showcase-product-image" : undefined} src={resolveMediaUrl(pet.showcase_image) || petImage(pet, b.image)} fallback={petImage(pet, b.image)} alt={pet.name} />
                 <span>{pet.health_status || "健康认证"}</span>
                 <h3>{pet.name}</h3>
                 <p>

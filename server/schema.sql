@@ -31,6 +31,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_videos_unique ON pet_videos(pet_id,url
 CREATE INDEX IF NOT EXISTS idx_community_applications_status ON community_applications(status,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_community_applications_type ON community_applications(application_type,created_at DESC,id DESC);
 CREATE INDEX IF NOT EXISTS idx_community_applications_user ON community_applications(user_id,created_at DESC,id DESC);
-CREATE INDEX IF NOT EXISTS idx_pet_products_visibility ON pet_products(status,pet_id);
 CREATE INDEX IF NOT EXISTS idx_pets_admin_search ON pets(status,breed,name,seller_name,updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_payment_status_updated ON orders(payment_status,status,updated_at DESC,id DESC);

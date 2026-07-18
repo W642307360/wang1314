@@ -571,6 +571,46 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(syncedMediaDetail.payload.images.length, 4);
   assert.equal(syncedMediaDetail.payload.videos.length, 2);
 
+  const sharedShowcaseSource = join(
+    dirname(serverDir),
+    "public",
+    "assets",
+    "catalog",
+    "devon-rex.webp",
+  );
+  const showcaseSync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 100,
+      items: Array.from({ length: 500 }, (_, index) => ({
+        external_id: `showcase-stress-${index + 1}`,
+        name: `白底轮廓压力测试 ${index + 1}`,
+        breed: "德文卷毛猫",
+        category_id: 1,
+        price: 3900 + index,
+        stock: 1,
+        images: [sharedShowcaseSource],
+      })),
+    }),
+  });
+  assert.equal(showcaseSync.response.status, 202);
+  let showcaseTask;
+  for (let i = 0; i < 400; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    showcaseTask = tasks.payload.find((item) => item.id === showcaseSync.payload.taskId);
+    if (["completed", "completed_with_warnings", "failed"].includes(showcaseTask?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(showcaseTask.status, "completed");
+  assert.equal(showcaseTask.processed, 500);
+  assert.equal(showcaseTask.success, 500);
+  assert.equal(showcaseTask.media_total, 500);
+  assert.equal(showcaseTask.media_processed, 500);
+  assert.equal(showcaseTask.media_success, 500);
+  assert.equal(showcaseTask.media_failed, 0);
+
   const banner = await request("/api/admin/banners", {
     method: "POST",
     headers: adminHeaders,

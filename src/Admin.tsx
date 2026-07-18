@@ -1844,6 +1844,16 @@ function FeishuManager({ token }: { token: string }) {
     void load();
   }, [load]);
   useEffect(() => {
+    if (!tasks.some((task) => ["pending", "running", "processing_images"].includes(task.status))) return;
+    const timer = window.setInterval(() => {
+      fetch(`${API_BASE}/api/admin/feishu/tasks`, { headers })
+        .then((response) => response.json())
+        .then(setTasks)
+        .catch(() => {});
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [headers, tasks]);
+  useEffect(() => {
     if (!activeConfig || name || url) return;
     setName(activeConfig.name || "福宠商品库");
     setUrl(activeConfig.document_url || "");
@@ -2007,6 +2017,17 @@ function FeishuManager({ token }: { token: string }) {
     );
     load();
   };
+  const taskStatusLabel = (status: string) => ({
+    pending: "等待同步",
+    running: "同步商品数据",
+    processing_images: "处理白底轮廓图",
+    completed: "已完成",
+    completed_with_warnings: "完成（部分图片失败）",
+    failed: "失败",
+    paused: "已暂停",
+  }[status] || status);
+  const taskPercent = (done: number, total: number) =>
+    total ? Math.min(100, Math.round((Number(done || 0) / Number(total)) * 100)) : 0;
   return (
     <section className="admin-table">
       <div>
@@ -2108,15 +2129,22 @@ function FeishuManager({ token }: { token: string }) {
           {tasks.map((t) => (
             <tr key={t.id}>
               <td>#{t.id}</td>
-              <td>{t.status}</td>
+              <td><span className={`sync-status sync-status-${t.status}`}>{taskStatusLabel(t.status)}</span></td>
               <td>
-                <div className="sync-progress"><i style={{ width: `${t.total ? Math.min(100, Math.round((t.processed || 0) / t.total * 100)) : 0}%` }} /><span>{t.total ? Math.round((t.processed || 0) / t.total * 100) : 0}%</span></div>
-                <small>{t.processed || 0}/{t.total || 0}</small>
+                <div className="sync-stage-progress">
+                  <label><span>商品数据</span><b>{t.processed || 0}/{t.total || 0}</b></label>
+                  <div className="sync-progress"><i style={{ width: `${taskPercent(t.processed, t.total)}%` }} /><span>{taskPercent(t.processed, t.total)}%</span></div>
+                </div>
+                <div className="sync-stage-progress sync-stage-media">
+                  <label><span>白底轮廓</span><b>{t.media_processed || 0}/{t.media_total || 0}</b></label>
+                  <div className="sync-progress"><i style={{ width: `${taskPercent(t.media_processed, t.media_total)}%` }} /><span>{taskPercent(t.media_processed, t.media_total)}%</span></div>
+                </div>
               </td>
               <td>
-                {t.success || 0}/{t.failed || 0}
+                <span>数据 {t.success || 0}/{t.failed || 0}</span>
+                <small>白底 {t.media_success || 0}/{t.media_failed || 0}</small>
               </td>
-              <td>{t.batch_size || 500}</td>
+              <td>{t.batch_size || 500}<small>白底单并发稳态处理</small></td>
               <td>
                 <button onClick={() => taskAction(t.id, "pause")}>暂停</button>
                 <button onClick={() => taskAction(t.id, "resume")}>继续</button>
