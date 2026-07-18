@@ -36,8 +36,25 @@ type ChatMessage = {
   session_id?: number;
   product_id?: number | null;
   product_name?: string;
+  product_image?: string;
+  product_breed?: string;
+  product_price?: number;
+  type?: string;
   service_type?: string;
   created_at?: string;
+};
+
+type ServiceOrder = {
+  id: number;
+  orderNo: string;
+  status: string;
+  total: number;
+  productId?: number;
+  productName: string;
+  productImage?: string;
+  productBreed?: string;
+  logisticsStatus?: string;
+  trackingNo?: string;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
@@ -387,6 +404,9 @@ export function P0MessagesPage({
   const [failedText, setFailedText] = useState("");
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [showHistory, setShowHistory] = useState(true);
+  const [sharedProduct, setSharedProduct] = useState<ServiceContext | null>(context || null);
+  const [recentOrders, setRecentOrders] = useState<ServiceOrder[]>([]);
+  const [showOrderPicker, setShowOrderPicker] = useState(false);
   const [chat, setChat] = useState<ChatMessage[]>([
     {
       id: 1,
@@ -401,7 +421,12 @@ export function P0MessagesPage({
       const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}`);
       const messages = await response.json();
       if (Array.isArray(messages)) {
-        setHistory(messages.slice(-30).reverse());
+        const latestBySession = new Map<number | string, ChatMessage>();
+        messages.slice().sort((a: ChatMessage, b: ChatMessage) => Number(b.id) - Number(a.id)).forEach((message: ChatMessage) => {
+          const key = message.session_id || `message-${message.id}`;
+          if (!latestBySession.has(key)) latestBySession.set(key, message);
+        });
+        setHistory(Array.from(latestBySession.values()).slice(0, 12));
       }
     } catch {
       setHistory([]);
@@ -413,6 +438,33 @@ export function P0MessagesPage({
   useEffect(() => {
     if (context?.productName) setActiveType("购买咨询");
   }, [context?.productName]);
+  useEffect(() => {
+    setSharedProduct(context || null);
+  }, [context]);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/orders?user_id=${userId}`)
+      .then((response) => response.json())
+      .then((orders) => {
+        if (!Array.isArray(orders)) return setRecentOrders([]);
+        setRecentOrders(orders.slice(0, 8).map((order: any) => {
+          let pet: any = {};
+          try { pet = JSON.parse(order.pet_snapshot || "{}"); } catch {}
+          return {
+            id: Number(order.id),
+            orderNo: String(order.order_no || order.id),
+            status: String(order.status || "待处理"),
+            total: Number(order.total_amount || 0),
+            productId: Number(pet.id || order.pet_id || 0) || undefined,
+            productName: pet.name || "宠物订单",
+            productImage: displayMedia(pet.images?.[0]?.thumbnail_url || pet.images?.[0]?.webp_url || pet.images?.[0]?.url || pet.image),
+            productBreed: pet.breed || "宠物档案",
+            logisticsStatus: order.logistics_status || "等待物流更新",
+            trackingNo: order.tracking_no || "物流单号生成中",
+          } satisfies ServiceOrder;
+        }));
+      })
+      .catch(() => setRecentOrders([]));
+  }, [userId]);
   const openType = (type: string) => {
     setActiveType(type);
     setFailedText("");
@@ -429,8 +481,18 @@ export function P0MessagesPage({
   const continueSession = async (message: ChatMessage) => {
     if (message.session_id) setSessionId(message.session_id);
     setActiveType(message.service_type || "购买咨询");
+    if (message.product_id || message.product_name) {
+      setSharedProduct({
+        productId: message.product_id,
+        productName: message.product_name,
+        productImage: message.product_image,
+        productBreed: message.product_breed,
+        productPrice: message.product_price,
+        source: "service_history",
+      });
+    }
     try {
-      const response = await fetch(`${API_BASE}/api/messages?session_id=${message.session_id}`);
+      const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}&session_id=${message.session_id}`);
       const messages = await response.json();
       setChat(
         Array.isArray(messages)
@@ -441,6 +503,10 @@ export function P0MessagesPage({
               session_id: item.session_id,
               product_id: item.product_id,
               product_name: item.product_name,
+              product_image: item.product_image,
+              product_breed: item.product_breed,
+              product_price: item.product_price,
+              type: item.type,
               service_type: item.service_type,
             }))
           : [],
@@ -449,12 +515,20 @@ export function P0MessagesPage({
       setChat([{ id: Date.now(), sender: "service", content: "历史记录加载失败，请重新发送。" }]);
     }
   };
-  const send = async (override?: string) => {
+  const send = async (
+    override?: string,
+    meta?: { type?: string; productId?: number | null; productName?: string; productImage?: string },
+  ) => {
     const value = (override ?? text).trim();
     if (!value || sending) return sessionId;
     setSending(true);
     setFailedText("");
-    setChat((items) => [...items, { id: Date.now(), sender: "user", content: value }]);
+    setChat((items) => [...items, {
+      id: Date.now(), sender: "user", content: value, type: meta?.type,
+      product_id: meta?.productId || sharedProduct?.productId || undefined,
+      product_name: meta?.productName || sharedProduct?.productName,
+      product_image: meta?.productImage || sharedProduct?.productImage,
+    }]);
     if (!override) setText("");
     try {
       const response = await fetch(`${API_BASE}/api/messages`, {
@@ -463,13 +537,14 @@ export function P0MessagesPage({
         body: JSON.stringify({
           user_id: userId,
           sender: "user",
+          type: meta?.type || "service",
           content: value,
           session_id: sessionId,
-          product_id: context?.productId || null,
-          product_name: context?.productName || "",
-          seller_id: context?.sellerId || null,
-          seller_name: context?.sellerName || "福宠认证宠物馆",
-          source: context?.source || "message_center",
+          product_id: meta?.productId || sharedProduct?.productId || null,
+          product_name: meta?.productName || sharedProduct?.productName || "",
+          seller_id: sharedProduct?.sellerId || null,
+          seller_name: sharedProduct?.sellerName || "福宠认证宠物馆",
+          source: sharedProduct?.source || "message_center",
           service_type: activeType || "购买咨询",
         }),
       });
@@ -498,6 +573,53 @@ export function P0MessagesPage({
     }
     return sessionId;
   };
+  const sendProductCard = async () => {
+    if (!sharedProduct?.productName) return;
+    const summary = [
+      "【福宠商品资料】",
+      `商品：${sharedProduct.productName}`,
+      `品种：${sharedProduct.productBreed || "待客服核实"}`,
+      `价格：${sharedProduct.productPrice ? `¥${sharedProduct.productPrice}` : "以商品页实时价格为准"}`,
+      `商品ID：${sharedProduct.productId || "未关联"}`,
+      `商家：${sharedProduct.sellerName || "福宠认证宠物馆"}`,
+      "咨询诉求：请客服结合当前商品资料继续解答。",
+    ].join("\n");
+    await send(summary, {
+      type: "product_card",
+      productId: sharedProduct.productId,
+      productName: sharedProduct.productName,
+      productImage: sharedProduct.productImage,
+    });
+  };
+  const sendOrderCard = async (order: ServiceOrder) => {
+    const serviceLabel = activeType === "物流帮助" ? "物流咨询" : activeType === "售后服务" ? "订单售后" : "订单咨询";
+    const summary = [
+      `【福宠${serviceLabel}资料】`,
+      `订单号：${order.orderNo}`,
+      `商品：${order.productName}（${order.productBreed || "宠物档案"}）`,
+      `订单状态：${order.status}`,
+      `订单金额：¥${order.total}`,
+      `物流状态：${order.logisticsStatus || "等待更新"}`,
+      `物流单号：${order.trackingNo || "尚未生成"}`,
+      "咨询诉求：请客服根据订单与物流记录继续处理。",
+    ].join("\n");
+    setSharedProduct((current) => ({
+      ...current,
+      productId: order.productId,
+      productName: order.productName,
+      productImage: order.productImage,
+      productBreed: order.productBreed,
+      orderId: order.id,
+      orderNo: order.orderNo,
+    }));
+    setShowOrderPicker(false);
+    await send(summary, {
+      type: activeType === "物流帮助" ? "logistics_card" : activeType === "售后服务" ? "after_sale_card" : "order_card",
+      productId: order.productId,
+      productName: order.productName,
+      productImage: order.productImage,
+    });
+  };
   const handoff = async () => {
     const sid = sessionId || (await send("需要转人工客服"));
     if (!sid) return;
@@ -514,6 +636,24 @@ export function P0MessagesPage({
     event.preventDefault();
     send();
   };
+  const shareableOrders = useMemo(() => {
+    const fromContext: ServiceOrder | null = context?.orderId ? {
+      id: context.orderId,
+      orderNo: context.orderNo || String(context.orderId),
+      status: context.orderStatus || "待处理",
+      total: Number(context.productPrice || 0),
+      productId: context.productId || undefined,
+      productName: context.productName || "宠物订单",
+      productImage: context.productImage,
+      productBreed: context.productBreed,
+      logisticsStatus: context.logisticsStatus,
+      trackingNo: context.trackingNo,
+    } : null;
+    return fromContext
+      ? [fromContext, ...recentOrders.filter((order) => order.id !== fromContext.id)]
+      : recentOrders;
+  }, [context, recentOrders]);
+  const needsOrder = ["订单咨询", "售后服务", "物流帮助"].includes(activeType || "");
   return (
     <div className="module-page service-center">
       <Header title="客服中心" back={back} />
@@ -548,12 +688,13 @@ export function P0MessagesPage({
                   disabled={!item.product_id}
                   onClick={() => item.product_id && onOpenProduct?.(item.product_id, item.product_name)}
                 >
-                  宠
+                  {item.product_image ? <img src={displayMedia(item.product_image)} alt={item.product_name || "咨询宠物"} loading="lazy" /> : "宠"}
                 </button>
                 <button className="service-history-main" onClick={() => continueSession(item)}>
                   <strong>{item.product_name || item.service_type || "客服咨询"}</strong>
                   <small>{item.content}</small>
                 </button>
+                <button className="service-history-continue" onClick={() => continueSession(item)}>继续聊天　›</button>
               </article>
             ))}
           </div>
@@ -567,15 +708,36 @@ export function P0MessagesPage({
               <div>
                 <small>{humanPending ? "人工排队中" : "AI 即时回复 · 可转人工"}</small>
                 <h2>{activeType}</h2>
-                <p>{context?.productName ? `当前宠物：${context.productName}` : "未关联具体宠物"}</p>
+                <p>{sharedProduct?.productName ? `当前宠物：${sharedProduct.productName}` : "未关联具体宠物"}</p>
               </div>
               <button onClick={() => setActiveType(null)}>×</button>
             </header>
+            <div className="service-share-tools">
+              {sharedProduct?.productName && <button type="button" onClick={sendProductCard} disabled={sending}>
+                {sharedProduct.productImage ? <img src={displayMedia(sharedProduct.productImage)} alt={sharedProduct.productName} /> : <i>宠</i>}
+                <span><b>发送商品</b><small>{sharedProduct.productName}</small></span><em>＋</em>
+              </button>}
+              {needsOrder && <button type="button" onClick={() => setShowOrderPicker((value) => !value)} disabled={!shareableOrders.length}>
+                <i>{activeType === "物流帮助" ? "运" : activeType === "售后服务" ? "后" : "单"}</i>
+                <span><b>{activeType === "物流帮助" ? "发送物流订单" : activeType === "售后服务" ? "发送售后订单" : "发送订单"}</b><small>{shareableOrders.length ? `${shareableOrders.length} 个订单可选择` : "暂无订单"}</small></span><em>＋</em>
+              </button>}
+            </div>
+            {showOrderPicker && needsOrder && <div className="service-order-picker">
+              <header><b>选择要发送的订单</b><button type="button" onClick={() => setShowOrderPicker(false)}>收起</button></header>
+              {shareableOrders.slice(0, 5).map((order) => <button type="button" key={order.id} onClick={() => sendOrderCard(order)}>
+                {order.productImage ? <img src={order.productImage} alt={order.productName} /> : <i>单</i>}
+                <span><b>{order.productName}</b><small>{order.orderNo} · {order.status}</small></span><em>发送</em>
+              </button>)}
+            </div>}
             <div className="chat-window sheet-chat">
               {chat.map((message) => (
                 <div key={message.id} className={`chat-bubble ${message.sender}`}>
                   <i>{message.sender === "service" ? "福" : "我"}</i>
-                  <p>{message.content}</p>
+                  {message.type && message.type !== "service" ? <div className={`chat-share-card ${message.type}`}>
+                    <small>{message.type === "product_card" ? "已发送商品" : message.type === "logistics_card" ? "已发送物流订单" : message.type === "after_sale_card" ? "已发送售后订单" : "已发送订单"}</small>
+                    <b>{message.product_name || "福宠资料"}</b>
+                    <p>{message.content}</p>
+                  </div> : <p>{message.content}</p>}
                 </div>
               ))}
               {failedText && (

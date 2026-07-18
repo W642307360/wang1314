@@ -311,8 +311,8 @@ async function handleCommerce(request, env, url, path, method) {
   if (path === "/api/after-sales" && method === "POST") { const x=await body(request); const r=await run(db,"INSERT INTO after_sales(order_id,user_id,type,reason,amount,status) VALUES(?,?,?,?,?,'pending')",id(x.order_id),id(x.user_id),text(x.type,"售后申请"),text(x.reason),Number(x.amount)||0); return json({id:r.meta.last_row_id,ok:true},201); }
 
   if (path === "/api/messages" && method === "GET") {
-    if (url.searchParams.get("session_id")) return json(await all(db,"SELECT * FROM messages WHERE session_id=? ORDER BY id",id(url.searchParams.get("session_id"))));
-    return json(await all(db,"SELECT * FROM messages WHERE user_id=? ORDER BY id DESC LIMIT 200",id(url.searchParams.get("user_id"))));
+    if (url.searchParams.get("session_id")) return json(await all(db,`SELECT m.*,p.breed product_breed,p.price product_price,COALESCE(p.thumbnail_url,p.highres_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) product_image FROM messages m LEFT JOIN pets p ON p.id=m.product_id WHERE m.session_id=? ORDER BY m.id`,id(url.searchParams.get("session_id"))));
+    return json(await all(db,`SELECT m.*,p.breed product_breed,p.price product_price,COALESCE(p.thumbnail_url,p.highres_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) product_image FROM messages m LEFT JOIN pets p ON p.id=m.product_id WHERE m.user_id=? ORDER BY m.id DESC LIMIT 200`,id(url.searchParams.get("user_id"))));
   }
   if (path === "/api/messages" && method === "POST") {
     const x=await body(request); let sessionId=id(x.session_id);

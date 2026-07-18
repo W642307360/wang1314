@@ -2853,12 +2853,20 @@ const server = createServer(async (req, res) => {
         200,
         sessionId
           ? rows(
-              "SELECT * FROM messages WHERE session_id=? AND user_id=? ORDER BY id",
+              `SELECT m.*,p.breed AS product_breed,p.price AS product_price,
+                      COALESCE(p.thumbnail_url,p.highres_url,
+                        (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) AS product_image
+               FROM messages m LEFT JOIN pets p ON p.id=m.product_id
+               WHERE m.session_id=? AND m.user_id=? ORDER BY m.id`,
               Number(sessionId),
               userId,
             )
           : rows(
-              "SELECT * FROM messages WHERE user_id=? ORDER BY id",
+              `SELECT m.*,p.breed AS product_breed,p.price AS product_price,
+                      COALESCE(p.thumbnail_url,p.highres_url,
+                        (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) AS product_image
+               FROM messages m LEFT JOIN pets p ON p.id=m.product_id
+               WHERE m.user_id=? ORDER BY m.id`,
               userId,
             ),
       );
@@ -2950,9 +2958,13 @@ const server = createServer(async (req, res) => {
         res,
         200,
         rows(
-          `SELECT s.*,u.nickname,u.phone
+          `SELECT s.*,u.nickname,u.phone,p.breed AS product_breed,p.price AS product_price,
+                  COALESCE(p.thumbnail_url,p.highres_url,
+                    (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) AS product_image,
+                  (SELECT m.content FROM messages m WHERE m.session_id=s.id ORDER BY m.id DESC LIMIT 1) AS latest_message
            FROM customer_service_sessions s
            JOIN users u ON u.id=s.user_id
+           LEFT JOIN pets p ON p.id=s.product_id
            ORDER BY s.updated_at DESC LIMIT 200`,
         ),
       );

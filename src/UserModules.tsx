@@ -25,8 +25,16 @@ export type ServiceContext = {
   breedId?: number | null;
   sellerId?: number | null;
   productName?: string;
+  productImage?: string;
+  productBreed?: string;
+  productPrice?: number;
   sellerName?: string;
   source?: string;
+  orderId?: number;
+  orderNo?: string;
+  orderStatus?: string;
+  logisticsStatus?: string;
+  trackingNo?: string;
 };
 export type Order = {
   id: string;

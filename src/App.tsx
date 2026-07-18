@@ -2318,6 +2318,8 @@ const careGuides: CareGuide[] = [
     image: hallByKey("cats").breeds[0].image,
     tone: "奶油安抚",
     minutes: 8,
+    points: ["先设置安静的单独房间，保留熟悉气味并避免多人围观", "前24小时固定水碗、食盆与猫砂盆位置，只记录不强迫互动", "第3–7天逐步开放活动区域，并完成体重、食欲、排泄和首次体检记录"],
+    warning: "幼猫超过12小时拒食、持续腹泻或精神明显下降，应尽快联系专业兽医。",
   },
   {
     id: "dog-social",
@@ -2327,6 +2329,8 @@ const careGuides: CareGuide[] = [
     image: hallByKey("dogs").breeds[5].image,
     tone: "阳光训练",
     minutes: 12,
+    points: ["先在安静环境建立名字回应、跟随和主动看人的奖励关系", "每天只增加一种声音、地面或陌生人刺激，保持可退回的安全距离", "用短时高频练习替代强迫接触，结束时记录压力信号与恢复时间"],
+    warning: "夹尾、持续躲避、僵住或攻击是压力过高的信号，应立即降低难度。",
   },
   {
     id: "bird-home",
@@ -2336,6 +2340,8 @@ const careGuides: CareGuide[] = [
     image: hallByKey("birds").breeds[0].image,
     tone: "羽色日记",
     minutes: 6,
+    points: ["笼舍远离油烟、直吹空调与昼夜噪声，预留连续安静睡眠时间", "使用不同粗细的天然站杆，食水区与排泄区分开并每日清洁", "每周记录体重、羽毛、鸣叫和食量，换羽期增加营养与环境观察"],
+    warning: "张口呼吸、持续炸毛、栖杆不稳或突然安静，应尽快进行鸟类专科检查。",
   },
   {
     id: "aqua-water",
@@ -2345,6 +2351,8 @@ const careGuides: CareGuide[] = [
     image: hallByKey("aquatic").breeds[1].image,
     tone: "蓝色水境",
     minutes: 10,
+    points: ["空缸运行过滤并建立硝化循环，确认氨氮和亚硝酸盐稳定后再入鱼", "新鱼先隔离观察，分批入缸并缓慢完成温度与水质适应", "固定每周检测和换水节奏，只清洗部分滤材，避免破坏菌群"],
+    warning: "集体浮头、急促呼吸或水体异味时先增氧并立即检测水质，不要盲目整缸用药。",
   },
   {
     id: "exotic-safe",
@@ -2354,6 +2362,8 @@ const careGuides: CareGuide[] = [
     image: hallByKey("exotic").breeds[1].image,
     tone: "特别生命",
     minutes: 9,
+    points: ["按物种准备独立温区、湿度计与躲避空间，不用人体体感代替测量", "建立喂食、蜕皮、排泄和体重记录，减少不必要的抓取与把玩", "每日检查加热、照明和箱体锁闭，提前准备停电或设备故障方案"],
+    warning: "奇宠物种差异很大，异常时应联系对应物种经验的专业机构，不要套用猫狗用药。",
   },
   {
     id: "health-archive",
@@ -2363,6 +2373,8 @@ const careGuides: CareGuide[] = [
     image: halls[4].hero,
     tone: "家庭档案",
     minutes: 7,
+    points: ["建立福宠健康首页：身份、品种、出生日期、芯片与紧急联系人", "按时间线记录疫苗、驱虫、体重、饮食变化、检查报告与用药", "每月用同一角度拍摄成长照片，并把异常视频与就诊结果关联保存"],
+    warning: "健康档案用于帮助观察和沟通，不能替代兽医诊断；药物剂量必须遵循专业医嘱。",
   },
   {
     id: "cat-feeding",
@@ -2505,12 +2517,68 @@ const careRoutes = [
   { icon: "安", title: "健康路线", text: "异常观察、健康档案与紧急判断", group: "通用" },
 ];
 
+const careGroupDetails: Record<string, {
+  extras: string[];
+  records: [string, string][];
+  phases: [string, string][];
+}> = {
+  猫猫: {
+    extras: ["保持资源位置稳定，任何调整一次只改变一个变量", "用照片和简短文字记录食欲、排泄、睡眠与互动意愿"],
+    records: [["饮食", "食量与饮水"], ["排泄", "次数与形态"], ["情绪", "躲藏与互动"], ["身体", "体重与被毛"]],
+    phases: [["第1天", "安静观察，建立安全边界"], ["第2–7天", "小步调整并形成稳定日程"], ["长期", "每周复盘趋势，不只看单次变化"]],
+  },
+  狗狗: {
+    extras: ["训练保持短时、清晰、可成功，在情绪稳定时结束", "把运动量、刺激强度和恢复时间一起记录，避免只追求疲劳"],
+    records: [["运动", "时长与强度"], ["训练", "成功与压力"], ["社交", "距离与反应"], ["恢复", "饮水与睡眠"]],
+    phases: [["准备期", "确定奖励物与安全距离"], ["练习期", "每日多次短练，逐级增加难度"], ["巩固期", "更换环境验证，并保留简单任务"]],
+  },
+  鸟类: {
+    extras: ["每天固定时间观察站姿、呼吸、鸣叫和粪便变化", "笼舍清洁与环境丰富化交替进行，避免一次大幅改变布局"],
+    records: [["体重", "固定时段称量"], ["羽毛", "换羽与完整度"], ["粪便", "颜色与形态"], ["行为", "鸣叫与活动"]],
+    phases: [["晨间", "先观察精神、粪便和饮水"], ["日间", "安排日照、互动和安全活动"], ["夜间", "遮光降噪，保障连续睡眠"]],
+  },
+  水族: {
+    extras: ["维护前先记录水温、游姿和设备状态，再决定是否操作", "换水、滤材和用药不要同时大改，以便判断真正原因"],
+    records: [["水温", "早晚变化"], ["水质", "氨氮与亚硝酸盐"], ["鱼况", "游姿与呼吸"], ["设备", "过滤与增氧"]],
+    phases: [["每日", "观察设备、呼吸与进食"], ["每周", "检测水质并小幅维护"], ["每月", "复盘生物负荷和混养关系"]],
+  },
+  奇宠: {
+    extras: ["所有温湿度数据以仪表为准，并同时记录测量位置", "先查清物种特性再调整饮食、光照和垫材，不套用猫狗经验"],
+    records: [["温区", "冷热端温度"], ["湿度", "昼夜区间"], ["进食", "种类与数量"], ["状态", "蜕皮与排泄"]],
+    phases: [["布置", "完成温区、躲避和防逃检查"], ["适应", "减少抓取，记录基础状态"], ["稳定", "按物种周期维护并校准设备"]],
+  },
+  通用: {
+    extras: ["把异常开始时间、持续时长和可能诱因写清楚", "保留照片、视频、报告与处置结果，方便专业人员连续判断"],
+    records: [["时间", "何时开始"], ["症状", "频率与程度"], ["诱因", "饮食与环境"], ["处置", "措施与结果"]],
+    phases: [["发现", "先排除即时危险并完整记录"], ["判断", "对照基线决定观察或就医"], ["复盘", "补齐档案并设置下一次提醒"]],
+  },
+};
+
+type CareAtlasBreed = BreedItem & { hallName: string };
+const careAtlasBreeds: CareAtlasBreed[] = Array.from(
+  new Map(
+    halls.flatMap((hall) => hall.breeds
+      .filter((breed) => Boolean(breed.knowledgeImage))
+      .map((breed) => [breed.name, { ...breed, hallName: hall.name }] as const)),
+  ).values(),
+);
+
 function CareManual({ go }: { go: (p: Page) => void }) {
   const [active, setActive] = useState("全部");
   const [careQuery, setCareQuery] = useState("");
   const [selectedGuide, setSelectedGuide] = useState<CareGuide | null>(null);
+  const [selectedKnowledge, setSelectedKnowledge] = useState<CareAtlasBreed | null>(null);
+  const [atlasQuery, setAtlasQuery] = useState("");
+  const [atlasLimit, setAtlasLimit] = useState(8);
   const groups = ["全部", ...Array.from(new Set(careGuides.map((item) => item.group)))];
   const list = (active === "全部" ? careGuides : careGuides.filter((item) => item.group === active)).filter((item) => !careQuery.trim() || `${item.title}${item.desc}${item.group}${item.tone}`.includes(careQuery.trim()));
+  const atlasMatches = useMemo(() => {
+    const query = atlasQuery.trim().toLowerCase();
+    return query
+      ? careAtlasBreeds.filter((breed) => `${breed.name}${breed.en}${breed.hallName}`.toLowerCase().includes(query))
+      : careAtlasBreeds;
+  }, [atlasQuery]);
+  const featuredKnowledge = atlasMatches[0] || careAtlasBreeds[0];
   return (
     <div className="care-page">
       <div className="subhead">
@@ -2525,13 +2593,32 @@ function CareManual({ go }: { go: (p: Page) => void }) {
         <div>
           <small>养宠照护手册</small>
           <h1>把“怎么养”做成一张可以翻阅的地图</h1>
-          <p>后续接入飞书或后台数据后，每个品种都能拥有自己的喂养、训练、健康和成长图片手册。</p>
+          <p>已与商品详情的品种科普图鉴互联，从喂养、训练到健康观察，一处更新即可在两处同步使用。</p>
         </div>
         <span>
           <b>{careGuides.length}</b>
           篇手册
         </span>
       </section>
+      {featuredKnowledge && <section className="care-atlas-entry">
+        <header>
+          <div><small>FUCHONG BREED ATLAS</small><h2>福宠品种科普图鉴</h2><p>与商品详情共用同一份图鉴资源，不重复存储；缩略图先开，高画质按需查看。</p></div>
+          <span><b>{careAtlasBreeds.length}</b>份图鉴</span>
+        </header>
+        <button className="care-atlas-feature" type="button" onClick={() => setSelectedKnowledge(featuredKnowledge)}>
+          <SmartImage src={featuredKnowledge.knowledgeThumbnail || featuredKnowledge.image} alt={`${featuredKnowledge.name}科普图鉴缩略图`} />
+          <div><i>福宠 · 今日图鉴</i><h3>{featuredKnowledge.name}</h3><p>{featuredKnowledge.en} · {featuredKnowledge.hallName}</p><b>打开完整科普图　↗</b></div>
+        </button>
+        <label className="care-atlas-search"><span>⌕</span><input value={atlasQuery} onChange={(event) => { setAtlasQuery(event.target.value); setAtlasLimit(8); }} placeholder="搜索品种图鉴，例如布偶猫、柯基、锦鲤" />{atlasQuery && <button type="button" onClick={() => setAtlasQuery("")}>清除</button>}</label>
+        <div className="care-atlas-grid">
+          {atlasMatches.slice(0, atlasLimit).map((breed) => <button type="button" key={breed.id} onClick={() => setSelectedKnowledge(breed)}>
+            <SmartImage src={breed.knowledgeThumbnail || breed.image} alt={`${breed.name}图鉴`} />
+            <span><b>{breed.name}</b><small>{breed.hallName} · 福宠图鉴</small></span>
+          </button>)}
+        </div>
+        {!atlasMatches.length && <p className="care-atlas-empty">暂未找到该品种图鉴，可查看全部已更新内容。</p>}
+        {atlasLimit < atlasMatches.length && <button className="care-atlas-more" type="button" onClick={() => setAtlasLimit((value) => value + 8)}>横向浏览更多 8 个品种 · 剩余 {atlasMatches.length - atlasLimit}</button>}
+      </section>}
       <section className="care-route-map">
         <header><div><small>CARE COMPASS</small><h2>从今天最需要的方向出发</h2></div><span>4 条路线</span></header>
         <div>{careRoutes.map((route) => <button type="button" key={route.title} onClick={() => { setActive(route.group); setCareQuery(""); }}><i>{route.icon}</i><span><b>{route.title}</b><small>{route.text}</small></span><em>→</em></button>)}</div>
@@ -2549,9 +2636,10 @@ function CareManual({ go }: { go: (p: Page) => void }) {
           <button key={guide.id} className={index % 3 === 0 ? "wide" : ""} onClick={() => setSelectedGuide(guide)}>
             <SmartImage src={guide.image} alt={guide.title} />
             <div>
-              <small>{guide.group} · {guide.minutes} 分钟</small>
+              <small>{guide.group} · {guide.minutes} 分钟</small><b className="care-brand-seal">福宠照护</b>
               <h3>{guide.title}</h3>
               <p>{guide.desc}</p>
+              <ul>{(guide.points || []).slice(0, 2).map((point) => <li key={point}>{point}</li>)}</ul>
               <em>{guide.tone}</em>
             </div>
           </button>
@@ -2571,14 +2659,29 @@ function CareManual({ go }: { go: (p: Page) => void }) {
         <div className="care-detail-mask" onClick={() => setSelectedGuide(null)}>
           <section className="care-detail-sheet" onClick={(event) => event.stopPropagation()}>
             <button className="care-detail-close" onClick={() => setSelectedGuide(null)}>×</button>
-            <small>{selectedGuide.group} · 约 {selectedGuide.minutes} 分钟</small>
+            <small>{selectedGuide.group} · 约 {selectedGuide.minutes} 分钟</small><b className="care-sheet-brand">福宠 FUCHONG · 专属照护手册</b>
             <h2>{selectedGuide.title}</h2>
             <p>{selectedGuide.desc}</p>
+            <div className="care-reading-intro"><span>福宠照护解读</span><p>这份手册围绕“{selectedGuide.tone}”整理。建议先建立宠物平日状态的基线，再按步骤逐项调整；每次只改变少量条件，才能判断真正有效的照护方式。</p></div>
             <h3>照护步骤</h3>
             <ol>
-              {(selectedGuide.points || ["先观察宠物当前状态", "逐步调整环境和日常节奏", "持续记录饮食、排泄与精神变化"]).map((point) => <li key={point}>{point}</li>)}
+              {[...(selectedGuide.points || []), ...(careGroupDetails[selectedGuide.group]?.extras || [])].map((point, index) => <li key={point}><b>{String(index + 1).padStart(2, "0")}</b><span>{point}</span></li>)}
             </ol>
+            <h3>福宠观察记录</h3>
+            <div className="care-record-grid">{(careGroupDetails[selectedGuide.group]?.records || []).map(([name, text]) => <span key={name}><b>{name}</b><small>{text}</small></span>)}</div>
+            <h3>建议执行节奏</h3>
+            <div className="care-phase-line">{(careGroupDetails[selectedGuide.group]?.phases || []).map(([name, text], index) => <article key={name}><i>{index + 1}</i><div><b>{name}</b><p>{text}</p></div></article>)}</div>
             <div className="care-warning"><b>重要提醒</b>{selectedGuide.warning || "发现持续异常或状态快速变化时，请及时联系专业兽医。"}</div>
+          </section>
+        </div>
+      )}
+      {selectedKnowledge && (
+        <div className="care-detail-mask" onClick={() => setSelectedKnowledge(null)}>
+          <section className="care-atlas-viewer" onClick={(event) => event.stopPropagation()}>
+            <button className="care-detail-close" onClick={() => setSelectedKnowledge(null)}>×</button>
+            <header><small>福宠品种图鉴 · {selectedKnowledge.hallName}</small><h2>{selectedKnowledge.name}</h2><p>{selectedKnowledge.en} · 完整科普图，点击后才加载高清资源</p></header>
+            <div><SmartImage src={selectedKnowledge.knowledgeThumbnail || selectedKnowledge.image} highres={selectedKnowledge.knowledgeImage || selectedKnowledge.image} alt={`${selectedKnowledge.name}完整科普图`} /></div>
+            <footer><b>福宠 FUCHONG</b><span>资料用于科学养宠参考，个体照护请结合专业建议。</span></footer>
           </section>
         </div>
       )}
@@ -2842,8 +2945,16 @@ export default function App() {
             setServiceContext({
               productId: order.petId,
               productName: order.petName,
+              productImage: order.image,
+              productBreed: order.breed,
+              productPrice: order.price,
               sellerName: order.sellerName,
               source: "order_center",
+              orderId: order.databaseId,
+              orderNo: order.id,
+              orderStatus: order.status,
+              logisticsStatus: order.logisticsStatus,
+              trackingNo: order.trackingNo,
             });
             go("service");
           }}

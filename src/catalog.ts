@@ -520,6 +520,6 @@ const localBreedKnowledge:Record<string,string>={
 }
 export const halls:Hall[]=(Object.keys(names) as HallKey[]).map(key=>{
  const [name,subtitle,tagline,accent]=meta[key]
- return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:localBreedPortraits[name]||verifiedPortraits[name]||photos[key][i%photos[key].length],growthImage:localBreedGrowth[name],knowledgeImage:localBreedKnowledge[name],knowledgeThumbnail:localBreedKnowledge[name]}))}
+ return {key,name,subtitle,hero:photos[key][0],accent,breeds:names[key].map((name,i)=>({id:`${key}-${i+1}`,name,en:english[name]||'Pet Breed',desc:`${tagline} · 标准品种档案`,image:localBreedPortraits[name]||verifiedPortraits[name]||photos[key][i%photos[key].length],growthImage:localBreedGrowth[name],knowledgeImage:localBreedKnowledge[name],knowledgeThumbnail:localBreedKnowledge[name]?.replace(/\.webp$/,'-thumb.webp')}))}
 })
 export const hallByKey=(key:HallKey)=>halls.find(x=>x.key===key)||halls[0]
