@@ -45,6 +45,7 @@ import { optimizePetImage } from "./imagePipeline";
 import { readCart, writeCart, type StoredCartPet } from "./cartStore";
 import { publishUserId, useUserId } from "./userIdentity";
 import { mediaUrl, mediaVideoUrl } from "./mediaUrl";
+import { BrandIntro } from "./BrandIntro";
 const MerchantPortal = lazy(() => import("./MerchantPortal"));
 
 type Page =
@@ -430,15 +431,19 @@ function Nav({ go, page }: { go: (p: Page) => void; page: Page }) {
 function Home({
   openHall,
   go,
+  replayBrandIntro,
 }: {
   openHall: (key: HallKey) => void;
   go: (page: Page) => void;
+  replayBrandIntro: () => void;
 }) {
   return (
     <>
       <header>
         <div className="brand">
-          <img className="brand-logo" src="/assets/fuchong-logo.webp" alt="" aria-hidden="true" />
+          <button className="brand-replay" onClick={replayBrandIntro} aria-label="重播福宠品牌动画">
+            <img className="brand-logo" src="/assets/fuchong-logo.webp" alt="福宠 Logo" />
+          </button>
           <h1>福宠</h1>
         </div>
         <button className="search" onClick={() => go("search")}>
@@ -2834,6 +2839,10 @@ export default function App() {
     if (!localStorage.getItem("fuchong-user")) ensureVisitor();
   }, []);
   const adminMode = location.hash.startsWith("#admin");
+  const forceBrandExperiment = new URLSearchParams(location.search).get("logo-intro") === "1";
+  const [showBrandIntro, setShowBrandIntro] = useState(
+    () => forceBrandExperiment || !localStorage.getItem("fuchong-brand-intro-seen-v1"),
+  );
   const [page, setPage] = useState<Page>("home");
   const [user, setUser] = useState<User | null>(() => {
     try {
@@ -2884,9 +2893,14 @@ export default function App() {
     go("detail");
   };
   if (adminMode) return <AdminApp />;
+  const closeBrandIntro = () => {
+    localStorage.setItem("fuchong-brand-intro-seen-v1", "1");
+    setShowBrandIntro(false);
+  };
   return (
     <main className="phone-shell">
-      {page === "home" && <Home openHall={openHall} go={go} />}{" "}
+      {showBrandIntro && <BrandIntro onClose={closeBrandIntro} />}
+      {page === "home" && <Home openHall={openHall} go={go} replayBrandIntro={() => setShowBrandIntro(true)} />}{" "}
       {page === "search" && (
         <SearchPage go={go} openBreed={openBreed} openPet={openPet} />
       )}
