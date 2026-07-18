@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import "./Chat.css";
 import { publishUserId, useUserId } from "./userIdentity";
 import { subscribeDataChange } from "./dataEvents";
+import { mediaUrl } from "./mediaUrl";
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const EMPTY_ADDRESS_FORM = {
   name: "",
@@ -52,10 +53,7 @@ export type Order = {
   sellerName?: string;
 };
 const petImg = "/assets/catalog/dogs-1-thumb.webp";
-const userMediaUrl = (url?: string) =>
-  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
-    ? `${API_BASE}/api/media/feishu?variant=thumb&url=${encodeURIComponent(url)}`
-    : url || petImg;
+const userMediaUrl = (url?: string) => mediaUrl(url) || petImg;
 const ORDER_STATUS_LABEL: Record<string, string> = {
   pending_payment: "待付款",
   pending_confirm: "待确认",
@@ -329,7 +327,7 @@ export function CollectionPage({
           <div className="collection-grid">
             {favorites.map((x) => (
               <article key={x.id}>
-                <img src={x.image || petImg} loading="lazy" decoding="async" />
+                <img src={mediaUrl(x.image) || petImg} loading="lazy" decoding="async" />
                 <button
                   onClick={() =>
                     confirm("确定取消收藏吗？") && removeFavorite(x.pet_id)

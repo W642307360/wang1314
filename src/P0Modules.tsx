@@ -9,6 +9,7 @@ import {
   type StoredCartPet,
 } from "./cartStore";
 import { publishUserId, useUserId } from "./userIdentity";
+import { mediaUrl } from "./mediaUrl";
 
 type FavoritePet = {
   id: number;
@@ -21,6 +22,7 @@ type FavoritePet = {
   age_months?: number;
   price?: number;
   image?: string;
+  showcase_image?: string;
   product_status?: string;
   pet_status?: string;
   created_at?: string;
@@ -60,10 +62,7 @@ type ServiceOrder = {
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
-const displayMedia = (url?: string) =>
-  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
-    ? `${API_BASE}/api/media/feishu?url=${encodeURIComponent(url)}`
-    : url || fallbackImg;
+const displayMedia = (url?: string) => mediaUrl(url) || fallbackImg;
 
 function Header({ title, back }: { title: string; back: () => void }) {
   return (
@@ -307,8 +306,17 @@ export function P0CollectionPage({
                       : onOpenPet(pet)
                   }
                 >
-                  <span className="collection-photo">
-                    <img src={displayMedia(pet.image)} loading="lazy" decoding="async" />
+                  <span className={`collection-photo${pet.showcase_image ? " showcase-collection-photo" : ""}`}>
+                    <img
+                      src={displayMedia(pet.showcase_image || pet.image)}
+                      loading="lazy"
+                      decoding="async"
+                      alt={pet.name || pet.breed || "收藏宠物"}
+                      onError={(event) => {
+                        if (pet.showcase_image && pet.image)
+                          event.currentTarget.src = displayMedia(pet.image);
+                      }}
+                    />
                   </span>
                   <em>{statusText(pet.product_status)}</em>
                 </button>
@@ -345,8 +353,17 @@ export function P0CollectionPage({
             {cart.map((pet) => (
               <article key={pet.cart_id} className="favorite-card cart-card">
                 <button className="favorite-open" onClick={() => onOpenPet(pet)}>
-                  <span className="collection-photo">
-                    <img src={pet.image || fallbackImg} loading="lazy" decoding="async" />
+                  <span className={`collection-photo${pet.showcase_image ? " showcase-collection-photo" : ""}`}>
+                    <img
+                      src={displayMedia(pet.showcase_image || pet.image)}
+                      loading="lazy"
+                      decoding="async"
+                      alt={pet.name || pet.breed || "购物车宠物"}
+                      onError={(event) => {
+                        if (pet.showcase_image && pet.image)
+                          event.currentTarget.src = displayMedia(pet.image);
+                      }}
+                    />
                   </span>
                   <em>购物车</em>
                 </button>

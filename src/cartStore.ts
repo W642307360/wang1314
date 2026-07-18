@@ -7,6 +7,7 @@ export type StoredCartPet = {
   age_months?: number;
   price: number;
   image?: string;
+  showcase_image?: string;
   seller_name?: string;
   quantity?: number;
   added_at: string;

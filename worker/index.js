@@ -1,5 +1,12 @@
-const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
-const PUBLIC_CACHE = { "content-type": "application/json; charset=utf-8", "cache-control": "public,max-age=30,stale-while-revalidate=120" };
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=()",
+  "content-security-policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+};
+const JSON_HEADERS = { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+const PUBLIC_CACHE = { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "public,max-age=30,stale-while-revalidate=120" };
 const enc = new TextEncoder();
 
 function json(data, status = 200, headers = JSON_HEADERS) {
@@ -31,6 +38,7 @@ async function adminToken(env, username) {
   return `${payload}.${await hmac(env.ADMIN_TOKEN_SECRET, payload)}`;
 }
 async function verifyAdmin(request, env) {
+  if (!env.ADMIN_TOKEN_SECRET) return null;
   const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
   const parts = token.split(".");
   if (parts.length !== 3) return null;
@@ -361,6 +369,8 @@ async function adminStats(db) {
 async function handleAdmin(request, env, url, path, method) {
   const db = env.DB;
   if (path === "/api/admin/login" && method === "POST") {
+    if (!env.ADMIN_TOKEN_SECRET || !env.ADMIN_INITIAL_PASSWORD)
+      return error("后台安全配置缺失", 503);
     const x = await body(request); const username = text(x.username, "admin");
     if (username !== (env.ADMIN_USERNAME || "admin") || String(x.password || "") !== String(env.ADMIN_INITIAL_PASSWORD || "")) return error("账号或密码错误", 401);
     return json({ token: await adminToken(env, username), user: { id: 1, username, role: "admin" } });

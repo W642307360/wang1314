@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "node scripts/clean-dist.mjs && tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node --test server/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

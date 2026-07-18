@@ -5,11 +5,9 @@ import "./AdminLogin.css";
 import "./Feishu.css";
 import "./AdminCommunity.css";
 import { announceDataChange, subscribeDataChange } from "./dataEvents";
+import { mediaUrl } from "./mediaUrl";
 const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
-const adminMediaUrl = (url?: string) =>
-  url && /^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url)
-    ? `${API_BASE}/api/media/feishu?variant=thumb&url=${encodeURIComponent(url)}`
-    : url || "";
+const adminMediaUrl = (url?: string) => mediaUrl(url);
 
 type AdminTab =
   | "dashboard"
@@ -20,6 +18,7 @@ type AdminTab =
   | "logistics"
   | "afterSales"
   | "other"
+  | "merchants"
   | "reviews"
   | "content"
   | "feishu";
@@ -100,6 +99,10 @@ export default function AdminApp() {
   return (
     <AdminPanel
       token={token}
+      updateToken={(nextToken) => {
+        localStorage.setItem("fuchong-admin-token", nextToken);
+        setToken(nextToken);
+      }}
       logout={() => {
         localStorage.removeItem("fuchong-admin-token");
         setToken("");
@@ -150,12 +153,12 @@ function AdminLogin({ success }: { success: (token: string) => void }) {
         </label>
         {error && <em>{error}</em>}
         <button>安全登录</button>
-        <small>初始账号：admin　初始密码：123456789</small>
+        <small>登录凭证由平台管理员单独配置，请勿向他人透露</small>
       </form>
     </div>
   );
 }
-function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
+function AdminPanel({ token, logout, updateToken }: { token: string; logout: () => void; updateToken: (token: string) => void }) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
   const [showForm, setShowForm] = useState(false);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
@@ -164,6 +167,21 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
+  const changeAdminPassword = async () => {
+    const currentPassword = prompt("请输入当前管理员密码");
+    if (!currentPassword) return;
+    const newPassword = prompt("请输入新密码（至少12位，包含大小写字母和数字）");
+    if (!newPassword) return;
+    const response = await fetch(`${API_BASE}/api/admin/change-password`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) return alert(result.message || "密码修改失败");
+    updateToken(result.token);
+    alert("管理员密码已更新，其他旧登录凭证已失效");
+  };
   const loadProducts = useCallback(() => {
     setProductsLoading(true);
     setProductsError("");
@@ -334,6 +352,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
             ["logistics", "⌖", "物流管理"],
             ["afterSales", "↻", "客诉售后"],
             ["other", "✦", "其他申请"],
+            ["merchants", "店", "商家入驻"],
             ["reviews", "言", "评价内容"],
             ["content", "▤", "首页内容"],
             ["feishu", "云", "飞书同步"],
@@ -365,6 +384,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
                   logistics: "物流管理",
                   afterSales: "客诉与售后",
                   other: "其他申请",
+                  merchants: "商家入驻审核",
                   reviews: "评价内容",
                   content: "首页内容",
                   feishu: "飞书同步",
@@ -374,6 +394,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
           </div>
           <div className="admin-user">
             运营管理员 <b>管</b>
+            <button className="admin-logout" onClick={changeAdminPassword}>修改密码</button>
             <button className="admin-logout" onClick={logout}>退出</button>
           </div>
         </header>
@@ -405,6 +426,7 @@ function AdminPanel({ token, logout }: { token: string; logout: () => void }) {
         {tab === "logistics" && <Logistics token={token} />}
         {tab === "afterSales" && <AfterSales token={token} />}
         {tab === "other" && <CommunityApplications token={token} />}
+        {tab === "merchants" && <MerchantApplications token={token} />}
         {tab === "reviews" && <ReviewsManager token={token} products={products} />}
         {tab === "content" && <ContentManager token={token} />}
         {tab === "feishu" && <FeishuManager token={token} />}
@@ -1473,6 +1495,78 @@ function AfterSales({ token }: { token: string }) {
       </table>
     </section>
   );
+}
+function MerchantApplications({ token }: { token: string }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [accountDrafts, setAccountDrafts] = useState<Record<number, { username: string; password: string }>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const headers = useMemo(() => ({ authorization: `Bearer ${token}`, "content-type": "application/json" }), [token]);
+  const load = useCallback(async () => {
+    setLoading(true); setError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/merchant-applications`, { headers, cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "商家申请加载失败");
+      setItems(payload);
+      setAccountDrafts(Object.fromEntries(payload.map((item: any) => [item.id, {
+        username: item.account_username || `merchant_${item.id}`,
+        password: "",
+      }])));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "商家申请加载失败"); }
+    finally { setLoading(false); }
+  }, [headers]);
+  useEffect(() => { void load(); }, [load]);
+  const review = async (item: any, status: "approved" | "rejected") => {
+    const reply = status === "approved" ? "资料审核通过，商家账号已启用" : prompt("填写未通过原因", "资料暂不符合平台入驻要求");
+    if (!reply) return;
+    let username: string | undefined = accountDrafts[item.id]?.username.trim();
+    let password: string | undefined = accountDrafts[item.id]?.password;
+    if (status === "approved") {
+      if (!/^[a-zA-Z0-9_]{4,24}$/.test(username || "")) return alert("请填写 4-24 位字母、数字或下划线登录账号");
+      if ((password || "").length < 8) return alert("请填写至少 8 位的登录密码");
+    }
+    const response = await fetch(`${API_BASE}/api/admin/merchant-applications/${item.id}`, { method: "PATCH", headers, body: JSON.stringify({ status, admin_reply: reply, username, password }) });
+    const payload = await response.json();
+    if (!response.ok) return alert(payload.message || "审核失败");
+    await load();
+  };
+  const toggleAccount = async (item: any) => {
+    const next = item.account_status === "active" ? "disabled" : "active";
+    if (!confirm(next === "disabled" ? "确认停用该商家登录账号？已上架商品不会自动删除。" : "确认重新启用该商家账号？")) return;
+    const response = await fetch(`${API_BASE}/api/admin/merchant-accounts/${item.merchant_account_id}`, { method: "PATCH", headers, body: JSON.stringify({ status: next }) });
+    if (!response.ok) return alert("账号状态更新失败");
+    await load();
+  };
+  const resetAccount = async (item: any) => {
+    const username = accountDrafts[item.id]?.username.trim() || "";
+    const password = accountDrafts[item.id]?.password || "";
+    if (!/^[a-zA-Z0-9_]{4,24}$/.test(username)) return alert("请填写 4-24 位字母、数字或下划线登录账号");
+    if (password.length < 8) return alert("请输入至少 8 位的新密码");
+    const response = await fetch(`${API_BASE}/api/admin/merchant-accounts/${item.merchant_account_id}`, { method: "PATCH", headers, body: JSON.stringify({ username, password }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return alert(payload.message || "账号密码更新失败");
+    alert("商家登录账号与密码已更新"); await load();
+  };
+  return <section className="admin-table merchant-review-table">
+    <div><h3>商家入驻与账号审核</h3><small>经营账号与商品详情展示商家完全分离；这里只审核操作权限，不改变前台随机商家档案。</small></div>
+    {loading ? <div className="admin-state">商家申请加载中…</div> : error ? <div className="admin-state error">{error}<button onClick={() => void load()}>重试</button></div> : <table>
+      <thead><tr><th>申请与店铺</th><th>联系人</th><th>经营资料</th><th>账号状态</th><th>审核操作</th></tr></thead>
+      <tbody>{!items.length && <EmptyRow cols={5} text="暂无商家入驻申请" />}{items.map((item) => <tr key={item.id}>
+        <td><b>{item.shop_name}</b><small>{item.application_no}<br />登录账号：{item.account_username || "待管理员设置"}</small></td>
+        <td>{item.applicant_name}<small>{item.contact_phone}<br />{item.city || "未填写城市"}</small></td>
+        <td><small>{item.business_description || "未填写补充说明"}</small></td>
+        <td><span className={`community-status ${item.status}`}>{item.status === "pending" ? "待审核" : item.status === "approved" ? "已通过" : "未通过"}</span><small>{item.account_status ? `账号：${item.account_status === "active" ? "可登录" : "已停用"}` : "尚未创建账号"}<br />商品 {item.product_count || 0} 件</small></td>
+        <td><div className="merchant-account-editor">
+          {(item.status === "pending" || item.merchant_account_id) && <>
+            <input aria-label={`${item.shop_name}商家登录账号`} value={accountDrafts[item.id]?.username || ""} placeholder="登录账号" onChange={(event) => setAccountDrafts((current) => ({ ...current, [item.id]: { username: event.target.value, password: current[item.id]?.password || "" } }))} />
+            <input aria-label={`${item.shop_name}商家登录密码`} value={accountDrafts[item.id]?.password || ""} type="password" autoComplete="new-password" placeholder={item.merchant_account_id ? "输入新密码后重设" : "设置至少 8 位密码"} onChange={(event) => setAccountDrafts((current) => ({ ...current, [item.id]: { username: current[item.id]?.username || "", password: event.target.value } }))} />
+          </>}
+          <div className="community-admin-actions">{item.status === "pending" && <><button className="primary" onClick={() => review(item, "approved")}>审核通过并启用登录</button><button onClick={() => review(item, "rejected")}>驳回</button></>}{item.merchant_account_id && <><button className="primary" onClick={() => resetAccount(item)}>保存新账号密码</button><button onClick={() => toggleAccount(item)}>{item.account_status === "active" ? "停用账号" : "启用账号"}</button></>}</div>
+        </div></td>
+      </tr>)}</tbody>
+    </table>}
+  </section>;
 }
 function CommunityApplications({ token }: { token: string }) {
   const [items, setItems] = useState<any[]>([]);

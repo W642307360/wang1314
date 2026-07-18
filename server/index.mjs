@@ -84,16 +84,29 @@ const SECRET =
   process.env.ADMIN_TOKEN_SECRET ||
   process.env.JWT_SECRET ||
   "dev-only-change-in-production";
+if (process.env.NODE_ENV === "production" && SECRET === "dev-only-change-in-production")
+  throw new Error("生产环境必须配置 ADMIN_TOKEN_SECRET 或 JWT_SECRET");
 const hash = (password, salt) => scryptSync(password, salt, 64).toString("hex");
-const initialAdminPassword = process.env.ADMIN_INITIAL_PASSWORD || "123456789";
+const credentialVersion = (passwordHash) =>
+  createHash("sha256").update(String(passwordHash || "")).digest("hex").slice(0, 20);
+const constantTimeTextEqual = (left, right) => {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+const initialAdminPassword = process.env.ADMIN_INITIAL_PASSWORD || randomBytes(18).toString("base64url");
 const existingAdmin = db
   .prepare("SELECT * FROM admins WHERE username=?")
   .get("admin");
 if (!existingAdmin) {
+  if (process.env.NODE_ENV === "production" && !process.env.ADMIN_INITIAL_PASSWORD)
+    throw new Error("首次启动生产环境必须配置 ADMIN_INITIAL_PASSWORD");
   const salt = randomBytes(16).toString("hex");
   db.prepare(
     "INSERT INTO admins(username,password_hash,salt) VALUES(?,?,?)",
   ).run("admin", hash(initialAdminPassword, salt), salt);
+  if (process.env.NODE_ENV !== "production" && !process.env.ADMIN_INITIAL_PASSWORD)
+    console.warn(`首次本地管理员密码：${initialAdminPassword}`);
 }
 if (!db.prepare("SELECT id FROM users LIMIT 1").get())
   db.prepare("INSERT INTO users(nickname,phone) VALUES(?,?)").run(
@@ -110,13 +123,26 @@ const tokenFor = (admin) => {
     sub: admin.id,
     username: admin.username,
     role: admin.role,
+    ver: credentialVersion(admin.password_hash),
     exp: Date.now() + 86400000,
   });
   return `${body}.${sign(body)}`;
 };
+const merchantTokenFor = (merchant) => {
+  const body = b64({
+    sub: merchant.id,
+    username: merchant.username,
+    role: "merchant",
+    ver: credentialVersion(merchant.password_hash),
+    exp: Date.now() + 12 * 60 * 60 * 1000,
+  });
+  return `${body}.${sign(body)}`;
+};
 const auth = (req) => {
-  const t = req.headers.authorization?.replace("Bearer ", "");
-  if (!t) return null;
+  const authorization = String(req.headers.authorization || "");
+  if (!/^Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/i.test(authorization) || authorization.length > 4096)
+    return null;
+  const t = authorization.replace(/^Bearer\s+/i, "");
   const [b, s] = t.split(".");
   if (!b || !s) return null;
   const expected = Buffer.from(sign(b));
@@ -133,18 +159,66 @@ const auth = (req) => {
 const json = (res, status, data) => {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type,authorization",
-    "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   });
   res.end(JSON.stringify(data));
 };
+const configuredOrigins = new Set(
+  String(process.env.ALLOWED_ORIGINS || process.env.APP_ORIGIN || "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/$/, ""))
+    .filter(Boolean),
+);
+if (process.env.NODE_ENV !== "production") {
+  configuredOrigins.add("http://127.0.0.1:4173");
+  configuredOrigins.add("http://localhost:4173");
+}
+const applyRequestSecurity = (req, res) => {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("cross-origin-resource-policy", "same-site");
+  res.setHeader("content-security-policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  res.setHeader("cache-control", "no-store");
+  const origin = String(req.headers.origin || "").replace(/\/$/, "");
+  if (!origin) return true;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const protocol = forwardedProto || (req.socket.encrypted ? "https" : "http");
+  const sameOrigin = `${protocol}://${req.headers.host}`;
+  if (origin !== sameOrigin && !configuredOrigins.has(origin)) return false;
+  res.setHeader("access-control-allow-origin", origin);
+  res.setHeader("vary", "Origin");
+  res.setHeader("access-control-allow-headers", "content-type,authorization");
+  res.setHeader("access-control-allow-methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  return true;
+};
+const requestBuckets = new Map();
+const clientAddress = (req) =>
+  String(req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "unknown").slice(0, 80);
+const allowRequest = (req, scope, limit, windowMs) => {
+  const now = Date.now();
+  const key = `${scope}:${clientAddress(req)}`;
+  const current = requestBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    requestBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfter: 0 };
+  }
+  current.count++;
+  if (current.count <= limit) return { allowed: true, retryAfter: 0 };
+  return { allowed: false, retryAfter: Math.max(1, Math.ceil((current.resetAt - now) / 1000)) };
+};
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of requestBuckets)
+    if (value.resetAt <= now) requestBuckets.delete(key);
+}, 10 * 60 * 1000).unref();
 const rawBody = async (req) => {
   let raw = "";
   let size = 0;
+  const limit = String(req.url || "").includes("/uploads") ? 14 * 1024 * 1024 : 1024 * 1024;
   for await (const c of req) {
     size += c.length;
-    if (size > 25 * 1024 * 1024) throw new Error("请求内容过大");
+    if (size > limit) throw Object.assign(new Error("请求内容过大"), { statusCode: 413 });
     raw += c;
   }
   return raw;
@@ -152,6 +226,28 @@ const rawBody = async (req) => {
 const body = async (req) => {
   const raw = await rawBody(req);
   return raw ? JSON.parse(raw) : {};
+};
+const saveUploadedMedia = (d) => {
+  const cleanName = String(d.fileName || "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const extension = extname(cleanName).toLowerCase();
+  const allowed = new Set([".jpg", ".jpeg", ".png", ".webp", ".mp4"]);
+  if (!allowed.has(extension)) throw Object.assign(new Error("仅支持 JPG、PNG、WebP 图片或 MP4 视频"), { statusCode: 400 });
+  const buffer = Buffer.from(String(d.data || ""), "base64");
+  if (!buffer.length || buffer.length > 10 * 1024 * 1024)
+    throw Object.assign(new Error("文件不能为空且不能超过 10MB"), { statusCode: 400 });
+  const validSignature =
+    (extension === ".jpg" || extension === ".jpeg") ? buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff :
+    extension === ".png" ? buffer.subarray(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])) :
+    extension === ".webp" ? buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP" :
+    extension === ".mp4" ? buffer.subarray(4, 8).toString("ascii") === "ftyp" : false;
+  if (!validSignature)
+    throw Object.assign(new Error("文件内容与扩展名不匹配"), { statusCode: 400 });
+  const safe = `${Date.now()}-${randomBytes(4).toString("hex")}-${cleanName}`;
+  writeFileSync(join(root, "uploads", safe), buffer);
+  return {
+    url: `${process.env.PUBLIC_API_BASE || ""}/uploads/${safe}`,
+    type: d.type || "file",
+  };
 };
 const rows = (sql, ...args) => db.prepare(sql).all(...args);
 const NEWCOMER_COUPON_CODE = "NEW_USER_300";
@@ -683,7 +779,7 @@ const serveRangeFile = (req, res, file, contentType) => {
       "content-length": size,
       "accept-ranges": "bytes",
       "cache-control": "public,max-age=31536000,immutable",
-      "access-control-allow-origin": "*",
+      "cross-origin-resource-policy": "cross-origin",
     });
     return createReadStream(file).pipe(res);
   }
@@ -695,7 +791,7 @@ const serveRangeFile = (req, res, file, contentType) => {
     "content-range": `bytes ${start}-${end}/${size}`,
     "accept-ranges": "bytes",
     "cache-control": "public,max-age=31536000,immutable",
-    "access-control-allow-origin": "*",
+    "cross-origin-resource-policy": "cross-origin",
   });
   return createReadStream(file, { start, end }).pipe(res);
 };
@@ -817,6 +913,26 @@ const ensureShowcaseImage = async (petId) => {
   }).finally(() => showcaseImageTasks.delete(identity));
   showcaseImageTasks.set(identity, task);
   return task;
+};
+const queueMerchantShowcase = (petId) => {
+  db.prepare(
+    "UPDATE pet_products SET showcase_status='pending',showcase_error=NULL,showcase_updated_at=CURRENT_TIMESTAMP WHERE pet_id=?",
+  ).run(petId);
+  setTimeout(async () => {
+    try {
+      db.prepare(
+        "UPDATE pet_products SET showcase_status='processing',showcase_error=NULL,showcase_updated_at=CURRENT_TIMESTAMP WHERE pet_id=?",
+      ).run(petId);
+      await ensureShowcaseImage(petId);
+      db.prepare(
+        "UPDATE pet_products SET showcase_status='success',showcase_error=NULL,showcase_updated_at=CURRENT_TIMESTAMP WHERE pet_id=?",
+      ).run(petId);
+    } catch (error) {
+      db.prepare(
+        "UPDATE pet_products SET showcase_status='failed',showcase_error=?,showcase_updated_at=CURRENT_TIMESTAMP WHERE pet_id=?",
+      ).run(error instanceof Error ? error.message : String(error), petId);
+    }
+  }, 0);
 };
 const commitShowcaseResult = (itemId, taskId, status, error = null) => {
   db.exec("BEGIN");
@@ -1389,10 +1505,26 @@ const processSyncTask = (taskId, items) => {
 
 const server = createServer(async (req, res) => {
   try {
+    if (!applyRequestSecurity(req, res))
+      return json(res, 403, { message: "请求来源不被允许" });
     if (req.method === "OPTIONS") return json(res, 204, {});
     const url = new URL(req.url, "http://localhost");
     const path = url.pathname;
     const method = req.method;
+    const rateRule =
+      path === "/api/admin/login" ? ["admin-login", 8, 15 * 60 * 1000] :
+      path === "/api/merchant/login" ? ["merchant-login", 12, 15 * 60 * 1000] :
+      path === "/api/merchant/applications" && method === "POST" ? ["merchant-application", 5, 60 * 60 * 1000] :
+      path.startsWith("/api/media/product-showcase/") ? ["showcase-media", 600, 5 * 60 * 1000] :
+      path.includes("/uploads") && method === "POST" ? ["media-upload", 80, 60 * 60 * 1000] :
+      path.startsWith("/api/admin/") || path.startsWith("/api/merchant/") ? ["protected-api", 1200, 5 * 60 * 1000] : null;
+    if (rateRule) {
+      const rate = allowRequest(req, rateRule[0], rateRule[1], rateRule[2]);
+      if (!rate.allowed) {
+        res.setHeader("retry-after", String(rate.retryAfter));
+        return json(res, 429, { message: "请求过于频繁，请稍后重试" });
+      }
+    }
     if (path === "/api/media/feishu" && method === "GET") {
       const rawUrl = url.searchParams.get("url");
       let mediaUrl;
@@ -1453,8 +1585,8 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, {
         "content-type":
           contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
-        "access-control-allow-origin": "*",
         "cache-control": "public,max-age=31536000,immutable",
+        "cross-origin-resource-policy": "cross-origin",
       });
       return res.end(readFileSync(file));
     }
@@ -1685,18 +1817,293 @@ const server = createServer(async (req, res) => {
           .get(id),
       );
     }
+    if (path === "/api/merchant/applications" && method === "POST") {
+      const d = await body(req);
+      const shopName = String(d.shop_name || "").trim();
+      const applicantName = String(d.applicant_name || "").trim();
+      const contactPhone = String(d.contact_phone || "").trim();
+      if (!shopName || !applicantName || !/^1\d{10}$/.test(contactPhone))
+        return json(res, 400, { message: "请完整填写店铺名、申请人和有效手机号" });
+      const salt = randomBytes(16).toString("hex");
+      const pendingUsername = `pending_${randomBytes(8).toString("hex")}`;
+      const applicationNo = `MC${shanghaiDateKey()}${randomBytes(3).toString("hex").toUpperCase()}`;
+      const result = db.prepare(
+        `INSERT INTO merchant_applications(
+          application_no,shop_name,applicant_name,contact_phone,city,business_description,
+          qualification_urls,requested_username,password_hash,salt
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        applicationNo,
+        shopName.slice(0, 60),
+        applicantName.slice(0, 30),
+        contactPhone,
+        String(d.city || "").trim().slice(0, 40) || null,
+        String(d.business_description || "").trim().slice(0, 1200) || null,
+        JSON.stringify(Array.isArray(d.qualification_urls) ? d.qualification_urls.slice(0, 8) : []),
+        pendingUsername,
+        hash(randomBytes(24).toString("hex"), salt),
+        salt,
+      );
+      return json(res, 201, { id: Number(result.lastInsertRowid), application_no: applicationNo, status: "pending" });
+    }
+    if (path === "/api/merchant/login" && method === "POST") {
+      const d = await body(req);
+      const merchant = db.prepare("SELECT * FROM merchant_accounts WHERE username=?").get(String(d.username || "").trim().toLowerCase());
+      if (!merchant || !constantTimeTextEqual(hash(String(d.password || ""), merchant.salt), merchant.password_hash))
+        return json(res, 401, { message: "商家账号或密码错误" });
+      if (merchant.status !== "active")
+        return json(res, 403, { message: merchant.status === "disabled" ? "商家账号已停用" : "商家账号尚未启用" });
+      db.prepare("UPDATE merchant_accounts SET last_login_at=CURRENT_TIMESTAMP WHERE id=?").run(merchant.id);
+      return json(res, 200, {
+        token: merchantTokenFor(merchant),
+        merchant: { id: merchant.id, username: merchant.username, shop_name: merchant.shop_name },
+      });
+    }
+    const merchantSession = path.startsWith("/api/merchant/") ? auth(req) : null;
+    const merchantCandidate = merchantSession?.role === "merchant"
+      ? db.prepare("SELECT * FROM merchant_accounts WHERE id=? AND status='active'").get(Number(merchantSession.sub))
+      : null;
+    const merchant = merchantCandidate && merchantSession.ver === credentialVersion(merchantCandidate.password_hash)
+      ? merchantCandidate
+      : null;
+    if (path.startsWith("/api/merchant/") && !["/api/merchant/login", "/api/merchant/applications"].includes(path) && !merchant)
+      return json(res, 401, { message: "请先登录已审核的商家账号" });
+    if (path === "/api/merchant/me" && method === "GET") {
+      return json(res, 200, {
+        id: merchant.id,
+        username: merchant.username,
+        shop_name: merchant.shop_name,
+        applicant_name: merchant.applicant_name,
+        contact_phone: merchant.contact_phone,
+        city: merchant.city,
+        products: db.prepare("SELECT COUNT(*) AS count FROM pets WHERE merchant_account_id=? AND status<>'deleted'").get(merchant.id).count,
+        orders: db.prepare("SELECT COUNT(DISTINCT oi.order_id) AS count FROM order_items oi JOIN pets p ON p.id=oi.pet_id WHERE p.merchant_account_id=?").get(merchant.id).count,
+      });
+    }
+    if (path === "/api/merchant/me" && method === "PATCH") {
+      const d = await body(req);
+      const shopName = String(d.shop_name || "").trim();
+      if (!shopName) return json(res, 400, { message: "店铺名称不能为空" });
+      db.prepare("UPDATE merchant_accounts SET shop_name=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(shopName.slice(0, 60), merchant.id);
+      return json(res, 200, { ok: true, shop_name: shopName.slice(0, 60) });
+    }
+    if (path === "/api/merchant/catalog" && method === "GET")
+      return json(res, 200, {
+        categories: rows("SELECT id,name FROM categories WHERE status='active' ORDER BY sort_order,id"),
+        breeds: rows("SELECT id,name,category_id FROM breeds ORDER BY name"),
+      });
+    if (path === "/api/merchant/uploads" && method === "POST") {
+      try {
+        return json(res, 201, saveUploadedMedia(await body(req)));
+      } catch (error) {
+        return json(res, error.statusCode || 400, { message: error.message || "文件上传失败" });
+      }
+    }
+    if (path === "/api/merchant/products" && method === "GET")
+      return json(res, 200, rows(
+        `SELECT p.id,p.name,p.breed,p.description,p.price,p.status,p.updated_at,pp.status AS product_status,
+                pp.showcase_status,pp.showcase_error,
+                (SELECT url FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1) AS image,
+                (SELECT COUNT(*) FROM pet_videos pv WHERE pv.pet_id=p.id) AS video_count,
+                COALESCE((SELECT SUM(i.total_stock) FROM inventory i WHERE i.pet_id=p.id),0) AS stock
+         FROM pets p LEFT JOIN pet_products pp ON pp.pet_id=p.id
+         WHERE p.merchant_account_id=? AND p.status<>'deleted' ORDER BY p.id DESC`,
+        merchant.id,
+      ));
+    if (path === "/api/merchant/products" && method === "POST") {
+      const d = await body(req);
+      if (!String(d.name || "").trim() || !String(d.breed || "").trim() || Number(d.price) <= 0)
+        return json(res, 400, { message: "请填写商品名称、品种和有效价格" });
+      const categoryId = Number(d.category_id || 0);
+      const breedName = String(d.breed).trim().slice(0, 50);
+      if (!db.prepare("SELECT id FROM categories WHERE id=? AND status='active'").get(categoryId))
+        return json(res, 400, { message: "所选场馆不存在或已停用，请重新选择" });
+      let breedRow = db.prepare("SELECT id,category_id FROM breeds WHERE name=?").get(breedName);
+      if (breedRow && Number(breedRow.category_id) !== categoryId)
+        return json(res, 409, { message: "所选品种与场馆不匹配，请重新选择" });
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (!breedRow) {
+          const createdBreed = db.prepare("INSERT INTO breeds(name,category_id,intro) VALUES(?,?,?)")
+            .run(breedName, categoryId, "福宠平台标准品种档案");
+          breedRow = { id: Number(createdBreed.lastInsertRowid), category_id: categoryId };
+        }
+        const result = db.prepare(
+          `INSERT INTO pets(name,category_id,breed,gender,age_months,color,body_type,personality,health_status,vaccine_record,description,price,status,source,merchant_account_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'merchant',?)`,
+        ).run(
+          String(d.name).trim().slice(0, 80), categoryId, breedName,
+          d.gender || null, Number(d.age_months || 0) || null, d.color || null, d.body_type || null,
+          d.personality || null, d.health_status || "商家已持续更新", d.vaccine_record || null,
+          String(d.description || "").trim().slice(0, 3000) || null, Math.round(Number(d.price)),
+          ["published", "offline"].includes(d.status) ? d.status : "draft", merchant.id,
+        );
+        const petId = Number(result.lastInsertRowid);
+        const sellerId = ((petId - 1) % 20) + 1;
+        const publicSeller = db.prepare("SELECT name FROM sellers WHERE id=?").get(sellerId);
+        db.prepare("UPDATE pets SET seller_id=?,seller_name=? WHERE id=?").run(sellerId, publicSeller?.name || null, petId);
+        const petStatus = ["published", "offline"].includes(d.status) ? d.status : "draft";
+        db.prepare(
+          "INSERT INTO pet_products(pet_id,breed_id,seller_id,product_name,status) VALUES(?,?,?,?,?)",
+        ).run(petId, breedRow?.id || null, sellerId, String(d.name).trim(), petStatus === "published" ? "available" : "offline");
+        const stock = Math.max(0, Math.floor(Number(d.stock || 1)));
+        db.prepare("INSERT INTO inventory(pet_id,total_stock,available_stock) VALUES(?,?,?)").run(petId, stock, stock);
+        db.exec("COMMIT");
+        return json(res, 201, { id: petId, name: d.name, status: petStatus, seller_id: sellerId });
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    const merchantProduct = path.match(/^\/api\/merchant\/products\/(\d+)$/);
+    if (merchantProduct && method === "PATCH") {
+      const petId = Number(merchantProduct[1]);
+      if (!db.prepare("SELECT id FROM pets WHERE id=? AND merchant_account_id=? AND status<>'deleted'").get(petId, merchant.id))
+        return json(res, 404, { message: "商品不存在或不属于当前商家" });
+      const d = await body(req);
+      const allowed = ["name", "category_id", "breed", "gender", "age_months", "color", "body_type", "personality", "health_status", "vaccine_record", "description", "price", "status"];
+      const sets = allowed.filter((key) => d[key] !== undefined);
+      if (d.status && !["draft", "published", "offline"].includes(d.status))
+        return json(res, 400, { message: "商家仅可保存草稿、上架或下架自己的商品" });
+      if (d.category_id !== undefined || d.breed !== undefined) {
+        const current = db.prepare("SELECT category_id,breed FROM pets WHERE id=?").get(petId);
+        const categoryId = Number(d.category_id ?? current.category_id);
+        const breedName = String(d.breed ?? current.breed).trim().slice(0, 50);
+        if (!db.prepare("SELECT id FROM categories WHERE id=? AND status='active'").get(categoryId))
+          return json(res, 400, { message: "所选场馆不存在或已停用" });
+        const existingBreed = db.prepare("SELECT id,category_id FROM breeds WHERE name=?").get(breedName);
+        if (existingBreed && Number(existingBreed.category_id) !== categoryId)
+          return json(res, 409, { message: "所选品种与场馆不匹配" });
+        if (!existingBreed) db.prepare("INSERT INTO breeds(name,category_id,intro) VALUES(?,?,?)")
+          .run(breedName, categoryId, "福宠平台标准品种档案");
+      }
+      if (sets.length) db.prepare(
+        `UPDATE pets SET ${sets.map((key) => `${key}=?`).join(",")},updated_at=CURRENT_TIMESTAMP WHERE id=? AND merchant_account_id=?`,
+      ).run(...sets.map((key) => d[key]), petId, merchant.id);
+      db.prepare(
+        `UPDATE pet_products
+         SET product_name=(SELECT name FROM pets WHERE id=?),
+             breed_id=(SELECT id FROM breeds WHERE name=(SELECT breed FROM pets WHERE id=?)),
+             updated_at=CURRENT_TIMESTAMP
+         WHERE pet_id=?`,
+      ).run(petId, petId, petId);
+      if (d.status) db.prepare("UPDATE pet_products SET status=?,updated_at=CURRENT_TIMESTAMP WHERE pet_id=?")
+        .run(d.status === "published" ? "available" : "offline", petId);
+      if (d.stock !== undefined) {
+        const total = Math.max(0, Math.floor(Number(d.stock || 0)));
+        const inventory = db.prepare("SELECT id,locked_stock FROM inventory WHERE pet_id=? AND sku_id IS NULL ORDER BY id LIMIT 1").get(petId);
+        const locked = Number(inventory?.locked_stock || 0);
+        if (total < locked) return json(res, 409, { message: "库存不能低于已锁定订单数量" });
+        if (inventory) db.prepare("UPDATE inventory SET total_stock=?,available_stock=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(total, total - locked, inventory.id);
+        else db.prepare("INSERT INTO inventory(pet_id,total_stock,available_stock) VALUES(?,?,?)").run(petId, total, total);
+      }
+      return json(res, 200, { ok: true, id: petId });
+    }
+    const merchantMedia = path.match(/^\/api\/merchant\/products\/(\d+)\/(images|videos)$/);
+    if (merchantMedia && method === "POST") {
+      const petId = Number(merchantMedia[1]);
+      if (!db.prepare("SELECT id FROM pets WHERE id=? AND merchant_account_id=? AND status<>'deleted'").get(petId, merchant.id))
+        return json(res, 404, { message: "商品不存在或不属于当前商家" });
+      const d = await body(req);
+      let uploadedUrl = String(d.url || "");
+      if (/^https?:\/\//.test(uploadedUrl)) {
+        try { uploadedUrl = new URL(uploadedUrl).pathname; } catch { uploadedUrl = ""; }
+      }
+      if (!uploadedUrl.startsWith("/uploads/"))
+        return json(res, 400, { message: "请先通过商家媒体上传接口上传文件" });
+      if (merchantMedia[2] === "images") {
+        if (d.replace_main) db.prepare("DELETE FROM pet_images WHERE id=(SELECT id FROM pet_images WHERE pet_id=? ORDER BY sort_order,id LIMIT 1)").run(petId);
+        const result = db.prepare("INSERT INTO pet_images(pet_id,url,type,sort_order) VALUES(?,?,?,?)").run(petId, uploadedUrl, d.type || "gallery", Number(d.sort_order || 0));
+        if (d.type === "main" || Number(d.sort_order || 0) === 0) queueMerchantShowcase(petId);
+        return json(res, 201, { id: Number(result.lastInsertRowid), showcase_status: "pending" });
+      }
+      const result = db.prepare("INSERT INTO pet_videos(pet_id,url,cover_url,duration) VALUES(?,?,?,?)").run(petId, uploadedUrl, null, 0);
+      return json(res, 201, { id: Number(result.lastInsertRowid) });
+    }
+    if (path === "/api/merchant/orders" && method === "GET")
+      return json(res, 200, rows(
+        `SELECT DISTINCT o.id,o.order_no,o.status,o.payment_status,o.total_amount,o.address_snapshot,o.created_at,
+                u.nickname,u.phone,l.company,l.tracking_no,l.status AS logistics_status,
+                (SELECT json_group_array(json_object('pet_id',p2.id,'name',p2.name,'breed',p2.breed,'price',oi2.price))
+                 FROM order_items oi2 JOIN pets p2 ON p2.id=oi2.pet_id
+                 WHERE oi2.order_id=o.id AND p2.merchant_account_id=?) AS items
+         FROM orders o JOIN order_items oi ON oi.order_id=o.id JOIN pets p ON p.id=oi.pet_id
+         JOIN users u ON u.id=o.user_id LEFT JOIN logistics l ON l.order_id=o.id
+         WHERE p.merchant_account_id=? ORDER BY o.id DESC LIMIT 200`,
+        merchant.id, merchant.id,
+      ));
+    const merchantLogistics = path.match(/^\/api\/merchant\/orders\/(\d+)\/logistics$/);
+    if (merchantLogistics && method === "PUT") {
+      const orderId = Number(merchantLogistics[1]);
+      const owned = db.prepare(
+        "SELECT o.* FROM orders o WHERE o.id=? AND EXISTS(SELECT 1 FROM order_items oi JOIN pets p ON p.id=oi.pet_id WHERE oi.order_id=o.id AND p.merchant_account_id=?)",
+      ).get(orderId, merchant.id);
+      if (!owned) return json(res, 404, { message: "订单不存在或不属于当前商家" });
+      if (owned.payment_status !== "paid") return json(res, 409, { message: "未付款订单不能更新物流" });
+      const d = await body(req);
+      const progressMap = { pending: 0, packed: 25, shipped: 50, in_transit: 65, delivering: 75, pending_receive: 90, delivered: 100 };
+      const status = String(d.status || "pending");
+      if (!Object.hasOwn(progressMap, status)) return json(res, 400, { message: "物流状态不合法" });
+      const previous = db.prepare("SELECT progress_percent FROM logistics_events WHERE order_id=? ORDER BY id DESC LIMIT 1").get(orderId);
+      if (progressMap[status] < Number(previous?.progress_percent || 0)) return json(res, 409, { message: "物流进度不能回退" });
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.prepare(`INSERT INTO logistics(order_id,company,tracking_no,status,progress) VALUES(?,?,?,?,?)
+          ON CONFLICT(order_id) DO UPDATE SET company=excluded.company,tracking_no=excluded.tracking_no,status=excluded.status,progress=excluded.progress,updated_at=CURRENT_TIMESTAMP`)
+          .run(orderId, String(d.company || "").slice(0, 60), String(d.tracking_no || "").slice(0, 80), status, JSON.stringify([{ time: new Date().toISOString(), text: d.note || status, percent: progressMap[status] }]));
+        const logistics = db.prepare("SELECT * FROM logistics WHERE order_id=?").get(orderId);
+        db.prepare("INSERT INTO logistics_events(order_id,logistics_id,progress_percent,status,note) VALUES(?,?,?,?,?)")
+          .run(orderId, logistics.id, progressMap[status], status, String(d.note || "商家更新物流").slice(0, 300));
+        const orderStatus = { packed: "packed", shipped: "shipped", in_transit: "in_transit", delivering: "delivering", pending_receive: "pending_receive", delivered: "completed" }[status];
+        if (orderStatus && orderStatus !== owned.status) {
+          db.prepare("UPDATE orders SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(orderStatus, orderId);
+          db.prepare("INSERT INTO order_status_history(order_id,from_status,to_status,operator_type,operator_id,note) VALUES(?,?,?,?,?,?)")
+            .run(orderId, owned.status, orderStatus, "merchant", merchant.id, String(d.note || "商家更新物流").slice(0, 300));
+        }
+        db.exec("COMMIT");
+        return json(res, 200, { ok: true, status, progress_percent: progressMap[status], order_status: orderStatus || owned.status });
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    }
     if (path === "/api/admin/login" && method === "POST") {
       const d = await body(req),
         a = db.prepare("SELECT * FROM admins WHERE username=?").get(d.username);
-      if (!a || hash(d.password, a.salt) !== a.password_hash)
+      if (!a || !constantTimeTextEqual(hash(String(d.password || ""), a.salt), a.password_hash))
         return json(res, 401, { message: "账号或密码错误" });
       return json(res, 200, {
         token: tokenFor(a),
         admin: { id: a.id, username: a.username, role: a.role },
       });
     }
-    const admin = path.startsWith("/api/admin/") ? auth(req) : true;
+    const adminSession = path.startsWith("/api/admin/") ? auth(req) : null;
+    const adminCandidate = adminSession?.role === "admin"
+      ? db.prepare("SELECT id,username,role,password_hash FROM admins WHERE id=?").get(Number(adminSession.sub))
+      : null;
+    const admin = path.startsWith("/api/admin/")
+      ? adminCandidate && adminSession.ver === credentialVersion(adminCandidate.password_hash)
+        ? { ...adminSession, id: adminCandidate.id, sub: adminCandidate.id, username: adminCandidate.username, role: adminCandidate.role }
+        : null
+      : true;
     if (!admin) return json(res, 401, { message: "请先登录" });
+    if (path === "/api/admin/change-password" && method === "POST") {
+      const d = await body(req);
+      const account = db.prepare("SELECT * FROM admins WHERE id=?").get(Number(admin.id));
+      if (!account || !constantTimeTextEqual(hash(String(d.current_password || ""), account.salt), account.password_hash))
+        return json(res, 401, { message: "当前密码不正确" });
+      const nextPassword = String(d.new_password || "");
+      if (nextPassword.length < 12 || !/[a-z]/.test(nextPassword) || !/[A-Z]/.test(nextPassword) || !/\d/.test(nextPassword))
+        return json(res, 400, { message: "新密码至少12位，并包含大写字母、小写字母和数字" });
+      if (constantTimeTextEqual(hash(nextPassword, account.salt), account.password_hash))
+        return json(res, 400, { message: "新密码不能与当前密码相同" });
+      const salt = randomBytes(16).toString("hex");
+      const passwordHash = hash(nextPassword, salt);
+      db.prepare("UPDATE admins SET password_hash=?,salt=? WHERE id=?").run(passwordHash, salt, account.id);
+      const updated = { ...account, password_hash: passwordHash, salt };
+      logAdmin(admin, req, "change_password", "admins", account.id, {});
+      return json(res, 200, { ok: true, token: tokenFor(updated) });
+    }
     if (path === "/api/admin/db/status" && method === "GET") {
       const tables = rows(
         "SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -1835,7 +2242,7 @@ const server = createServer(async (req, res) => {
       const baseSelect = `SELECT p.id,p.name,p.category_id,p.breed,p.gender,p.age_months,p.color,
                                  p.health_status,p.price,p.seller_name,p.status,p.thumbnail_url,p.highres_url,
                                  p.breed_id,p.seller_id,p.updated_at,
-                                 CASE WHEN p.source='feishu' THEN '/api/media/product-showcase/' || p.id END AS showcase_image,
+                                 CASE WHEN p.source IN ('feishu','merchant') THEN '/api/media/product-showcase/' || p.id END AS showcase_image,
                                  c.name AS category_name,pp.status AS product_status,
                                  COALESCE(p.thumbnail_url,
                                    (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
@@ -2305,26 +2712,87 @@ const server = createServer(async (req, res) => {
         ),
       );
     }
-    if (path === "/api/admin/uploads" && method === "POST") {
+    if (path === "/api/admin/merchant-applications" && method === "GET")
+      return json(res, 200, rows(
+        `SELECT ma.id,ma.application_no,ma.shop_name,ma.applicant_name,ma.contact_phone,ma.city,
+                ma.business_description,ma.qualification_urls,ma.requested_username,ma.status,
+                ma.admin_reply,ma.reviewed_at,ma.merchant_account_id,ma.created_at,
+                mc.username AS account_username,mc.status AS account_status,mc.last_login_at,
+                (SELECT COUNT(*) FROM pets p WHERE p.merchant_account_id=mc.id AND p.status<>'deleted') AS product_count
+         FROM merchant_applications ma LEFT JOIN merchant_accounts mc ON mc.id=ma.merchant_account_id
+         ORDER BY CASE ma.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,ma.id DESC`,
+      ));
+    const merchantApplicationAdmin = path.match(/^\/api\/admin\/merchant-applications\/(\d+)$/);
+    if (merchantApplicationAdmin && method === "PATCH") {
+      const applicationId = Number(merchantApplicationAdmin[1]);
       const d = await body(req);
-      const cleanName = String(d.fileName || "file").replace(
-        /[^a-zA-Z0-9._-]/g,
-        "_",
-      );
-      const extension = extname(cleanName).toLowerCase();
-      const allowed = new Set([".jpg", ".jpeg", ".png", ".webp", ".mp4"]);
-      if (!allowed.has(extension))
-        return json(res, 400, { message: "仅支持 JPG、PNG、WebP 图片或 MP4 视频" });
-      const buffer = Buffer.from(String(d.data || ""), "base64");
-      if (!buffer.length || buffer.length > 10 * 1024 * 1024)
-        return json(res, 400, { message: "文件不能为空且不能超过 10MB" });
-      const safe = `${Date.now()}-${randomBytes(4).toString("hex")}-${cleanName}`;
-      const target = join(root, "uploads", safe);
-      writeFileSync(target, buffer);
-      return json(res, 201, {
-        url: `${process.env.PUBLIC_API_BASE || `http://${req.headers.host || "127.0.0.1:3001"}`}/uploads/${safe}`,
-        type: d.type || "file",
-      });
+      const application = db.prepare("SELECT * FROM merchant_applications WHERE id=?").get(applicationId);
+      if (!application) return json(res, 404, { message: "商家入驻申请不存在" });
+      const status = String(d.status || "");
+      if (!["approved", "rejected"].includes(status)) return json(res, 400, { message: "审核状态不合法" });
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        let accountId = application.merchant_account_id;
+        if (status === "approved") {
+          const username = String(d.username || "").trim().toLowerCase();
+          const password = String(d.password || "");
+          if (!/^[a-zA-Z0-9_]{4,24}$/.test(username))
+            throw Object.assign(new Error("请设置 4-24 位字母、数字或下划线商家账号"), { statusCode: 400 });
+          if (password.length < 8)
+            throw Object.assign(new Error("请设置至少 8 位的商家登录密码"), { statusCode: 400 });
+          const conflict = db.prepare("SELECT id FROM merchant_accounts WHERE username=? AND id<>COALESCE(?,0)").get(username, accountId);
+          if (conflict) throw Object.assign(new Error("该商家登录账号已存在"), { statusCode: 409 });
+          const salt = randomBytes(16).toString("hex");
+          if (!accountId) {
+            const created = db.prepare(
+              `INSERT INTO merchant_accounts(application_id,username,password_hash,salt,shop_name,applicant_name,contact_phone,city,status)
+               VALUES(?,?,?,?,?,?,?,?, 'active')`,
+            ).run(application.id, username, hash(password, salt), salt,
+              application.shop_name, application.applicant_name, application.contact_phone, application.city);
+            accountId = Number(created.lastInsertRowid);
+          } else db.prepare("UPDATE merchant_accounts SET username=?,password_hash=?,salt=?,status='active',updated_at=CURRENT_TIMESTAMP WHERE id=?")
+            .run(username, hash(password, salt), salt, accountId);
+          db.prepare("UPDATE merchant_applications SET requested_username=? WHERE id=?").run(username, applicationId);
+        }
+        db.prepare(
+          "UPDATE merchant_applications SET status=?,admin_reply=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,merchant_account_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(status, String(d.admin_reply || "").trim().slice(0, 800) || null, Number(admin.sub), accountId || null, applicationId);
+        db.exec("COMMIT");
+        logAdmin(admin, req, "review", "merchant_applications", applicationId, { status, merchant_account_id: accountId || null });
+        return json(res, 200, { ok: true, status, merchant_account_id: accountId || null });
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    const merchantAccountAdmin = path.match(/^\/api\/admin\/merchant-accounts\/(\d+)$/);
+    if (merchantAccountAdmin && method === "PATCH") {
+      const accountId = Number(merchantAccountAdmin[1]);
+      const d = await body(req);
+      const account = db.prepare("SELECT * FROM merchant_accounts WHERE id=?").get(accountId);
+      if (!account) return json(res, 404, { message: "商家账号不存在" });
+      const status = d.status === undefined ? account.status : String(d.status || "");
+      if (!["active", "disabled"].includes(status)) return json(res, 400, { message: "账号状态不合法" });
+      const username = d.username === undefined ? account.username : String(d.username || "").trim().toLowerCase();
+      if (!/^[a-zA-Z0-9_]{4,24}$/.test(username)) return json(res, 400, { message: "商家账号需为 4-24 位字母、数字或下划线" });
+      if (d.password !== undefined && String(d.password).length < 8) return json(res, 400, { message: "商家密码至少 8 位" });
+      const conflict = db.prepare("SELECT id FROM merchant_accounts WHERE username=? AND id<>?").get(username, accountId);
+      if (conflict) return json(res, 409, { message: "该商家登录账号已存在" });
+      let passwordHash = account.password_hash;
+      let salt = account.salt;
+      if (d.password !== undefined) { salt = randomBytes(16).toString("hex"); passwordHash = hash(String(d.password), salt); }
+      const result = db.prepare("UPDATE merchant_accounts SET username=?,password_hash=?,salt=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(username, passwordHash, salt, status, accountId);
+      if (!result.changes) return json(res, 404, { message: "商家账号不存在" });
+      logAdmin(admin, req, "update_account", "merchant_accounts", accountId, { status, username, password_reset: d.password !== undefined });
+      return json(res, 200, { ok: true, status, username });
+    }
+    if (path === "/api/admin/uploads" && method === "POST") {
+      try {
+        return json(res, 201, saveUploadedMedia(await body(req)));
+      } catch (error) {
+        return json(res, error.statusCode || 400, { message: error.message || "文件上传失败" });
+      }
     }
     if (path === "/api/admin/community-applications" && method === "GET")
       return json(res, 200, rows(
@@ -3105,6 +3573,9 @@ const server = createServer(async (req, res) => {
         rows(
           `SELECT c.id AS cart_id,c.pet_id,c.quantity,c.selected,c.created_at AS added_at,
                   p.name,p.breed,p.gender,p.age_months,p.price,p.seller_name,p.status AS pet_status,
+                  CASE WHEN p.source IN ('feishu','merchant') OR EXISTS(
+                    SELECT 1 FROM pet_images psi WHERE psi.pet_id=p.id AND psi.url LIKE '/uploads/%'
+                  ) THEN '/api/media/product-showcase/' || p.id END AS showcase_image,
                   COALESCE(p.thumbnail_url,p.highres_url,
                     (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
                   ) AS image
@@ -3169,6 +3640,9 @@ const server = createServer(async (req, res) => {
           `SELECT f.*,p.name,p.breed,p.price,p.gender,p.age_months,p.color,p.health_status,p.seller_name,
                   p.status AS pet_status,p.breed_id,p.seller_id,
                   CASE WHEN p.id IS NULL THEN 'missing' WHEN p.status='published' THEN COALESCE(pp.status,'available') WHEN p.status='sold' THEN 'sold' ELSE 'offline' END AS product_status,
+                  CASE WHEN p.source IN ('feishu','merchant') OR EXISTS(
+                    SELECT 1 FROM pet_images psi WHERE psi.pet_id=p.id AND psi.url LIKE '/uploads/%'
+                  ) THEN '/api/media/product-showcase/' || p.id END AS showcase_image,
                   COALESCE(p.thumbnail_url,p.highres_url,
                     (SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)
                   ) AS image
@@ -4309,7 +4783,12 @@ const server = createServer(async (req, res) => {
         "INSERT INTO api_error_logs(request_id,method,path,message,stack) VALUES(?,?,?,?,?)",
       ).run(requestId, req.method || "UNKNOWN", req.url || "/", e?.message || String(e), e?.stack || null);
     } catch {}
-    json(res, 500, { message: "服务器处理失败，请稍后重试", request_id: requestId });
+    const statusCode = Number(e?.statusCode);
+    json(
+      res,
+      statusCode >= 400 && statusCode < 500 ? statusCode : 500,
+      { message: statusCode >= 400 && statusCode < 500 ? e.message : "服务器处理失败，请稍后重试", request_id: requestId },
+    );
   }
 });
 

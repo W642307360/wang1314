@@ -1,6 +1,8 @@
 import {
   useCallback,
   useEffect,
+  lazy,
+  Suspense,
   type FormEvent,
   useMemo,
   useRef,
@@ -42,6 +44,8 @@ import { ensureVisitor } from "./visitor";
 import { optimizePetImage } from "./imagePipeline";
 import { readCart, writeCart, type StoredCartPet } from "./cartStore";
 import { publishUserId, useUserId } from "./userIdentity";
+import { mediaUrl, mediaVideoUrl } from "./mediaUrl";
+const MerchantPortal = lazy(() => import("./MerchantPortal"));
 
 type Page =
   | "home"
@@ -64,7 +68,8 @@ type Page =
   | "settings"
   | "about"
   | "agreement"
-  | "privacy";
+  | "privacy"
+  | "merchant";
 type ApiPet = {
   id: number;
   name: string;
@@ -234,19 +239,8 @@ function FurColorArchive({ src, color }: { src: string; color?: string }) {
     <b>{color || detected}</b>
   </>;
 }
-const resolveMediaUrl = (url?: string, variant: "thumb" | "original" = "thumb") => {
-  if (!url) return "";
-  if (url.startsWith("/api/")) return `${API_BASE}${url}`;
-  if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
-    return `${API_BASE}/api/media/feishu?variant=${variant}&url=${encodeURIComponent(url)}`;
-  return url;
-};
-const resolveVideoUrl = (url?: string) => {
-  if (!url) return "";
-  if (/^https:\/\/open\.feishu\.cn\/open-apis\/drive\/v1\/medias\//.test(url))
-    return `${API_BASE}/api/media/feishu?format=h264&url=${encodeURIComponent(url)}`;
-  return url;
-};
+const resolveMediaUrl = mediaUrl;
+const resolveVideoUrl = mediaVideoUrl;
 const petImage = (pet?: Partial<ApiPet> | null, fallback = petPhoto) =>
   resolveMediaUrl(
     pet?.images?.[0]?.thumbnail_url ||
@@ -1656,6 +1650,12 @@ function Detail({
       age_months: detailPet?.age_months,
       price: Number(displayPrice || 0),
       image: petImage(detailPet, breed.image),
+      showcase_image:
+        petDbId &&
+        (["feishu", "merchant"].includes(String(detailPet?.source || "")) ||
+          String(petImage(detailPet, breed.image)).includes("/uploads/"))
+          ? `/api/media/product-showcase/${petDbId}`
+          : undefined,
       seller_name: displaySeller,
       added_at: new Date().toISOString(),
     };
@@ -2304,6 +2304,11 @@ function Me({ go, user }: { go: (p: Page) => void; user: User | null }) {
           </div>
           <span>›</span>
         </button>
+        <button className="merchant-entry-button" onClick={() => go("merchant")}>
+          <i>商</i>
+          <div><b>商家入驻</b></div>
+          <span>›</span>
+        </button>
       </section>
       <p className="version">福宠 FUCHONG · v0.2.0</p>
     </div>
@@ -2942,6 +2947,11 @@ export default function App() {
       {page === "care" && <CareManual go={go} />}{" "}
       {page === "charity" && <Charity go={go} />}{" "}
       {page === "me" && <Me go={go} user={user} />}
+      {page === "merchant" && (
+        <Suspense fallback={<div className="merchant-lazy-loading">商家中心加载中…</div>}>
+          <MerchantPortal back={() => go("me")} />
+        </Suspense>
+      )}
       {page === "login" && (
         <P0LoginPage
           back={() => go("me")}
@@ -3045,7 +3055,7 @@ export default function App() {
           go={go}
         />
       )}
-      {!["hall", "breed", "detail", "addresses", "charity"].includes(page) && (
+      {!["hall", "breed", "detail", "addresses", "charity", "merchant"].includes(page) && (
         <Nav go={go} page={page} />
       )}
     </main>
