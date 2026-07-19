@@ -410,6 +410,7 @@ export function P0MessagesPage({
     ["售后服务", "退款、售后和投诉处理"],
     ["宠物健康咨询", "咨询喂养、疫苗和到家适应"],
     ["物流帮助", "发货、运输和到家时间"],
+    ["官方客服", "综合咨询、特殊问题和高级客户服务"],
   ] as const;
   const [activeType, setActiveType] = useState<string | null>(
     context?.productName ? "购买咨询" : null,
@@ -417,6 +418,8 @@ export function P0MessagesPage({
   const [text, setText] = useState("");
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [humanPending, setHumanPending] = useState(false);
+  const [serviceStatus, setServiceStatus] = useState<"ai" | "human_pending" | "human">("ai");
+  const [customerCode, setCustomerCode] = useState("");
   const [sending, setSending] = useState(false);
   const [failedText, setFailedText] = useState("");
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -458,6 +461,45 @@ export function P0MessagesPage({
   useEffect(() => {
     setSharedProduct(context || null);
   }, [context]);
+  const refreshSession = useCallback(async (sid: number) => {
+    try {
+      const [messagesResponse, statusResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/messages?user_id=${userId}&session_id=${sid}`),
+        fetch(`${API_BASE}/api/customer-service/sessions/${sid}?user_id=${userId}`),
+      ]);
+      if (messagesResponse.ok) {
+        const messages = await messagesResponse.json();
+        if (Array.isArray(messages)) setChat(messages.map((item) => ({
+          id: item.id,
+          sender: item.sender,
+          content: item.content,
+          session_id: item.session_id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          product_image: item.product_image,
+          product_breed: item.product_breed,
+          product_price: item.product_price,
+          type: item.type,
+          service_type: item.service_type,
+        })));
+      }
+      if (statusResponse.ok) {
+        const status = await statusResponse.json();
+        setServiceStatus(status.status || "ai");
+        setHumanPending(["human_pending", "human"].includes(status.status));
+        setCustomerCode(status.customer_code || "");
+        if (status.service_type) setActiveType(status.service_type);
+      }
+    } catch {
+      // 短暂断网时保留当前会话，下一轮自动重试。
+    }
+  }, [userId]);
+  useEffect(() => {
+    if (!activeType || !sessionId) return;
+    refreshSession(sessionId);
+    const timer = window.setInterval(() => refreshSession(sessionId), 2500);
+    return () => window.clearInterval(timer);
+  }, [activeType, sessionId, refreshSession]);
   useEffect(() => {
     fetch(`${API_BASE}/api/orders?user_id=${userId}`)
       .then((response) => response.json())
@@ -568,15 +610,18 @@ export function P0MessagesPage({
       if (!response.ok) throw new Error("send failed");
       const saved = await response.json();
       if (saved.session_id) setSessionId(saved.session_id);
-      setChat((items) => [
-        ...items,
-        {
-          id: Date.now() + 1,
-          sender: "service",
-          content: saved.reply || "已收到，客服稍后回复您。",
-          session_id: saved.session_id,
-        },
-      ]);
+      if (saved.customer_code) setCustomerCode(saved.customer_code);
+      if (saved.status) {
+        setServiceStatus(saved.status);
+        setHumanPending(["human_pending", "human"].includes(saved.status));
+      }
+      if (saved.service_type) setActiveType(saved.service_type);
+      if (saved.reply) setChat((items) => [...items, {
+        id: Date.now() + 1,
+        sender: "service",
+        content: saved.reply,
+        session_id: saved.session_id,
+      }]);
       loadHistory();
       return saved.session_id || sessionId;
     } catch {
@@ -642,8 +687,11 @@ export function P0MessagesPage({
     if (!sid) return;
     await fetch(`${API_BASE}/api/customer-service/sessions/${sid}/handoff`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user_id: userId, reason: "客户主动要求人工", preview: text || "客户请求人工服务" }),
     }).catch(() => {});
     setHumanPending(true);
+    setServiceStatus("human_pending");
     setChat((items) => [
       ...items,
       { id: Date.now() + 3, sender: "service", content: "已为您转入人工客服队列。" },
@@ -723,9 +771,9 @@ export function P0MessagesPage({
             <i />
             <header>
               <div>
-                <small>{humanPending ? "人工排队中" : "AI 即时回复 · 可转人工"}</small>
+                <small>{serviceStatus === "human" ? "人工客服已接入" : humanPending ? "正在通知对应人工客服" : "AI 即时回复 · 可转人工"}</small>
                 <h2>{activeType}</h2>
-                <p>{sharedProduct?.productName ? `当前宠物：${sharedProduct.productName}` : "未关联具体宠物"}</p>
+                <p>{customerCode ? `会话 ${customerCode} · ` : ""}{sharedProduct?.productName ? `当前宠物：${sharedProduct.productName}` : "独立客户会话"}</p>
               </div>
               <button onClick={() => setActiveType(null)}>×</button>
             </header>
@@ -749,7 +797,7 @@ export function P0MessagesPage({
             <div className="chat-window sheet-chat">
               {chat.map((message) => (
                 <div key={message.id} className={`chat-bubble ${message.sender}`}>
-                  <i>{message.sender === "service" ? "福" : "我"}</i>
+                  <i>{message.sender === "user" ? "我" : message.sender === "agent" ? "客" : "福"}</i>
                   {message.type && message.type !== "service" ? <div className={`chat-share-card ${message.type}`}>
                     <small>{message.type === "product_card" ? "已发送商品" : message.type === "logistics_card" ? "已发送物流订单" : message.type === "after_sale_card" ? "已发送售后订单" : "已发送订单"}</small>
                     <b>{message.product_name || "福宠资料"}</b>

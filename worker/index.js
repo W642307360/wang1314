@@ -135,6 +135,203 @@ async function feishuRecords(env, config, limit = 5000) {
   return items.slice(0, limit);
 }
 
+const SERVICE_GROUPS = {
+  purchase: { label: "购买咨询", terms: ["买", "价格", "多少钱", "推荐", "适合", "区别", "怎么选", "使用方法", "幼犬", "幼猫"] },
+  order: { label: "订单咨询", terms: ["订单", "支付", "付款", "修改订单", "订单状态", "下单"] },
+  after_sale: { label: "售后服务", terms: ["退款", "退货", "换货", "投诉", "售后", "赔偿", "不满意"] },
+  pet_health: { label: "宠物健康咨询", terms: ["不舒服", "生病", "呕吐", "腹泻", "没精神", "不吃", "便血", "抽搐", "健康", "饮食", "护理", "疫苗"] },
+  logistics: { label: "物流帮助", terms: ["物流", "快递", "发货", "配送", "到哪", "什么时候到", "运单"] },
+  official: { label: "官方客服", terms: ["人工", "客服", "其他", "综合"] },
+};
+
+function classifyService(message, requestedType = "") {
+  const content = String(message || "").toLowerCase();
+  let best = { key: "official", label: SERVICE_GROUPS.official.label, score: 0 };
+  for (const [key, group] of Object.entries(SERVICE_GROUPS)) {
+    const score = group.terms.reduce((sum, term) => sum + (content.includes(term.toLowerCase()) ? (term.length >= 4 ? 3 : 2) : 0), 0)
+      + (requestedType === group.label ? 1 : 0);
+    if (score > best.score) best = { key, label: group.label, score };
+  }
+  return { ...best, confidence: Math.min(0.99, best.score ? 0.55 + best.score * 0.055 : 0.32) };
+}
+
+function handoffReason(message, recentUserMessages = 0) {
+  const content = String(message || "");
+  if (/(退款|退货|换货|投诉|赔偿|欺骗|曝光|消协|不满意)/.test(content)) return "售后或投诉需专员处理";
+  if (/(呼吸困难|抽搐|便血|昏迷|中毒|持续呕吐|急诊)/.test(content)) return "宠物健康高风险";
+  if (/(人工|真人|转人工|找客服)/.test(content)) return "客户主动要求人工";
+  if (recentUserMessages >= 3 && /(怎么|为什么|还是|没有|没解决|听不懂)/.test(content)) return "客户连续追问";
+  return "";
+}
+
+async function knowledgeReply(db, groupKey, message) {
+  const articles = await all(db, "SELECT * FROM customer_service_knowledge WHERE enabled=1 AND group_key IN (?, 'official') ORDER BY CASE WHEN group_key=? THEN 0 ELSE 1 END,priority DESC", groupKey, groupKey);
+  let best = null; let bestScore = 0;
+  for (const article of articles) {
+    const score = String(article.keywords || "").split(",").filter(Boolean).reduce((sum, keyword) => sum + (String(message).includes(keyword.trim()) ? 1 : 0), 0);
+    if (score > bestScore) { best = article; bestScore = score; }
+  }
+  if (best) return best.answer;
+  const openers = ["明白，我来帮您处理。", "好的，这个问题我已经记下了。", "收到，我先帮您梳理一下。"];
+  const opener = openers[Math.abs(String(message).length) % openers.length];
+  if (groupKey === "purchase") return `${opener}为了给您更准确的推荐，请告诉我宠物的品种、年龄、体重和预算。`;
+  if (groupKey === "order") return `${opener}请从当前页面发送订单卡片，我会结合订单状态继续核对。`;
+  if (groupKey === "logistics") return `${opener}请发送物流订单卡片，我会根据发货记录和运单状态继续处理。`;
+  if (groupKey === "pet_health") return `${opener}请补充宠物的品种、年龄、症状持续时间、精神和进食饮水情况。线上建议不能替代兽医诊断，如症状严重请及时就医。`;
+  return `${opener}我会继续了解您的情况；如果需要特殊权限或人工判断，我会立即为您转接对应客服。`;
+}
+
+async function sendFeishuText(env, chatId, content) {
+  if (!chatId || !env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET) return null;
+  const token = await feishuToken(env, env.FEISHU_APP_ID);
+  const response = await fetch("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ receive_id: chatId, msg_type: "text", content: JSON.stringify({ text: content }) }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.code) throw new Error(data.msg || "飞书消息发送失败");
+  return data.data?.message_id || null;
+}
+
+async function notifyFeishu(db, env, session, message, reason = "") {
+  const group = await first(db, "SELECT * FROM customer_service_groups WHERE group_key=? AND enabled=1", session.group_key || "official");
+  const fallback = await first(db, "SELECT * FROM customer_service_groups WHERE group_key='official' AND enabled=1");
+  const chatId = group?.feishu_chat_id || fallback?.feishu_chat_id;
+  if (!chatId) return { delivered: false, reason: "group_unbound" };
+  const code = session.customer_code || `CS${String(session.id).padStart(6, "0")}`;
+  const lines = [
+    `【${group?.label || "官方客服"}｜${code}】`,
+    reason ? `转人工原因：${reason}` : "客户新消息：",
+    String(message || "").slice(0, 1200),
+    "",
+    `接管：@福宠客服 接管 #${code}`,
+    `回复：@福宠客服 #${code} 您要回复的内容`,
+    `结束：@福宠客服 结束 #${code}`,
+  ];
+  const messageId = await sendFeishuText(env, chatId, lines.join("\n"));
+  if (messageId) await run(db, "UPDATE customer_service_sessions SET feishu_root_message_id=COALESCE(feishu_root_message_id,?) WHERE id=?", messageId, session.id);
+  return { delivered: Boolean(messageId), message_id: messageId };
+}
+
+function feishuMessageText(message) {
+  const content = parse(message?.content, {});
+  return text(content.text || content.content || "").replace(/<at[^>]*>.*?<\/at>/g, "").trim();
+}
+
+async function handleFeishuEvent(request, env) {
+  const payload = await body(request);
+  if (payload.type === "url_verification") return json({ challenge: payload.challenge });
+  if (env.FEISHU_VERIFICATION_TOKEN && payload.token && payload.token !== env.FEISHU_VERIFICATION_TOKEN) return error("invalid token", 401);
+  const event = payload.event || {};
+  const message = event.message || {};
+  const externalId = text(message.message_id);
+  if (!externalId || message.message_type !== "text") return json({ ok: true });
+  if (await first(env.DB, "SELECT id FROM messages WHERE external_message_id=?", externalId)) return json({ ok: true, duplicate: true });
+  const content = feishuMessageText(message);
+  const chatId = text(message.chat_id);
+  const bind = content.match(/绑定\s*(购买咨询|订单咨询|售后服务|宠物健康咨询|物流帮助|官方客服)/);
+  if (bind) {
+    const entry = Object.entries(SERVICE_GROUPS).find(([, value]) => value.label === bind[1]);
+    if (entry) {
+      await run(env.DB, "UPDATE customer_service_groups SET feishu_chat_id=?,updated_at=CURRENT_TIMESTAMP WHERE group_key=?", chatId, entry[0]);
+      await sendFeishuText(env, chatId, `绑定成功：本群已负责「${bind[1]}」。之后该组的人工接管和客户消息会实时发送到这里。`);
+    }
+    return json({ ok: true, action: "bind" });
+  }
+  const codeMatch = content.match(/#?(CS\d{6,})/i);
+  if (!codeMatch) return json({ ok: true, ignored: "missing_session_code" });
+  const code = codeMatch[1].toUpperCase();
+  const session = await first(env.DB, "SELECT * FROM customer_service_sessions WHERE customer_code=?", code);
+  if (!session) { await sendFeishuText(env, chatId, `没有找到会话 ${code}，请检查编号。`); return json({ ok: true, ignored: "unknown_session" }); }
+  if (/结束/.test(content)) {
+    await run(env.DB, "UPDATE customer_service_sessions SET status='ai',assigned_to=NULL,handoff_reason=NULL,closed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", session.id);
+    await run(env.DB, "INSERT INTO customer_service_events(session_id,event_type,actor,detail_json) VALUES(?,'human_ended','feishu',?)", session.id, JSON.stringify({ externalId, chatId }));
+    await run(env.DB, "INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel,external_message_id) VALUES(?,'service','system','人工服务已结束，AI 客服已恢复。',?,'sent',?,'feishu',?)", session.user_id, session.id, session.service_type, externalId);
+    return json({ ok: true, action: "end" });
+  }
+  if (/接管/.test(content)) {
+    await run(env.DB, "UPDATE customer_service_sessions SET status='human',assigned_to=?,last_agent_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", text(event.sender?.sender_id?.open_id, "飞书客服"), session.id);
+    await run(env.DB, "INSERT INTO customer_service_events(session_id,event_type,actor,detail_json) VALUES(?,'human_joined','feishu',?)", session.id, JSON.stringify({ externalId, chatId }));
+    await run(env.DB, "INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel,external_message_id) VALUES(?,'service','system','人工客服已接入，请继续描述您的问题。',?,'sent',?,'feishu',?)", session.user_id, session.id, session.service_type, externalId);
+    return json({ ok: true, action: "takeover" });
+  }
+  const reply = content.replace(/#?CS\d{6,}/i, "").trim();
+  if (!reply) return json({ ok: true, ignored: "empty_reply" });
+  await run(env.DB, "INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel,external_message_id) VALUES(?,'agent','service',?,?,'sent',?,'feishu',?)", session.user_id, reply, session.id, session.service_type, externalId);
+  await run(env.DB, "UPDATE customer_service_sessions SET status='human',assigned_to=?,last_agent_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?", text(event.sender?.sender_id?.open_id, "飞书客服"), session.id);
+  return json({ ok: true, action: "reply" });
+}
+
+function base64UrlEncode(value) {
+  return btoa(String.fromCharCode(...enc.encode(value))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+function base64UrlDecode(value) {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return new TextDecoder().decode(Uint8Array.from(atob(normalized), character => character.charCodeAt(0)));
+}
+async function createAgentToken(env, profile) {
+  const payload = base64UrlEncode(JSON.stringify({ open_id: profile.open_id, name: profile.name || profile.en_name || "飞书客服", exp: Date.now() + 12 * 60 * 60 * 1000 }));
+  return `${payload}.${await hmac(env.FEISHU_APP_SECRET, payload)}`;
+}
+async function verifyAgent(request, env) {
+  const token = (request.headers.get("authorization") || "").replace(/^Feishu\s+/i, "");
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature || !env.FEISHU_APP_SECRET || await hmac(env.FEISHU_APP_SECRET, payload) !== signature) return null;
+  const profile = parse(base64UrlDecode(payload), null);
+  return profile && profile.exp > Date.now() ? profile : null;
+}
+async function handleFeishuDesk(request, env, url, path, method) {
+  const db = env.DB;
+  if (path === "/api/feishu-service/config" && method === "GET") return json({ app_id: env.FEISHU_APP_ID || "", redirect_uri: `${url.origin}/feishu-service` });
+  if (path === "/api/feishu-service/auth" && method === "POST") {
+    const input = await body(request), code = text(input.code), redirectUri = text(input.redirect_uri);
+    let redirect; try { redirect = new URL(redirectUri); } catch { return error("redirect_uri 无效"); }
+    if (!code || redirect.origin !== url.origin || redirect.pathname !== "/feishu-service") return error("登录参数无效");
+    const tokenResponse = await fetch("https://open.feishu.cn/open-apis/authen/v2/oauth/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: "authorization_code", client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET, code, redirect_uri: redirectUri }) });
+    const tokenData = await tokenResponse.json();
+    if (!tokenResponse.ok || tokenData.code || !tokenData.access_token) return error(tokenData.msg || "飞书免登失败", 401);
+    const profileResponse = await fetch("https://open.feishu.cn/open-apis/authen/v1/user_info", { headers: { Authorization: `Bearer ${tokenData.access_token}` } });
+    const profileData = await profileResponse.json();
+    const profile = profileData.data || profileData;
+    if (!profileResponse.ok || profileData.code || !profile.open_id) return error(profileData.msg || "无法获取客服身份", 401);
+    return json({ token: await createAgentToken(env, profile), agent: { open_id: profile.open_id, name: profile.name || profile.en_name || "飞书客服", avatar_url: profile.avatar_url || "" } });
+  }
+  if (!path.startsWith("/api/feishu-service/")) return null;
+  const agent = await verifyAgent(request, env); if (!agent) return error("请在飞书工作台重新打开客服应用", 401);
+  if (path === "/api/feishu-service/groups" && method === "GET") return json(await all(db, `SELECT g.*,
+    (SELECT COUNT(*) FROM customer_service_sessions s WHERE s.group_key=g.group_key AND s.status IN ('human_pending','human')) active_count,
+    (SELECT COUNT(*) FROM customer_service_sessions s WHERE s.group_key=g.group_key AND s.status='human_pending') waiting_count
+    FROM customer_service_groups g WHERE g.enabled=1 ORDER BY CASE g.group_key WHEN 'purchase' THEN 1 WHEN 'order' THEN 2 WHEN 'after_sale' THEN 3 WHEN 'pet_health' THEN 4 WHEN 'logistics' THEN 5 ELSE 6 END`));
+  if (path === "/api/feishu-service/sessions" && method === "GET") {
+    const groupKey=text(url.searchParams.get("group_key")), status=text(url.searchParams.get("status"));const where=["1=1"],values=[];
+    if(groupKey){where.push("s.group_key=?");values.push(groupKey);}if(status){where.push("s.status=?");values.push(status);}
+    return json(await all(db,`SELECT s.*,u.nickname,u.phone,(SELECT content FROM messages m WHERE m.session_id=s.id ORDER BY m.id DESC LIMIT 1) latest_message,(SELECT created_at FROM messages m WHERE m.session_id=s.id ORDER BY m.id DESC LIMIT 1) latest_message_at,(SELECT COUNT(*) FROM messages m WHERE m.session_id=s.id AND m.sender='user' AND m.id>(SELECT COALESCE(MAX(id),0) FROM messages x WHERE x.session_id=s.id AND x.sender IN ('agent','service'))) unread_count FROM customer_service_sessions s JOIN users u ON u.id=s.user_id WHERE ${where.join(" AND ")} ORDER BY CASE s.status WHEN 'human_pending' THEN 0 WHEN 'human' THEN 1 ELSE 2 END,s.updated_at DESC LIMIT 300`,...values));
+  }
+  const messagesMatch=path.match(/^\/api\/feishu-service\/sessions\/(\d+)\/messages$/);
+  if(messagesMatch&&method==="GET")return json(await all(db,"SELECT * FROM messages WHERE session_id=? ORDER BY id",id(messagesMatch[1])));
+  if(messagesMatch&&method==="POST"){
+    const input=await body(request),session=await first(db,"SELECT * FROM customer_service_sessions WHERE id=?",id(messagesMatch[1]));if(!session)return error("会话不存在",404);const content=text(input.content);if(!content)return error("回复不能为空");
+    const created=await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel,metadata_json) VALUES(?,'agent','service',?,?,'sent',?,'feishu_web',?)",session.user_id,content,session.id,session.service_type,JSON.stringify({agent_open_id:agent.open_id,agent_name:agent.name}));
+    await run(db,"UPDATE customer_service_sessions SET status='human',assigned_to=?,last_agent_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",agent.name,session.id);
+    return json(await first(db,"SELECT * FROM messages WHERE id=?",created.meta.last_row_id),201);
+  }
+  const actionMatch=path.match(/^\/api\/feishu-service\/sessions\/(\d+)\/(takeover|close)$/);
+  if(actionMatch&&method==="POST"){
+    const session=await first(db,"SELECT * FROM customer_service_sessions WHERE id=?",id(actionMatch[1]));if(!session)return error("会话不存在",404);
+    if(actionMatch[2]==="takeover"){
+      await run(db,"UPDATE customer_service_sessions SET status='human',assigned_to=?,last_agent_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",agent.name,session.id);
+      await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','system','人工客服已接入，请继续描述您的问题。',?,'sent',?,'feishu_web')",session.user_id,session.id,session.service_type);
+    }else{
+      await run(db,"UPDATE customer_service_sessions SET status='ai',assigned_to=NULL,handoff_reason=NULL,closed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",session.id);
+      await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','system','本次人工服务已结束，如有新问题，AI 客服会继续为您服务。',?,'sent',?,'feishu_web')",session.user_id,session.id,session.service_type);
+    }
+    await run(db,"INSERT INTO customer_service_events(session_id,event_type,actor,detail_json) VALUES(?,?,?,?)",session.id,actionMatch[2]==="takeover"?"human_joined":"human_ended",agent.name,JSON.stringify({channel:"feishu_web",open_id:agent.open_id}));
+    return json({ok:true,status:actionMatch[2]==="takeover"?"human":"ai"});
+  }
+  return error("接口不存在",404);
+}
+
 const importTables = new Set(["categories","breeds","sellers","pets","pet_products","pet_skus","pet_images","pet_videos","inventory","users","user_auth","visitors","addresses","favorites","follows","footprints","cart_items","coupons","user_coupons","orders","order_items","payments","logistics","logistics_events","order_status_history","complaints","after_sales","messages","customer_service_sessions","product_reviews","seller_reviews","seller_reports","community_applications","banners","feishu_sync_configs","feishu_sync_tasks","feishu_sync_task_items","feishu_sync_previews"]);
 async function importRows(db, table, rows) {
   if (!importTables.has(table) || !Array.isArray(rows) || rows.length > 100) throw new Error("导入批次无效");
@@ -319,17 +516,52 @@ async function handleCommerce(request, env, url, path, method) {
   if (path === "/api/after-sales" && method === "POST") { const x=await body(request); const r=await run(db,"INSERT INTO after_sales(order_id,user_id,type,reason,amount,status) VALUES(?,?,?,?,?,'pending')",id(x.order_id),id(x.user_id),text(x.type,"售后申请"),text(x.reason),Number(x.amount)||0); return json({id:r.meta.last_row_id,ok:true},201); }
 
   if (path === "/api/messages" && method === "GET") {
-    if (url.searchParams.get("session_id")) return json(await all(db,`SELECT m.*,p.breed product_breed,p.price product_price,COALESCE(p.thumbnail_url,p.highres_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) product_image FROM messages m LEFT JOIN pets p ON p.id=m.product_id WHERE m.session_id=? ORDER BY m.id`,id(url.searchParams.get("session_id"))));
+    if (url.searchParams.get("session_id")) return json(await all(db,`SELECT m.*,p.breed product_breed,p.price product_price,COALESCE(p.thumbnail_url,p.highres_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) product_image FROM messages m LEFT JOIN pets p ON p.id=m.product_id WHERE m.session_id=? AND m.user_id=? ORDER BY m.id`,id(url.searchParams.get("session_id")),id(url.searchParams.get("user_id"))));
     return json(await all(db,`SELECT m.*,p.breed product_breed,p.price product_price,COALESCE(p.thumbnail_url,p.highres_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) product_image FROM messages m LEFT JOIN pets p ON p.id=m.product_id WHERE m.user_id=? ORDER BY m.id DESC LIMIT 200`,id(url.searchParams.get("user_id"))));
   }
   if (path === "/api/messages" && method === "POST") {
-    const x=await body(request); let sessionId=id(x.session_id);
-    if(!sessionId){const s=await run(db,"INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status,service_type,seller_id) VALUES(?,?,?,?,?,'ai',?,?)",id(x.user_id),id(x.product_id)||null,text(x.product_name)||null,text(x.seller_name)||null,text(x.source,"product_detail"),text(x.service_type,"购买咨询"),id(x.seller_id)||null);sessionId=s.meta.last_row_id;}
-    const r=await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?, 'sent',?,?)",id(x.user_id),text(x.sender,"user"),text(x.type,"service"),text(x.content),sessionId,id(x.product_id)||null,text(x.product_name)||null,text(x.seller_name)||null,text(x.service_type,"购买咨询"),id(x.seller_id)||null);
-    return json({...(await first(db,"SELECT * FROM messages WHERE id=?",r.meta.last_row_id)),session_id:sessionId},201);
+    const x=await body(request), userId=id(x.user_id), content=text(x.content); let sessionId=id(x.session_id);
+    if(!userId || !content)return error("消息内容不能为空");
+    let session=sessionId?await first(db,"SELECT * FROM customer_service_sessions WHERE id=? AND user_id=?",sessionId,userId):null;
+    if(sessionId&&!session)return error("会话不存在",404);
+    const classification=classifyService(content,text(x.service_type));
+    if(!session){
+      const s=await run(db,"INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status,service_type,seller_id,group_key,classification_confidence,last_customer_message_at) VALUES(?,?,?,?,?,'ai',?,?,?,?,CURRENT_TIMESTAMP)",userId,id(x.product_id)||null,text(x.product_name)||null,text(x.seller_name)||null,text(x.source,"message_center"),classification.label,id(x.seller_id)||null,classification.key,classification.confidence);
+      sessionId=s.meta.last_row_id;const code=`CS${String(sessionId).padStart(6,"0")}`;await run(db,"UPDATE customer_service_sessions SET customer_code=? WHERE id=?",code,sessionId);session=await first(db,"SELECT * FROM customer_service_sessions WHERE id=?",sessionId);
+    }else if(session.status==="ai"&&classification.score>=4){
+      await run(db,"UPDATE customer_service_sessions SET group_key=?,service_type=?,classification_confidence=?,last_customer_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",classification.key,classification.label,classification.confidence,sessionId);session={...session,group_key:classification.key,service_type:classification.label,classification_confidence:classification.confidence};
+    }else await run(db,"UPDATE customer_service_sessions SET last_customer_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",sessionId);
+    const r=await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id,channel) VALUES(?,?,?,?,?,?,?,?, 'sent',?,?, 'website')",userId,"user",text(x.type,"service"),content,sessionId,id(x.product_id)||null,text(x.product_name)||null,text(x.seller_name)||null,session.service_type||classification.label,id(x.seller_id)||null);
+    const recent=await first(db,"SELECT COUNT(*) count FROM messages WHERE session_id=? AND sender='user' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=? AND sender IN ('service','agent'))",sessionId,sessionId);
+    const reason=handoffReason(content,Number(recent?.count||0));
+    let reply=null, feishu={delivered:false};
+    if(reason&&session.status==="ai"){
+      await run(db,"UPDATE customer_service_sessions SET status='human_pending',handoff_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",reason,sessionId);session={...session,status:"human_pending",handoff_reason:reason};
+      reply=`这件事需要人工客服进一步处理，我已经把会话转到「${session.service_type}」客服组，请稍等，您不需要重复描述。`;
+      await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','system',?,?,'sent',?,'website')",userId,reply,sessionId,session.service_type);
+      await run(db,"INSERT INTO customer_service_events(session_id,event_type,actor,detail_json) VALUES(?,'handoff_requested','system',?)",sessionId,JSON.stringify({reason}));
+      feishu=await notifyFeishu(db,env,session,content,reason).catch(e=>({delivered:false,reason:e.message}));
+    }else if(["human_pending","human"].includes(session.status)){
+      feishu=await notifyFeishu(db,env,session,content,session.handoff_reason||"").catch(e=>({delivered:false,reason:e.message}));
+    }else{
+      reply=await knowledgeReply(db,session.group_key||classification.key,content);
+      await run(db,"INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','service',?,?,'sent',?,'website')",userId,reply,sessionId,session.service_type||classification.label);
+    }
+    return json({...(await first(db,"SELECT * FROM messages WHERE id=?",r.meta.last_row_id)),session_id:sessionId,customer_code:session.customer_code,status:reason?"human_pending":session.status,service_type:session.service_type,group_key:session.group_key,classification_confidence:session.classification_confidence,reply,feishu_delivered:feishu.delivered},201);
+  }
+  const sessionStatus=path.match(/^\/api\/customer-service\/sessions\/(\d+)$/);
+  if(sessionStatus&&method==="GET"){
+    const session=await first(db,"SELECT id,user_id,status,service_type,group_key,customer_code,assigned_to,handoff_reason,updated_at,last_agent_message_at FROM customer_service_sessions WHERE id=? AND user_id=?",id(sessionStatus[1]),id(url.searchParams.get("user_id")));
+    return session?json(session):error("会话不存在",404);
   }
   const handoff = path.match(/^\/api\/customer-service\/sessions\/(\d+)\/handoff$/);
-  if(handoff && method==="POST"){await run(db,"UPDATE customer_service_sessions SET status='human',assigned_to='在线客服',updated_at=CURRENT_TIMESTAMP WHERE id=?",id(handoff[1]));return json({ok:true,status:"human"});}
+  if(handoff && method==="POST"){
+    const x=await body(request),session=await first(db,"SELECT * FROM customer_service_sessions WHERE id=? AND user_id=?",id(handoff[1]),id(x.user_id));if(!session)return error("会话不存在",404);
+    const reason=text(x.reason,"客户主动要求人工");await run(db,"UPDATE customer_service_sessions SET status='human_pending',handoff_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",reason,session.id);
+    await run(db,"INSERT INTO customer_service_events(session_id,event_type,actor,detail_json) VALUES(?,'handoff_requested','customer',?)",session.id,JSON.stringify({reason}));
+    const feishu=await notifyFeishu(db,env,{...session,status:"human_pending"},text(x.preview,"客户请求人工服务"),reason).catch(e=>({delivered:false,reason:e.message}));
+    return json({ok:true,status:"human_pending",feishu_delivered:feishu.delivered,customer_code:session.customer_code});
+  }
   return null;
 }
 
@@ -483,13 +715,19 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url), path = url.pathname, method = request.method.toUpperCase();
     try {
+      if (path === "/api/integrations/feishu/events" && method === "POST") return await handleFeishuEvent(request, env);
+      const deskResponse = await handleFeishuDesk(request, env, url, path, method);
+      if (deskResponse) return deskResponse;
       let response = await handleMedia(request, env, url, path, method);
       if (!response && path.startsWith("/api/admin/")) response = await handleAdmin(request, env, url, path, method);
       if (!response) response = await handlePublic(request, env, url, path, method);
       if (!response) response = await handleCommerce(request, env, url, path, method);
       if (!response && path.startsWith("/api/")) response = error("接口不存在", 404);
       if (response) return response;
-      const asset = await env.ASSETS.fetch(request);
+      let asset = await env.ASSETS.fetch(request);
+      if (asset.status === 404 && method === "GET" && (request.headers.get("accept") || "").includes("text/html")) {
+        asset = await env.ASSETS.fetch(new Request(`${url.origin}/index.html`, request));
+      }
       if ((asset.headers.get("content-type") || "").includes("text/html")) {
         const html = (await asset.text()).replaceAll("__FUCHONG_ORIGIN__", url.origin);
         const headers = new Headers(asset.headers); headers.delete("content-length");

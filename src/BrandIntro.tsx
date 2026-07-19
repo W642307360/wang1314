@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import "./BrandIntro.css";
 
-const INTRO_DURATION = 4600;
+const INTRO_DURATION = 1850;
 
 export function BrandIntro({ onClose }: { onClose: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -30,8 +30,8 @@ export function BrandIntro({ onClose }: { onClose: () => void }) {
     canvas.height = 210 * ratio;
     context.scale(ratio, ratio);
     const mask = document.createElement("canvas");
-    mask.width = 220 * ratio;
-    mask.height = 220 * ratio;
+    mask.width = 220;
+    mask.height = 220;
     const maskContext = mask.getContext("2d", { willReadFrequently: true });
     if (!maskContext) return;
     const logo = new Image();
@@ -58,7 +58,7 @@ export function BrandIntro({ onClose }: { onClose: () => void }) {
       const startedAt = performance.now();
       const paint = (time: number) => {
         context.clearRect(0, 0, 340, 210);
-        const progress = reduceMotion ? 1 : Math.min(1, (time - startedAt) / 2100);
+        const progress = reduceMotion ? 1 : Math.min(1, (time - startedAt) / 700);
         const eased = 1 - Math.pow(1 - progress, 3);
         context.save();
         context.drawImage(mask, 60, -5, 220, 220);

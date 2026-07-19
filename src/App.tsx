@@ -46,6 +46,8 @@ import { readCart, writeCart, type StoredCartPet } from "./cartStore";
 import { publishUserId, useUserId } from "./userIdentity";
 import { mediaUrl, mediaVideoUrl } from "./mediaUrl";
 import { BrandIntro } from "./BrandIntro";
+import { soundForPet } from "./petSounds";
+import { generatedPetName } from "./petNaming";
 const MerchantPortal = lazy(() => import("./MerchantPortal"));
 
 type Page =
@@ -1176,9 +1178,9 @@ function Breed({
             ))
           : pets.map((pet) => (
               <button key={pet.id} onClick={() => openPet(pet, b)}>
-                <SmartImage className={pet.showcase_image ? "showcase-product-image" : undefined} src={resolveMediaUrl(pet.showcase_image) || petImage(pet, b.image)} fallback={petImage(pet, b.image)} alt={pet.name} />
+                <SmartImage className={pet.showcase_image ? "showcase-product-image" : undefined} src={resolveMediaUrl(pet.showcase_image) || petImage(pet, b.image)} fallback={petImage(pet, b.image)} alt={generatedPetName(pet, b.name)} />
                 <span>{pet.health_status || "健康认证"}</span>
-                <h3>{pet.name}</h3>
+                <h3>{generatedPetName(pet, b.name)}</h3>
                 <p>
                   {pet.breed} · {pet.age_months || 3}个月 ·{" "}
                   {pet.gender || "待确认"}
@@ -1392,6 +1394,7 @@ function Detail({
   const [knowledgeViewerOpen, setKnowledgeViewerOpen] = useState(false);
   const [likedReviews, setLikedReviews] = useState<Set<string>>(new Set());
   const touchStartX = useRef(0);
+  const petSoundRef = useRef<HTMLAudioElement>(null);
   const orderRequestId = useRef(crypto.randomUUID());
   const userId = useUserId();
   useEffect(() => {
@@ -1454,7 +1457,7 @@ function Detail({
       .catch(() => setOrderError("收货地址加载失败，请稍后重试"))
       .finally(() => setAddressLoading(false));
   }, [buyOpen, userId]);
-  const displayName = detailPet?.name || "Coco";
+  const displayName = generatedPetName(detailPet, breed.name);
   const displayPrice = detailPet?.price || 6800;
   const soldSeed = [...String(detailPet?.breed || breed.name)].reduce(
     (sum, character) => sum + character.charCodeAt(0),
@@ -1504,6 +1507,18 @@ function Detail({
     : breed.knowledgeImage) || breed.image;
   const archiveMeta = petArchiveMeta(detailPet, displayName);
   const merchant = sellerDetail || sellerProfile;
+  const sellerThumbImage = resolveMediaUrl(
+    merchant?.thumbnail_url || sellerProfile?.thumbnail_url || merchant?.image_url || sellerProfile?.image_url,
+    "thumb",
+  );
+  const sellerFullImage = resolveMediaUrl(
+    merchant?.image_url || sellerProfile?.image_url || merchant?.thumbnail_url || sellerProfile?.thumbnail_url,
+    "original",
+  );
+  const petSound = useMemo(
+    () => soundForPet(breed.id, breed.name, detailPet?.id),
+    [breed.id, breed.name, detailPet?.id],
+  );
   const merchantTrust = merchantTrustProfile(merchant, detailPet, mediaItems.length);
   const sellerLogoStyle = { "--seller-hue": `${((Number(sellerProfile?.id || detailPet?.seller_id || 1) * 47) % 360)}deg` } as CSSProperties;
   useEffect(() => {
@@ -1512,6 +1527,27 @@ function Detail({
     setReviewPanelOpen(false);
     setKnowledgeViewerOpen(false);
   }, [detailPet?.id]);
+  useEffect(() => {
+    setPlaying(false);
+    const audio = petSoundRef.current;
+    return () => {
+      audio?.pause();
+    };
+  }, [petSound?.url]);
+  const togglePetSound = async () => {
+    const audio = petSoundRef.current;
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    try {
+      await audio.play();
+    } catch {
+      setPlaying(false);
+      setFavoriteMessage("声音暂时无法播放，请稍后重试");
+    }
+  };
   const moveGallery = (direction: number) =>
     setGalleryIndex((current) => (current + direction + mediaItems.length) % mediaItems.length);
   const toggleFavorite = async () => {
@@ -1888,14 +1924,26 @@ function Detail({
             <b>⌄</b>
           </div>
         ))}
-        <button
-          className={`sound-player ${playing ? "playing" : ""}`}
-          onClick={() => setPlaying(!playing)}
-        >
-          <i>{playing ? "❚❚" : "▶"}</i>
-          <span>{playing ? "正在播放真实声音" : "点击试听宠物声音"}</span>
-          <em>▂▃▅▂▆▃▇▂▅▃▆</em>
-        </button>
+        {petSound && <>
+          <audio
+            ref={petSoundRef}
+            src={petSound.url}
+            preload="none"
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+          />
+          <button
+            type="button"
+            className={`sound-player ${playing ? "playing" : ""}`}
+            onClick={togglePetSound}
+            aria-label={`${playing ? "暂停" : "播放"}${breed.name}真实幼宠声音`}
+          >
+            <i>{playing ? "❚❚" : "▶"}</i>
+            <span>{playing ? "正在听它的真实小奶音" : `听听${breed.name}的真实奶声`}</span>
+            <em>▂▃▅▂▆▃▇▂▅▃▆</em>
+          </button>
+        </>}
       </section>
       <section className="growth">
         <h3>{breed.name} · 专属成长记录</h3>
@@ -1946,8 +1994,8 @@ function Detail({
         <div className="seller-summary">
           <h3>所属商家</h3>
           <button className="seller-profile-entry" onClick={openSellerProfile}>
-            {sellerProfile?.thumbnail_url
-              ? <img className="seller-entry-thumb" src={sellerProfile.thumbnail_url} alt={`${displaySeller}门店实景缩略图`} />
+            {sellerThumbImage
+              ? <SmartImage className="seller-entry-thumb" src={sellerThumbImage} highres={sellerFullImage} alt={`${displaySeller}门店实景缩略图`} />
               : <i className="seller-logo-mark" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}
             <span><b>{displaySeller}</b><small>{sellerProfile?.offline_store || "认证线下体验店"}</small></span>
             <em>查看商家 ›</em>
@@ -1966,11 +2014,11 @@ function Detail({
         <div className="seller-sheet-backdrop" role="dialog" aria-modal="true" aria-label={`${displaySeller}商家资料`} onClick={() => setSellerOpen(false)}>
           <section className="seller-sheet" onClick={(event) => event.stopPropagation()}>
             <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
-            <header>{merchant?.thumbnail_url
-              ? <button type="button" className="seller-header-photo" onClick={() => setSellerImageOpen(true)} aria-label={`放大查看${displaySeller}门店实景`}><img src={merchant.thumbnail_url} alt={`${displaySeller}门店实景`} /></button>
+            <header>{sellerThumbImage
+              ? <button type="button" className="seller-header-photo" onClick={() => setSellerImageOpen(true)} aria-label={`放大查看${displaySeller}门店实景`}><SmartImage src={sellerThumbImage} highres={sellerFullImage} alt={`${displaySeller}门店实景`} /></button>
               : <i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}<div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
             <div className="seller-sheet-metrics"><span><b>{merchant?.sales || 3289}</b>累计销量</span><span><b>{merchant?.review_total || merchant?.review_count || 24}</b>用户评价</span><span><b>98%</b>满意度</span></div>
-            {merchant?.image_url && <button type="button" className="seller-store-media" onClick={() => setSellerImageOpen(true)}><img src={merchant.image_url} alt={`${displaySeller}门店实景大图`} /><span><b>门店实景</b><small>点击查看大图</small></span></button>}
+            {sellerFullImage && <button type="button" className="seller-store-media" onClick={() => setSellerImageOpen(true)}><SmartImage src={sellerThumbImage || sellerFullImage} highres={sellerFullImage} alt={`${displaySeller}门店实景大图`} /><span><b>门店实景</b><small>点击查看高清大图</small></span></button>}
             <section className="seller-trust-card">
               <header><div><small>平台多维资料核验</small><h3>商家信任度</h3></div><b>{merchantTrust.score}<small>/100</small></b></header>
               <div>{merchantTrust.dimensions.map((item) => <span key={item.label}><em>{item.label}</em><i><b style={{ width: `${item.value}%` }} /></i><small>{item.value}</small></span>)}</div>
@@ -1999,7 +2047,7 @@ function Detail({
           </section>
         </div>
       )}
-      {sellerImageOpen && merchant?.image_url && <div className="seller-image-viewer" role="dialog" aria-modal="true" aria-label={`${displaySeller}门店实景大图`} onClick={() => setSellerImageOpen(false)}><button type="button" onClick={() => setSellerImageOpen(false)}>×</button><img src={merchant.image_url} alt={`${displaySeller}门店实景大图`} /></div>}
+      {sellerImageOpen && sellerFullImage && <div className="seller-image-viewer" role="dialog" aria-modal="true" aria-label={`${displaySeller}门店实景大图`} onClick={() => setSellerImageOpen(false)}><button type="button" onClick={() => setSellerImageOpen(false)}>×</button><SmartImage src={sellerFullImage} highres={sellerFullImage} eager alt={`${displaySeller}门店实景高清大图`} /></div>}
       <section className="review-showcase">
         <button type="button" className="review-showcase-open" onClick={() => setReviewPanelOpen(true)}>
           <span className="review-showcase-title"><i>口碑</i><span><small>真实购买体验</small><b>用户评价</b></span></span>
@@ -2109,8 +2157,8 @@ function Detail({
               : alert(productStatus === "sold" ? "该宠物已售出" : "商品已下架")
           }
         >
-          {productStatus === "available" ? "立即购买" : "暂不可购"}{" "}
-          <small>¥{displayPrice}</small>
+          <span>{productStatus === "available" ? "立即购买" : "暂不可购"} <small>¥{displayPrice}</small></span>
+          <em>平台订单监管</em>
         </button>
       </div>
       {favoriteMessage && <div className="toast favorite-toast">{favoriteMessage}</div>}
@@ -2153,6 +2201,11 @@ function Detail({
               <span>应付合计</span>
               <strong>¥{orderQuote?.total_amount ?? displayPrice}</strong>
             </div>
+            <section className="order-supervision-note">
+              <b>平台订单监管结算机制</b>
+              <p>用户付款后，平台锁定订单结算权限；</p>
+              <p>买家确认收货、售后无误后，平台完成最终订单结算放款。</p>
+            </section>
             {orderError && <p className="buy-error">{orderError}</p>}
             <button disabled={orderSubmitting || addressLoading} onClick={submitOrder}>
               {orderSubmitting ? "正在生成订单…" : "提交订单"}
@@ -2839,10 +2892,9 @@ export default function App() {
     if (!localStorage.getItem("fuchong-user")) ensureVisitor();
   }, []);
   const adminMode = location.hash.startsWith("#admin");
-  const forceBrandExperiment = new URLSearchParams(location.search).get("logo-intro") === "1";
-  const [showBrandIntro, setShowBrandIntro] = useState(
-    () => forceBrandExperiment || !localStorage.getItem("fuchong-brand-intro-seen-v1"),
-  );
+  const skipBrandIntro = new URLSearchParams(location.search).get("logo-intro") === "0";
+  const [showBrandIntro, setShowBrandIntro] = useState(() => !skipBrandIntro);
+  const closeBrandIntro = useCallback(() => setShowBrandIntro(false), []);
   const [page, setPage] = useState<Page>("home");
   const [user, setUser] = useState<User | null>(() => {
     try {
@@ -2893,10 +2945,6 @@ export default function App() {
     go("detail");
   };
   if (adminMode) return <AdminApp />;
-  const closeBrandIntro = () => {
-    localStorage.setItem("fuchong-brand-intro-seen-v1", "1");
-    setShowBrandIntro(false);
-  };
   return (
     <main className="phone-shell">
       {showBrandIntro && <BrandIntro onClose={closeBrandIntro} />}

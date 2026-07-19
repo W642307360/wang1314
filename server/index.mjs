@@ -41,7 +41,7 @@ const feishuImageCacheDir = join(root, "data", "feishu-image-cache");
 mkdirSync(feishuImageCacheDir, { recursive: true });
 const showcaseImageCacheDir = join(root, "data", "showcase-image-cache");
 mkdirSync(showcaseImageCacheDir, { recursive: true });
-const dbPath = process.env.DB_PATH || join(root, "data", "fuchong.db");
+const dbPath = process.env.FUCHONG_TEST_DB_PATH || process.env.DB_PATH || join(root, "data", "fuchong.db");
 const backupDir = join(root, "backups");
 mkdirSync(backupDir, { recursive: true });
 const shouldBackup = existsSync(dbPath) && statSync(dbPath).size > 0;
@@ -480,6 +480,41 @@ const aiReply = (text, pet) => {
   return pet
     ? `关于 ${pet.name}（${pet.breed}），我可以帮您查询价格、健康、疫苗、库存和购买流程。`
     : "您好，我是福宠 AI 客服，可以咨询商品、订单、物流、售后，也可以转人工。";
+};
+const localServiceGroups = {
+  purchase: ["购买咨询", ["买", "价格", "多少钱", "推荐", "适合", "区别", "怎么选", "使用方法"]],
+  order: ["订单咨询", ["订单", "支付", "付款", "修改订单", "订单状态"]],
+  after_sale: ["售后服务", ["退款", "退货", "换货", "投诉", "售后", "赔偿", "不满意"]],
+  pet_health: ["宠物健康咨询", ["不舒服", "生病", "呕吐", "腹泻", "没精神", "便血", "抽搐", "健康", "饮食", "护理", "疫苗"]],
+  logistics: ["物流帮助", ["物流", "快递", "发货", "配送", "到哪", "什么时候到", "运单"]],
+  official: ["官方客服", ["人工", "客服", "其他", "综合"]],
+};
+const classifyLocalService = (message, requestedType = "") => {
+  const content = String(message || "");
+  let best = { key: "official", label: "官方客服", score: 0 };
+  for (const [key, [label, terms]] of Object.entries(localServiceGroups)) {
+    const score = terms.reduce((sum, term) => sum + (content.includes(term) ? 2 : 0), 0) + (requestedType === label ? 1 : 0);
+    if (score > best.score) best = { key, label, score };
+  }
+  return { ...best, confidence: Math.min(.99, best.score ? .55 + best.score * .055 : .32) };
+};
+const localHandoffReason = (message, repeats = 0) => {
+  if (/(退款|退货|换货|投诉|赔偿|欺骗|曝光|消协|不满意)/.test(message)) return "售后或投诉需专员处理";
+  if (/(呼吸困难|抽搐|便血|昏迷|中毒|持续呕吐|急诊)/.test(message)) return "宠物健康高风险";
+  if (/(人工|真人|转人工|找客服)/.test(message)) return "客户主动要求人工";
+  if (repeats >= 3 && /(怎么|为什么|还是|没有|没解决|听不懂)/.test(message)) return "客户连续追问";
+  return "";
+};
+const localKnowledgeReply = (groupKey, message, pet) => {
+  const article = db.prepare("SELECT * FROM customer_service_knowledge WHERE enabled=1 AND group_key IN (?, 'official') ORDER BY CASE WHEN group_key=? THEN 0 ELSE 1 END,priority DESC").all(groupKey, groupKey)
+    .map((item) => ({ item, score: String(item.keywords || "").split(",").filter((keyword) => String(message).includes(keyword.trim())).length }))
+    .sort((a, b) => b.score - a.score)[0];
+  if (article?.score) return article.item.answer;
+  if (pet && groupKey === "purchase") return aiReply(message, pet);
+  if (groupKey === "order") return "好的，请从当前页面发送订单卡片，我会结合订单状态继续核对。";
+  if (groupKey === "logistics") return "收到，请发送物流订单卡片，我会根据发货记录和运单状态继续处理。";
+  if (groupKey === "pet_health") return "我先帮您梳理情况。请补充宠物的品种、年龄、症状持续时间、精神和进食饮水情况；线上建议不能替代兽医诊断，严重时请及时就医。";
+  return aiReply(message, pet);
 };
 const logAdmin = (admin, req, action, resource, resourceId, detail = {}) => {
   if (!admin || !admin.sub) return;
@@ -3473,34 +3508,29 @@ const server = createServer(async (req, res) => {
       if (!userId) return;
       const pet = d.product_id ? petDetail(Number(d.product_id)) : null;
       let sessionId = Number(d.session_id || 0);
+      let session = sessionId
+        ? db.prepare("SELECT * FROM customer_service_sessions WHERE id=? AND user_id=?").get(sessionId, userId)
+        : null;
+      if (sessionId && !session) return json(res, 404, { message: "会话不存在" });
+      const classification = classifyLocalService(d.content, d.service_type || "");
       if (!sessionId) {
-        const existing = db
-          .prepare(
-            "SELECT * FROM customer_service_sessions WHERE user_id=? AND COALESCE(product_id,0)=COALESCE(?,0) AND status IN ('ai','human_pending','human') ORDER BY id DESC LIMIT 1",
-          )
-          .get(userId, d.product_id || null);
-        if (existing) sessionId = existing.id;
-        else {
-          const s = db
-            .prepare(
-              "INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?)",
-            )
-            .run(
-              userId,
-              d.product_id || null,
-              d.product_name || pet?.name || null,
-              d.seller_name || pet?.seller_name || "福宠认证宠物馆",
-              d.source || "message_center",
-              "ai",
-              d.service_type || "购买咨询",
-              d.seller_id || pet?.seller_id || null,
-            );
-          sessionId = s.lastInsertRowid;
-        }
+        const s = db.prepare("INSERT INTO customer_service_sessions(user_id,product_id,product_name,seller_name,source,status,service_type,seller_id,group_key,classification_confidence,last_customer_message_at) VALUES(?,?,?,?,?,'ai',?,?,?,?,CURRENT_TIMESTAMP)").run(
+          userId, d.product_id || null, d.product_name || pet?.name || null,
+          d.seller_name || pet?.seller_name || "福宠认证宠物馆", d.source || "message_center",
+          classification.label, d.seller_id || pet?.seller_id || null, classification.key, classification.confidence,
+        );
+        sessionId = Number(s.lastInsertRowid);
+        db.prepare("UPDATE customer_service_sessions SET customer_code=? WHERE id=?").run(`CS${String(sessionId).padStart(6, "0")}`, sessionId);
+        session = db.prepare("SELECT * FROM customer_service_sessions WHERE id=?").get(sessionId);
+      } else if (session.status === "ai" && classification.score >= 4) {
+        db.prepare("UPDATE customer_service_sessions SET group_key=?,service_type=?,classification_confidence=?,last_customer_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(classification.key, classification.label, classification.confidence, sessionId);
+        session = { ...session, group_key: classification.key, service_type: classification.label };
+      } else {
+        db.prepare("UPDATE customer_service_sessions SET last_customer_message_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(sessionId);
       }
       const r = db
         .prepare(
-          "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id,channel) VALUES(?,?,?,?,?,?,?,?,?,?,?,'website')",
         )
         .run(
           userId,
@@ -3512,41 +3542,47 @@ const server = createServer(async (req, res) => {
           d.product_name || pet?.name || null,
           d.seller_name || pet?.seller_name || "福宠认证宠物馆",
           "sent",
-          d.service_type || "购买咨询",
+          session.service_type || classification.label,
           d.seller_id || pet?.seller_id || null,
         );
-      const reply = aiReply(d.content, pet);
-      db.prepare(
-        "INSERT INTO messages(user_id,sender,type,content,session_id,product_id,product_name,seller_name,status,service_type,seller_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-      ).run(
-        userId,
-        "service",
-        "service",
-        reply,
-        sessionId,
-        d.product_id || null,
-        d.product_name || pet?.name || null,
-        d.seller_name || pet?.seller_name || "福宠认证宠物馆",
-        "sent",
-        d.service_type || "购买咨询",
-        d.seller_id || pet?.seller_id || null,
-      );
+      const repeats = db.prepare("SELECT COUNT(*) count FROM messages WHERE session_id=? AND sender='user' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=? AND sender IN ('service','agent'))").get(sessionId, sessionId).count;
+      const reason = localHandoffReason(String(d.content || ""), Number(repeats || 0));
+      let reply = null;
+      if (reason && session.status === "ai") {
+        reply = `这件事需要人工客服进一步处理，我已经把会话转到「${session.service_type}」客服组，请稍等，您不需要重复描述。`;
+        db.prepare("UPDATE customer_service_sessions SET status='human_pending',handoff_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(reason, sessionId);
+        db.prepare("INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','system',?,?,'sent',?,'website')").run(userId, reply, sessionId, session.service_type);
+      } else if (!["human_pending", "human"].includes(session.status)) {
+        reply = localKnowledgeReply(session.group_key || classification.key, d.content, pet);
+        db.prepare("INSERT INTO messages(user_id,sender,type,content,session_id,status,service_type,channel) VALUES(?,'service','service',?,?,'sent',?,'website')").run(userId, reply, sessionId, session.service_type);
+      }
       db.prepare(
         "UPDATE customer_service_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
       ).run(sessionId);
       return json(res, 201, {
         id: r.lastInsertRowid,
         session_id: sessionId,
+        customer_code: session.customer_code,
+        status: reason ? "human_pending" : session.status,
+        service_type: session.service_type,
+        group_key: session.group_key,
         reply,
       });
+    }
+    const serviceStatus = path.match(/^\/api\/customer-service\/sessions\/(\d+)$/);
+    if (serviceStatus && method === "GET") {
+      const userId = validatedUserId(res, url.searchParams.get("user_id")); if (!userId) return;
+      const session = db.prepare("SELECT id,user_id,status,service_type,group_key,customer_code,assigned_to,handoff_reason,updated_at,last_agent_message_at FROM customer_service_sessions WHERE id=? AND user_id=?").get(Number(serviceStatus[1]), userId);
+      return session ? json(res, 200, session) : json(res, 404, { message: "会话不存在" });
     }
     const serviceSession = path.match(
       /^\/api\/customer-service\/sessions\/(\d+)\/handoff$/,
     );
     if (serviceSession && method === "POST") {
+      const d = await body(req); const userId = validatedUserId(res, d.user_id); if (!userId) return;
       db.prepare(
-        "UPDATE customer_service_sessions SET status='human_pending',updated_at=CURRENT_TIMESTAMP WHERE id=?",
-      ).run(Number(serviceSession[1]));
+        "UPDATE customer_service_sessions SET status='human_pending',handoff_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+      ).run(d.reason || "客户主动要求人工", Number(serviceSession[1]), userId);
       return json(res, 200, { ok: true, status: "human_pending" });
     }
     if (path === "/api/admin/customer-service/sessions" && method === "GET")
@@ -4807,6 +4843,6 @@ for (const task of rows("SELECT id,status FROM feishu_sync_tasks WHERE status IN
   } else setTimeout(() => processSyncTask(task.id, items), 0);
 }
 
-server.listen(Number(process.env.PORT || 3001), () =>
+server.listen(Number(process.env.FUCHONG_TEST_PORT || process.env.PORT || 3001), () =>
   console.log("福宠 API: http://127.0.0.1:3001"),
 );
