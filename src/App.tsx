@@ -10,6 +10,7 @@ import {
   type CSSProperties,
 } from "react";
 import "./App.css";
+import "./NavEnhance.css";
 import "./Me.css";
 import "./Catalog.css";
 import "./DetailEnhance.css";
@@ -48,6 +49,14 @@ import { mediaUrl, mediaVideoUrl } from "./mediaUrl";
 import { BrandIntro } from "./BrandIntro";
 import { soundForPet } from "./petSounds";
 import { generatedPetName } from "./petNaming";
+import {
+  LEGAL_DOCUMENTS,
+  LEGAL_VERSION,
+  REQUIRED_PURCHASE_DOCUMENTS,
+  type LegalDocumentKey,
+} from "./legalDocuments";
+import "./Legal.css";
+import "./CheckoutCompact.css";
 const MerchantPortal = lazy(() => import("./MerchantPortal"));
 
 type Page =
@@ -79,8 +88,10 @@ type ApiPet = {
   breed: string;
   price: number;
   gender?: string;
+  birth_date?: string;
   age_months?: number;
   color?: string;
+  fur_length?: string;
   health_status?: string;
   seller_name?: string;
   seller_id?: number;
@@ -93,11 +104,33 @@ type ApiPet = {
   highres_url?: string;
   image?: string;
   showcase_image?: string;
+  identity_photo?: string;
+  identity_profile?: {
+    name: string;
+    breed: string;
+    gender: string;
+    birthDate: string;
+    color: string;
+    bodyType?: string;
+    furLength?: string;
+    personality?: string;
+    healthStatus?: string;
+    vaccineRecord?: string;
+    identityNo: string;
+    chipNo: string;
+    issuedDate: string;
+    algorithmVersion?: string;
+    updated_at?: string;
+  } | null;
   images?: Array<{ id?: number; url: string; type?: string; thumbnail_url?: string; webp_url?: string }>;
   videos?: Array<{ id?: number; url: string; cover_url?: string }>;
   reviews?: Array<any>;
   review_count?: number;
   updated_at?: string;
+  created_at?: string;
+  source?: string;
+  status?: string;
+  product_status?: string;
   breed_profile?: { intro?: string; origin?: string; alias?: string; evolution?: string; growth_profile?: string; standard_body?: string };
   personality?: string;
   body_type?: string;
@@ -105,7 +138,7 @@ type ApiPet = {
 };
 const dogBreeds = hallByKey("dogs").breeds.slice(0, 5);
 const petPhoto = dogBreeds[0].image;
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
+const API_BASE = import.meta.env.PROD ? "" : import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const originMapPoint = (origin = "") => {
   const points: Array<[string[], number, number]> = [
     [["中国", "日本", "泰国", "缅甸", "新加坡", "东南亚", "亚洲"], 246, 62],
@@ -175,26 +208,107 @@ const zodiacFor = (month: number, day: number) => {
   const signs = ["摩羯座", "水瓶座", "双鱼座", "白羊座", "金牛座", "双子座", "巨蟹座", "狮子座", "处女座", "天秤座", "天蝎座", "射手座", "摩羯座"];
   return day < edge[month - 1] ? signs[month - 1] : signs[month];
 };
-const petArchiveMeta = (pet: any, fallbackName: string) => {
-  const seed = stableSeed(pet?.id || fallbackName);
-  const updated = new Date(pet?.updated_at || Date.now());
-  const base = Number.isNaN(updated.getTime()) ? new Date() : updated;
-  const date = new Date(base);
-  date.setDate(date.getDate() - (7 + seed % 84));
+const normalizedBodyType = (pet: any): "小型" | "中型" | "大型" => {
+  const explicit = String(pet?.body_type || "").trim();
+  const details = [pet?.description, pet?.breed_profile?.intro, pet?.breed]
+    .map((value) => String(value || ""))
+    .join(" ");
+  const classify = (text: string) => {
+    if (/(小型|迷你|小体|小体型|小型犬|小型猫)/.test(text)) return "小型" as const;
+    if (/(大型|巨型|大体|大体型|大型犬|大型猫)/.test(text)) return "大型" as const;
+    if (/(中型|中等|标准体型|中型犬|中型猫)/.test(text)) return "中型" as const;
+    return null;
+  };
+  return classify(explicit) || classify(details) || "中型";
+};
+const parseDatabaseTime = (value: unknown) => {
+  const text = String(value || "").trim();
+  if (!text) return 0;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)
+    ? `${text.replace(" ", "T")}Z`
+    : text;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const formatInsuranceCountdown = (seconds: number) => {
+  const safe = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const remainder = safe % 60;
+  return [hours, minutes, remainder].map((part) => String(part).padStart(2, "0")).join(":");
+};
+const formatIdentityDate = (value: number) => {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}.${String(date.getDate()).padStart(2, "0")}`
+    : "待核验";
+};
+const petIdentityMeta = (pet: ApiPet | null | undefined, displayName: string) => {
+  const stableId = Math.max(1, Number(pet?.id || stableSeed(displayName)));
+  const seed = stableSeed([
+    stableId,
+    pet?.breed || "",
+    pet?.gender || "",
+    pet?.color || "",
+    pet?.created_at || "",
+  ].join("|"));
+  const issuedAt = parseDatabaseTime(pet?.created_at) || Date.now();
+  const ageMonths = Math.max(1, Number(pet?.age_months || 3));
+  const explicitBirth = pet?.birth_date ? Date.parse(pet.birth_date) : Number.NaN;
+  const bornAt = Number.isFinite(explicitBirth)
+    ? explicitBirth
+    : issuedAt - ageMonths * 30.4375 * 24 * 60 * 60 * 1000;
+  const speciesCode = /猫|狸|喵/.test(String(pet?.breed || "")) ? "C"
+    : /犬|狗/.test(String(pet?.breed || "")) ? "D"
+      : /鸟|鹦鹉/.test(String(pet?.breed || "")) ? "B"
+        : /鱼|龟|水族/.test(String(pet?.breed || "")) ? "A" : "P";
+  const check = String((seed * 17 + stableId * 31) % 97).padStart(2, "0");
+  return {
+    name: "待宠物主起名",
+    breed: pet?.breed || "宠物档案",
+    gender: pet?.gender === "male" ? "公" : pet?.gender === "female" ? "母" : pet?.gender || "待核验",
+    birthDate: formatIdentityDate(bornAt),
+    color: pet?.color || "自然综合色",
+    identityNo: `FC-${speciesCode}${String(stableId).padStart(6, "0")}-${check}`,
+    chipNo: `VFC-${String(stableId).padStart(6, "0")}-${String(seed % 1_000_000).padStart(6, "0")}`,
+    issuedDate: formatIdentityDate(issuedAt),
+  };
+};
+const petArchiveMeta = (pet: any) => {
+  const identityBirth = String(pet?.identity_profile?.birthDate || pet?.birth_date || "").replaceAll(".", "-");
+  const parsedBirth = Date.parse(identityBirth);
+  const issuedAt = parseDatabaseTime(pet?.created_at) || Date.now();
+  const age = Number(pet?.age_months || 3);
+  const date = new Date(Number.isFinite(parsedBirth)
+    ? parsedBirth
+    : issuedAt - age * 30.4375 * 24 * 60 * 60 * 1000);
   const month = date.getMonth() + 1;
   const day = date.getDate();
-  const age = Number(pet?.age_months || 3);
   const lifeStage = age <= 4 ? "初见期" : age <= 12 ? "成长期" : age <= 84 ? "相伴期" : "守护期";
   const lifeCopy = age <= 4 ? "遇到刚好的你" : age <= 12 ? "一起长成更好的我们" : age <= 84 ? "日常就是最长情的陪伴" : "慢一点，也一直在身边";
+  const personality = String(pet?.identity_profile?.personality || pet?.personality || "").trim();
+  const personalityType = /(活泼|热情|亲人|外向|好奇|爱玩|社交)/.test(personality)
+    ? "E人"
+    : /(安静|慢热|独立|稳重|温柔|细腻)/.test(personality)
+      ? "I人"
+      : "待核验";
   return {
-    personalityType: seed % 2 ? "E人" : "I人",
-    personalityMarks: seed % 2
+    personalityType,
+    personalityMarks: personalityType === "E人"
       ? [{ icon: "亲", label: "亲和" }, { icon: "活", label: "活力" }, { icon: "探", label: "探索" }]
-      : [{ icon: "静", label: "安静" }, { icon: "稳", label: "稳定" }, { icon: "察", label: "观察" }],
+      : personalityType === "I人"
+        ? [{ icon: "静", label: "安静" }, { icon: "稳", label: "稳定" }, { icon: "察", label: "观察" }]
+        : [{ icon: "核", label: "待核验" }, { icon: "补", label: "待补充" }, { icon: "档", label: "档案中" }],
     dateLabel: `${String(month).padStart(2, "0")}月${String(day).padStart(2, "0")}日`,
     zodiac: zodiacFor(month, day),
     lifeStage,
     lifeCopy,
+    facets: [
+      { icon: "◐", label: "毛色", value: pet?.identity_profile?.color || pet?.color || "待商家补充", note: "来源于商品资料" },
+      { icon: "型", label: "体型", value: pet?.identity_profile?.bodyType || normalizedBodyType(pet), note: "无明确资料时默认为中型" },
+      { icon: "≋", label: "毛发长度", value: pet?.identity_profile?.furLength || pet?.fur_length || "待商家补充", note: "来源于商品资料" },
+      { icon: personalityType === "待核验" ? "核" : personalityType[0], label: "性格", value: personality || "待商家补充", note: `${personalityType}能量 · 商品档案解析` },
+    ],
   };
 };
 function FurColorArchive({ src, color }: { src: string; color?: string }) {
@@ -410,7 +524,7 @@ function Back({ onClick }: { onClick: () => void }) {
 }
 function Nav({ go, page }: { go: (p: Page) => void; page: Page }) {
   return (
-    <nav>
+    <nav className={`app-nav ${page === "service" ? "service-active" : ""}`}>
       {[
         ["home", "⌂", "市场"],
         ["family", "♡", "宠物家"],
@@ -1202,6 +1316,24 @@ function Breed({
   );
 }
 
+type InlineServiceMessage = {
+  id: number;
+  sender: "service" | "user" | "agent";
+  content: string;
+  type?: "service" | "product_card";
+};
+
+function LegalDocumentDialog({ documentKey, onClose }: { documentKey: LegalDocumentKey; onClose: () => void }) {
+  const document = LEGAL_DOCUMENTS[documentKey];
+  return <div className="legal-dialog-mask" role="dialog" aria-modal="true" aria-label={document.title}>
+    <section className="legal-dialog">
+      <header><div><small>协议版本 {LEGAL_VERSION}</small><h2>{document.title}</h2><p>适用对象：{document.audience}</p></div><button type="button" onClick={onClose} aria-label="关闭协议">×</button></header>
+      <div className="legal-scroll">{document.sections.map((section) => <article className={section.important ? "important" : ""} key={section.title}><h3>{section.title}</h3>{section.paragraphs.map((paragraph, index) => <p key={`${section.title}-${index}`}>{paragraph}</p>)}</article>)}</div>
+      <footer><button type="button" onClick={onClose}>我已阅读，返回确认</button></footer>
+    </section>
+  </div>;
+}
+
 function ProductServiceOverlay({
   context,
   onClose,
@@ -1212,21 +1344,49 @@ function ProductServiceOverlay({
   const userId = useUserId();
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [replying, setReplying] = useState(false);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [humanPending, setHumanPending] = useState(false);
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      sender: "service",
-      content: `您好，正在为您连接「${context.productName || "当前宠物"}」的购买咨询。价格、健康、疫苗、库存、购买流程都可以直接问我。`,
-    },
-  ]);
-  const send = async (override?: string) => {
+  const [, setConnecting] = useState(true);
+  const autoStartedRef = useRef(false);
+  const [messages, setMessages] = useState<InlineServiceMessage[]>([]);
+  const syncConversation = useCallback(async (targetSessionId: number) => {
+    try {
+      const [messagesResponse, statusResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/messages?user_id=${userId}&session_id=${targetSessionId}`),
+        fetch(`${API_BASE}/api/customer-service/sessions/${targetSessionId}?user_id=${userId}`),
+      ]);
+      if (messagesResponse.ok) {
+        const stored = await messagesResponse.json();
+        if (Array.isArray(stored))
+          setMessages(stored.map((message) => ({
+            id: Number(message.id),
+            sender: message.sender === "user" ? "user" : message.sender === "agent" ? "agent" : "service",
+            content: String(message.content || ""),
+            type: message.type,
+          })));
+      }
+      if (statusResponse.ok) {
+        const status = await statusResponse.json();
+        setHumanPending(["human_pending", "human"].includes(status.status));
+      }
+    } catch {
+      // 短暂断网时保留当前对话，下一轮自动同步。
+    }
+  }, [userId]);
+  useEffect(() => {
+    if (!sessionId) return;
+    void syncConversation(sessionId);
+    const timer = window.setInterval(() => void syncConversation(sessionId), 2000);
+    return () => window.clearInterval(timer);
+  }, [sessionId, syncConversation]);
+  const send = async (override?: string, messageType: "service" | "product_card" = "service") => {
     const value = (override ?? text).trim();
     if (!value || sending) return sessionId;
     setSending(true);
+    setReplying(true);
     setText("");
-    setMessages((items) => [...items, { id: Date.now(), sender: "user", content: value }]);
+    setMessages((items) => [...items, { id: Date.now(), sender: "user", content: value, type: messageType }]);
     try {
       const response = await fetch(`${API_BASE}/api/messages`, {
         method: "POST",
@@ -1234,6 +1394,7 @@ function ProductServiceOverlay({
         body: JSON.stringify({
           user_id: userId,
           sender: "user",
+          type: messageType,
           content: value,
           session_id: sessionId,
           product_id: context.productId || null,
@@ -1247,14 +1408,17 @@ function ProductServiceOverlay({
       if (!response.ok) throw new Error("send failed");
       const saved = await response.json();
       if (saved.session_id) setSessionId(saved.session_id);
-      setMessages((items) => [
-        ...items,
-        {
-          id: Date.now() + 1,
-          sender: "service",
-          content: saved.reply || "已收到，客服稍后回复您。",
-        },
-      ]);
+      setHumanPending(["human_pending", "human"].includes(saved.status));
+      if (saved.reply)
+        setMessages((items) => [
+          ...items,
+          {
+            id: Date.now() + 1,
+            sender: "service",
+            content: saved.reply,
+          },
+        ]);
+      if (saved.session_id) void syncConversation(Number(saved.session_id));
       return saved.session_id || sessionId;
     } catch {
       setMessages((items) => [
@@ -1262,38 +1426,85 @@ function ProductServiceOverlay({
         { id: Date.now() + 2, sender: "service", content: "发送失败，请稍后重新发送。" },
       ]);
     } finally {
+      setReplying(false);
       setSending(false);
     }
     return sessionId;
   };
-  const handoff = async () => {
-    const sid = sessionId || (await send("需要转人工客服"));
-    if (sid) {
-      await fetch(`${API_BASE}/api/customer-service/sessions/${sid}/handoff`, {
-        method: "POST",
-      }).catch(() => {});
-    }
-    setHumanPending(true);
-    setMessages((items) => [
-      ...items,
-      { id: Date.now() + 3, sender: "service", content: "已为您转入人工客服队列，后台可以看到本次商品咨询记录。" },
-    ]);
-  };
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    const timer = window.setTimeout(() => {
+      const productSummary = [
+        "【福宠商品资料】",
+        `商品：${context.productName || "当前宠物"}`,
+        `品种：${context.productBreed || "请客服结合商品档案确认"}`,
+        `价格：${context.productPrice ? `¥${context.productPrice}` : "以商品页实时价格为准"}`,
+        `商家：${context.sellerName || "福宠认证宠物馆"}`,
+        "咨询诉求：我正在查看这只宠物，请结合商品资料为我介绍。",
+      ].join("\n");
+      send(productSummary, "product_card").finally(() => setConnecting(false));
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // 商品详情浮层一次打开只自动发送一次，避免会话状态变化造成重复卡片。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context.productId, context.productName]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     send();
   };
+  const requestHuman = async () => {
+    if (humanPending || sending) return;
+    setSending(true);
+    try {
+      let targetSessionId = sessionId;
+      if (!targetSessionId) {
+        const sessionResponse = await fetch(`${API_BASE}/api/customer-service/session`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            service_type: "购买咨询",
+            product_id: context.productId || null,
+            product_name: context.productName || "",
+            seller_id: context.sellerId || null,
+            seller_name: context.sellerName || "福宠认证宠物馆",
+            source: "product_detail_inline",
+          }),
+        });
+        if (!sessionResponse.ok) throw new Error("会话创建失败");
+        const ensured = await sessionResponse.json();
+        targetSessionId = Number(ensured.id);
+        setSessionId(targetSessionId);
+      }
+      const response = await fetch(`${API_BASE}/api/customer-service/sessions/${targetSessionId}/handoff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId, reason: "客户从商品详情申请福宠用户宠物专员", preview: text || "购买咨询需要专员接续" }),
+      });
+      if (!response.ok) throw new Error("handoff failed");
+      setHumanPending(true);
+      setMessages((items) => [...items, { id: Date.now(), sender: "service", content: "已进入福宠用户宠物专员队列，可能需要等待。" }]);
+    } catch {
+      setMessages((items) => [...items, { id: Date.now(), sender: "service", content: "暂时未能转接，您可以继续留言。" }]);
+    } finally {
+      setSending(false);
+    }
+  };
   return (
-    <div className="service-sheet-mask inline-service-mask" onClick={onClose}>
-      <section className="service-sheet inline-service-sheet" onClick={(event) => event.stopPropagation()}>
+    <div className="service-sheet-mask inline-service-mask" role="dialog" aria-modal="true" aria-label="商家客服窗口">
+      <section className="service-sheet inline-service-sheet" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
         <i />
         <header>
           <div>
-            <small>{humanPending ? "人工客服排队中" : "AI购买咨询 · 可转人工"}</small>
+            <small className="service-online-state"><i />{humanPending ? "专员排队中" : "在线客服"}</small>
             <h2>购买咨询</h2>
             <p>当前宠物：{context.productName || "未关联具体宠物"}</p>
           </div>
-          <button onClick={onClose}>×</button>
+          <div className="service-header-actions">
+            <button className="service-specialist-mini" type="button" onClick={requestHuman} disabled={sending || humanPending}>{humanPending ? "专员排队中" : "转接为福宠用户宠物专员"}</button>
+            <button type="button" aria-label="关闭客服窗口" onClick={onClose}>×</button>
+          </div>
         </header>
         <div className="inline-product-chip">
           <b>咨询商品</b>
@@ -1303,21 +1514,26 @@ function ProductServiceOverlay({
         <div className="chat-window sheet-chat">
           {messages.map((message) => (
             <div key={message.id} className={`chat-bubble ${message.sender}`}>
-              <i>{message.sender === "service" ? "福" : "我"}</i>
-              <p>{message.content}</p>
+              <i>{message.sender === "user" ? "我" : "福"}</i>
+              {message.type === "product_card" ? <div className="chat-share-card product_card">
+                <small>已自动发送商品</small>
+                <b>{context.productName || "当前宠物"}</b>
+                <p>{message.content}</p>
+              </div> : <p>{message.content}</p>}
             </div>
           ))}
+          {replying && <div className="service-typing" role="status" aria-live="polite">
+            <i>福</i><p><span><b /><b /><b /></span>客服正在回复…</p>
+          </div>}
         </div>
-        <form className="sheet-input" onSubmit={submit}>
+        <form className="sheet-input" onSubmit={submit} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
           <input
             value={text}
             onChange={(event) => setText(event.target.value)}
             placeholder="输入购买咨询内容…"
+            disabled={sending}
           />
-          <button type="button" onClick={handoff}>
-            转人工
-          </button>
-          <button disabled={sending}>{sending ? "发送中" : "发送"}</button>
+          <button type="submit" disabled={sending}>{sending ? "发送中" : "发送"}</button>
         </form>
       </section>
     </div>
@@ -1370,9 +1586,15 @@ function Detail({
   const [following, setFollowing] = useState(false);
   const [cart, setCart] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
+  const [purchaseAgreementAccepted, setPurchaseAgreementAccepted] = useState(false);
+  const [wechatPaymentOrder, setWechatPaymentOrder] = useState<any>(null);
+  const [wechatPaymentConfirmed, setWechatPaymentConfirmed] = useState(false);
+  const [paymentDeclaring, setPaymentDeclaring] = useState(false);
+  const [paymentDeclareError, setPaymentDeclareError] = useState("");
+  const [paymentQrFailed, setPaymentQrFailed] = useState(false);
+  const [contactQrFailed, setContactQrFailed] = useState(false);
   const [inlineService, setInlineService] = useState<ServiceContext | null>(null);
   const [sellerOpen, setSellerOpen] = useState(false);
-  const [sellerImageOpen, setSellerImageOpen] = useState(false);
   const [sellerDetail, setSellerDetail] = useState<any>(null);
   const [sellerReviewLimit, setSellerReviewLimit] = useState(12);
   const [sellerReportOpen, setSellerReportOpen] = useState(false);
@@ -1388,6 +1610,7 @@ function Detail({
   const [petDbId, setPetDbId] = useState<number | null>(pet?.id || null);
   const [detailPet, setDetailPet] = useState<any>(pet);
   const [detailReady, setDetailReady] = useState(false);
+  const [insuranceClock, setInsuranceClock] = useState(() => Date.now());
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [mediaViewerOpen, setMediaViewerOpen] = useState(false);
   const [reviewPanelOpen, setReviewPanelOpen] = useState(false);
@@ -1397,6 +1620,33 @@ function Detail({
   const petSoundRef = useRef<HTMLAudioElement>(null);
   const orderRequestId = useRef(crypto.randomUUID());
   const userId = useUserId();
+  useEffect(() => {
+    setPaymentQrFailed(false);
+    setContactQrFailed(false);
+    setPaymentDeclareError("");
+  }, [wechatPaymentOrder?.id]);
+  useEffect(() => {
+    if (!wechatPaymentOrder?.id || wechatPaymentConfirmed) return;
+    let active = true;
+    const checkPayment = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/orders/${wechatPaymentOrder.id}?user_id=${userId}`);
+        const order = await response.json();
+        if (!active || !response.ok || order.payment_status !== "paid") return;
+        setWechatPaymentConfirmed(true);
+        setDetailPet((current: any) => current ? { ...current, status: "sold", product_status: "sold" } : current);
+        window.dispatchEvent(new Event("fuchong-products-change"));
+      } catch {
+        // 弱网时保留二维码，由下一次轮询继续核实服务器支付状态。
+      }
+    };
+    void checkPayment();
+    const timer = window.setInterval(checkPayment, 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [wechatPaymentOrder?.id, wechatPaymentConfirmed, userId]);
   useEffect(() => {
     setDetailPet(pet);
     setPetDbId(pet?.id || null);
@@ -1458,7 +1708,16 @@ function Detail({
       .finally(() => setAddressLoading(false));
   }, [buyOpen, userId]);
   const displayName = generatedPetName(detailPet, breed.name);
+  const displayGender = String(detailPet?.gender || "").trim().toLowerCase();
+  const isMalePet = ["公", "male", "男", "弟弟"].includes(displayGender);
+  const genderSymbol = isMalePet ? "♂" : "♀";
+  const genderRole = isMalePet ? "弟弟" : "妹妹";
   const displayPrice = detailPet?.price || 6800;
+  const bodyType = normalizedBodyType(detailPet);
+  const insuranceDeadline =
+    parseDatabaseTime(orderQuote?.insurance_offer?.deadline) ||
+    (parseDatabaseTime(detailPet?.created_at) + 24 * 60 * 60 * 1000);
+  const insuranceSeconds = Math.max(0, Math.ceil((insuranceDeadline - insuranceClock) / 1000));
   const soldSeed = [...String(detailPet?.breed || breed.name)].reduce(
     (sum, character) => sum + character.charCodeAt(0),
     0,
@@ -1473,6 +1732,12 @@ function Detail({
       : detailPet?.status === "sold"
         ? "sold"
         : "offline");
+  useEffect(() => {
+    setInsuranceClock(Date.now());
+    if (!insuranceDeadline || insuranceDeadline <= Date.now()) return;
+    const timer = window.setInterval(() => setInsuranceClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [insuranceDeadline]);
   const mediaItems = useMemo(() => {
     const images = (detailPet?.images || [])
       .map((item: any) => ({
@@ -1505,15 +1770,23 @@ function Detail({
   const knowledgeThumb = breed.knowledgeThumbnail || (breed.knowledgeImage?.startsWith("/")
     ? breed.knowledgeImage.replace(/\.(?:jpe?g|png|webp)$/i, "-thumb.webp")
     : breed.knowledgeImage) || breed.image;
-  const archiveMeta = petArchiveMeta(detailPet, displayName);
+  const archiveMeta = petArchiveMeta(detailPet);
+  const identityMeta = useMemo(
+    () => detailPet?.identity_profile || petIdentityMeta(detailPet, displayName),
+    [detailPet, displayName],
+  );
+  const identityPhoto =
+    resolveMediaUrl(detailPet?.identity_photo) ||
+    resolveMediaUrl(detailPet?.showcase_image) ||
+    (
+      petDbId && ["feishu", "merchant"].includes(String(detailPet?.source || ""))
+        ? `/api/media/product-showcase/${petDbId}`
+        : mediaItems[0]?.thumb || breed.image
+    );
   const merchant = sellerDetail || sellerProfile;
   const sellerThumbImage = resolveMediaUrl(
     merchant?.thumbnail_url || sellerProfile?.thumbnail_url || merchant?.image_url || sellerProfile?.image_url,
     "thumb",
-  );
-  const sellerFullImage = resolveMediaUrl(
-    merchant?.image_url || sellerProfile?.image_url || merchant?.thumbnail_url || sellerProfile?.thumbnail_url,
-    "original",
   );
   const petSound = useMemo(
     () => soundForPet(breed.id, breed.name, detailPet?.id),
@@ -1584,6 +1857,10 @@ function Detail({
   };
   const submitOrder = async () => {
     if (!petDbId || orderSubmitting) return;
+    if (!purchaseAgreementAccepted) {
+      setOrderError("请先阅读并主动勾选购买协议与风险确认");
+      return;
+    }
     if (!selectedAddress) {
       setOrderError("请先到“我的－收货地址”新增地址");
       return;
@@ -1603,28 +1880,54 @@ function Detail({
       const r = await fetch(`${API_BASE}/api/orders`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ user_id: userId, pet_id: petDbId, address, client_request_id: orderRequestId.current }),
+        body: JSON.stringify({
+          user_id: userId,
+          pet_id: petDbId,
+          address,
+          client_request_id: orderRequestId.current,
+          legal_acceptance: {
+            accepted: true,
+            version: LEGAL_VERSION,
+            documents: [...REQUIRED_PURCHASE_DOCUMENTS],
+          },
+        }),
       });
       const order = await r.json();
       if (!r.ok) throw new Error(order.message || "订单提交失败");
-      if (/MicroMessenger/i.test(navigator.userAgent)) {
-        const payResponse = await fetch(`${API_BASE}/api/payments/wechat/prepay`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ order_id: order.id, user_id: userId }),
-        });
-        const pay = await payResponse.json();
-        const bridge = (window as any).WeixinJSBridge;
-        if (payResponse.ok && bridge)
-          bridge.invoke("getBrandWCPayRequest", pay, () => go("orders"));
-      }
       setBuyOpen(false);
+      setPurchaseAgreementAccepted(false);
+      setWechatPaymentConfirmed(order.payment_status === "paid");
+      setWechatPaymentOrder(order);
       orderRequestId.current = crypto.randomUUID();
-      go("orders");
     } catch (error) {
       setOrderError(error instanceof Error ? error.message : "订单提交失败");
     } finally {
       setOrderSubmitting(false);
+    }
+  };
+  const declarePaymentAndOpenOrders = async () => {
+    if (!wechatPaymentOrder?.id || paymentDeclaring) return;
+    if (wechatPaymentConfirmed) {
+      setWechatPaymentOrder(null);
+      go("orders");
+      return;
+    }
+    setPaymentDeclaring(true);
+    setPaymentDeclareError("");
+    try {
+      const response = await fetch(`${API_BASE}/api/orders/${wechatPaymentOrder.id}/payment-declared`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      const order = await response.json();
+      if (!response.ok) throw new Error(order.message || "提交支付确认失败");
+      setWechatPaymentOrder(null);
+      go("orders");
+    } catch (error) {
+      setPaymentDeclareError(error instanceof Error ? error.message : "提交支付确认失败，请重试");
+    } finally {
+      setPaymentDeclaring(false);
     }
   };
   const toggleFollow = async () => {
@@ -1791,7 +2094,13 @@ function Detail({
       )}
       <section className="detail-summary">
         <div className="pet-name">
-          <div><em>{displayName}</em><i>{detailPet?.gender === "公" || detailPet?.gender === "male" ? "♂" : "♀"}</i></div>
+          <div>
+            <em>{displayName}</em>
+            <i className={isMalePet ? "pet-gender-mark male" : "pet-gender-mark female"}>
+              <span aria-hidden="true">{genderSymbol}</span>
+              <small>{genderRole}</small>
+            </i>
+          </div>
           <b>纯种{detailPet?.breed || breed.name}</b>
           <p>{detailPet?.personality || "温顺亲人　|　粘人可爱　|　安静乖巧　|　适合家养"}</p>
         </div>
@@ -1813,22 +2122,23 @@ function Detail({
       <section className="feature">
         <div className="feature-tabs">
           {[
-            "品种",
-            "毛色",
-            "体型",
-            "毛发长度",
-            "性格",
-            "声音",
-            "健康状况",
-            "是否纯种",
-          ].map((x, i) => (
+            { label: "品种", icon: "谱" },
+            { label: "毛色", icon: "色" },
+            { label: "体型", icon: "型" },
+            { label: "毛发长度", icon: "绒" },
+            { label: "性格", icon: "心" },
+            { label: "声音", icon: "声" },
+            { label: "健康状况", icon: "健" },
+            { label: "是否纯种", icon: "证" },
+          ].map((item) => (
             <button
-              key={x}
-              onClick={() => setFeatureTab(x)}
-              className={featureTab === x ? "active" : ""}
+              key={item.label}
+              data-feature={item.label}
+              onClick={() => setFeatureTab(item.label)}
+              className={featureTab === item.label ? "active" : ""}
             >
-              <i>{["♧", "◉", "♙", "〽", "✦", "◖", "♢", "♢"][i]}</i>
-              {x}
+              <i>{item.icon}</i>
+              {item.label}
             </button>
           ))}
         </div>
@@ -1850,7 +2160,7 @@ function Detail({
             <dt>体重</dt>
             <dd>4–34kg</dd>
             <dt>体型</dt>
-            <dd>{detailPet?.body_type || detailPet?.breed_profile?.standard_body || "标准体型"}</dd>
+            <dd>{bodyType}</dd>
           </dl>
         </div>
         <div className="trait-dashboard">
@@ -1860,14 +2170,14 @@ function Detail({
           </article>
           <article className="trait-body">
             <span>体型比例</span>
-            <div className="body-scale">
-              <i />
-              <i className="on" />
-              <i />
+            <div className={`body-scale is-${bodyType}`}>
+              <i className={bodyType === "小型" ? "on" : ""}><small>小</small></i>
+              <i className={bodyType === "中型" ? "on" : ""}><small>中</small></i>
+              <i className={bodyType === "大型" ? "on" : ""}><small>大</small></i>
             </div>
-            <b><em className="body-type-icon">中</em>{detailPet?.body_type || "中型 · 标准体态"}</b>
+            <b><em className="body-type-icon">{bodyType.slice(0, 1)}</em>{bodyType} · 标准体态</b>
           </article>
-          <article className="trait-personality">
+          <article className="trait-personality trait-personality-health">
             <span>性格能量</span>
             <div className="personality-energy">
               <strong>{archiveMeta.personalityType}<small>能量倾向</small></strong>
@@ -1875,23 +2185,45 @@ function Detail({
             </div>
             <b>{archiveMeta.dateLabel} · {archiveMeta.zodiac}</b>
             <small className="trait-caption">{detailPet?.personality || "温顺亲人"}</small>
+            <div className="trait-health-inline">
+              <span>健康等级</span>
+              <div className="health-rings"><i /><i /><i /><i /><i /></div>
+              <b>健康</b>
+              {orderQuote?.guarantee_eligible && (
+                <small className="health-guarantee">平台保证 · 40天内非正常死亡可更换</small>
+              )}
+            </div>
           </article>
-          <article className="trait-health">
-            <span>健康等级</span>
-            <div className="health-rings"><i /><i /><i /><i /><i /></div>
-            <b>{detailPet?.health_status || "健康档案待补充"}</b>
-            {orderQuote?.guarantee_eligible && (
-              <small className="health-guarantee">平台保证 · 40天内非正常死亡可更换</small>
-            )}
+          <article className="trait-inspection">
+            <span>发货前宠物实拍检验</span>
+            <div className="inspection-compact">
+              <img
+                src="/assets/shipment-inspection-20260726-v2.webp"
+                alt="发货前宠物运输实拍检验"
+                loading="lazy"
+                onError={(event) => { event.currentTarget.style.display = "none"; }}
+              />
+              <div>
+                <b>真实宠物照片或视频</b>
+                <small>每次发货前由管理员再次确认</small>
+              </div>
+            </div>
+            <small className="trait-caption">订单物流25%节点即可进行观看</small>
           </article>
           <article className="trait-life">
             <span>生命周期</span>
-            <div className="life-line"><i /><i /><i /><i /></div>
+            <div className="life-line"><i><small>幼</small></i><i><small>长</small></i><i><small>成</small></i><i><small>伴</small></i></div>
             <b>{archiveMeta.lifeStage} · {archiveMeta.lifeCopy}</b>
             <small className="trait-caption">幼年 · 成长 · 成熟 · 陪伴</small>
+            <div className={`new-pet-insurance ${insuranceSeconds > 0 ? "" : "ended"}`}>
+              <i aria-hidden="true">♢</i>
+              <span>24H 新宠保险礼遇</span>
+              <b>{insuranceSeconds > 0 ? "确认到账即赠宠物保险" : "本期保险礼遇已结束"}</b>
+              {insuranceSeconds > 0 && <time>{formatInsuranceCountdown(insuranceSeconds)}</time>}
+            </div>
           </article>
           <article className="trait-breed">
-            <span>繁育档案</span>
+            <span>防疫档案</span>
             <div className="trait-breed-gallery">
               <div className="trait-breed-media">
                 <SmartImage
@@ -1910,20 +2242,65 @@ function Detail({
                 <small><i>✓</i> 官方检测</small>
               </div>
             </div>
-            <b><em>疫苗接种</em>{detailPet?.vaccine_record || "基础免疫信息待商家补充"}</b>
+            <b className="vaccination-summary">
+              <em>基础免疫</em>
+              {detailPet?.vaccine_record || detailPet?.identity_profile?.vaccineRecord || "健康（待商家补充详细记录）"}
+            </b>
+            <small className="rfid-chip-gift">
+              <i aria-hidden="true">芯</i>
+              <span>
+                即赠送宠物体内电子芯片
+                <em>动物芯片 RFID 动物皮下微型芯片</em>
+              </span>
+            </small>
           </article>
         </div>
-        {[
-          "毛色　自然金棕色",
-          "体型　标准体型 · 成体对比",
-          "毛发长度　柔软长毛",
-          "性格　温顺亲人　粘人可爱　安静乖巧",
-        ].map((x) => (
-          <div className="row" key={x}>
-            {x}
-            <b>⌄</b>
+        <section className="pet-identity-section" aria-label={`${displayName}宠物身份证`}>
+          <header>
+            <span><i>证</i><b>宠物身份证</b></span>
+            <small>平台动态身份档案</small>
+          </header>
+          <div className="pet-identity-card">
+            <img
+              className="pet-identity-template"
+              src="/assets/pet-identity-card-20260726.webp"
+              alt=""
+              loading="lazy"
+              decoding="async"
+            />
+            <SmartImage
+              className="pet-identity-photo"
+              src={identityPhoto}
+              fallback={mediaItems[0]?.thumb || breed.image}
+              alt={`${displayName}白底身份照片`}
+            />
+            <dl className="pet-identity-fields">
+              <div><dt>姓名</dt><dd>{identityMeta.name}</dd></div>
+              <div><dt>品种</dt><dd>{identityMeta.breed}</dd></div>
+              <div><dt>性别</dt><dd>{identityMeta.gender}</dd></div>
+              <div><dt>出生日期</dt><dd>{identityMeta.birthDate}</dd></div>
+              <div><dt>毛色</dt><dd>{identityMeta.color}</dd></div>
+              <div><dt>宠物身份证号</dt><dd>{identityMeta.identityNo}</dd></div>
+              <div><dt>芯片编号</dt><dd>{identityMeta.chipNo}</dd></div>
+              <div><dt>签发日期</dt><dd>{identityMeta.issuedDate}</dd></div>
+            </dl>
+          </div>
+          <small className="pet-identity-note">身份号与平台芯片展示号由商品档案稳定生成；赠送的 RFID 皮下微型芯片以交付检验与实物记录为准。</small>
+        </section>
+        <div className="pet-facet-list">
+          <header>
+            <span><i>✦</i><b>外观与性格档案</b></span>
+            <small>PET PROFILE</small>
+          </header>
+        {archiveMeta.facets.map((facet) => (
+          <div className="pet-facet-row" data-facet={facet.label} key={facet.label}>
+            <i>{facet.icon}</i>
+            <span><small>{facet.label}</small><b>{facet.value}</b></span>
+            <em>{facet.note}</em>
+            <strong>⌄</strong>
           </div>
         ))}
+        </div>
         {petSound && <>
           <audio
             ref={petSoundRef}
@@ -1995,7 +2372,7 @@ function Detail({
           <h3>所属商家</h3>
           <button className="seller-profile-entry" onClick={openSellerProfile}>
             {sellerThumbImage
-              ? <SmartImage className="seller-entry-thumb" src={sellerThumbImage} highres={sellerFullImage} alt={`${displaySeller}门店实景缩略图`} />
+              ? <SmartImage className="seller-entry-thumb" src={sellerThumbImage} alt={`${displaySeller}商家缩略图`} />
               : <i className="seller-logo-mark" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}
             <span><b>{displaySeller}</b><small>{sellerProfile?.offline_store || "认证线下体验店"}</small></span>
             <em>查看商家 ›</em>
@@ -2015,10 +2392,9 @@ function Detail({
           <section className="seller-sheet" onClick={(event) => event.stopPropagation()}>
             <button className="seller-sheet-close" onClick={() => setSellerOpen(false)}>×</button>
             <header>{sellerThumbImage
-              ? <button type="button" className="seller-header-photo" onClick={() => setSellerImageOpen(true)} aria-label={`放大查看${displaySeller}门店实景`}><SmartImage src={sellerThumbImage} highres={sellerFullImage} alt={`${displaySeller}门店实景`} /></button>
+              ? <div className="seller-header-photo"><SmartImage src={sellerThumbImage} alt={`${displaySeller}商家缩略图`} /></div>
               : <i className="seller-logo-mark large" style={sellerLogoStyle}><b>{displaySeller.slice(0, 1)}</b><small>✦</small></i>}<div><small>福宠认证商家</small><h2>{displaySeller}</h2><p>★★★★★　{merchant?.rating || 4.9} 分</p></div></header>
             <div className="seller-sheet-metrics"><span><b>{merchant?.sales || 3289}</b>累计销量</span><span><b>{merchant?.review_total || merchant?.review_count || 24}</b>用户评价</span><span><b>98%</b>满意度</span></div>
-            {sellerFullImage && <button type="button" className="seller-store-media" onClick={() => setSellerImageOpen(true)}><SmartImage src={sellerThumbImage || sellerFullImage} highres={sellerFullImage} alt={`${displaySeller}门店实景大图`} /><span><b>门店实景</b><small>点击查看高清大图</small></span></button>}
             <section className="seller-trust-card">
               <header><div><small>平台多维资料核验</small><h3>商家信任度</h3></div><b>{merchantTrust.score}<small>/100</small></b></header>
               <div>{merchantTrust.dimensions.map((item) => <span key={item.label}><em>{item.label}</em><i><b style={{ width: `${item.value}%` }} /></i><small>{item.value}</small></span>)}</div>
@@ -2047,7 +2423,6 @@ function Detail({
           </section>
         </div>
       )}
-      {sellerImageOpen && sellerFullImage && <div className="seller-image-viewer" role="dialog" aria-modal="true" aria-label={`${displaySeller}门店实景大图`} onClick={() => setSellerImageOpen(false)}><button type="button" onClick={() => setSellerImageOpen(false)}>×</button><SmartImage src={sellerFullImage} highres={sellerFullImage} eager alt={`${displaySeller}门店实景高清大图`} /></div>}
       <section className="review-showcase">
         <button type="button" className="review-showcase-open" onClick={() => setReviewPanelOpen(true)}>
           <span className="review-showcase-title"><i>口碑</i><span><small>真实购买体验</small><b>用户评价</b></span></span>
@@ -2153,7 +2528,7 @@ function Detail({
           disabled={productStatus !== "available"}
           onClick={() =>
             productStatus === "available"
-              ? setBuyOpen(true)
+              ? (setPurchaseAgreementAccepted(false), setOrderError(""), setBuyOpen(true))
               : alert(productStatus === "sold" ? "该宠物已售出" : "商品已下架")
           }
         >
@@ -2193,24 +2568,81 @@ function Detail({
                     : "暂无地址，请先新增"}
               </b>
             </div>
+            <div className="buy-line transport-fee-line">
+              <span>宠物专属托运</span>
+              <b>
+                ¥{orderQuote?.shipping_fee ?? 350}
+                <small>并非实物商品，为宠物活体需要宠物专属托运，全行业都是这样，我们正在努力压低托运价格，望见谅</small>
+              </b>
+            </div>
+            <section className="checkout-benefits">
+              <b>专属福利</b>
+              <div>
+                <span>已减 ¥300 平台补贴</span>
+                <span>赠送动物芯片 RFID 动物皮下微型芯片</span>
+                {orderQuote?.guarantee_eligible && <span>平台退换保障</span>}
+                {orderQuote?.insurance_offer?.eligible_now && <span>赠送宠物保险</span>}
+              </div>
+            </section>
             {orderQuote?.guarantee_eligible && <div className="buy-line">
-              <span>40日更换保障</span>
+              <span>品质与商家问责</span>
               <b>{orderQuote.guarantee_policy}</b>
             </div>}
             <div className="buy-total">
-              <span>应付合计</span>
+              <span>总计付款</span>
               <strong>¥{orderQuote?.total_amount ?? displayPrice}</strong>
             </div>
             <section className="order-supervision-note">
               <b>平台订单监管结算机制</b>
               <p>用户付款后，平台锁定订单结算权限；</p>
               <p>买家确认收货、售后无误后，平台完成最终订单结算放款。</p>
+              <p>购买宠物与订单约定不一致即可申请退换；平台全程监管，违规行为严惩不贷。</p>
+            </section>
+            <section className="checkout-legal compact">
+              <label className="checkout-agree">
+                <input type="checkbox" checked={purchaseAgreementAccepted} onChange={(event) => setPurchaseAgreementAccepted(event.target.checked)} />
+                <span>我已阅读并同意用户协议、购买协议、交易规则、售后规则及隐私政策。</span>
+              </label>
             </section>
             {orderError && <p className="buy-error">{orderError}</p>}
-            <button disabled={orderSubmitting || addressLoading} onClick={submitOrder}>
-              {orderSubmitting ? "正在生成订单…" : "提交订单"}
+            <button className={`payment-submit ${purchaseAgreementAccepted ? "ready" : ""}`} disabled={orderSubmitting || addressLoading || !purchaseAgreementAccepted} onClick={submitOrder}>
+              {orderSubmitting ? "正在生成订单…" : "立即付款"}
             </button>
-            <small>提交即代表同意《活体宠物购买保障协议》</small>
+            <small>未主动勾选时，前端与服务器均不会创建订单或发起付款。</small>
+          </section>
+        </div>
+      )}
+      {wechatPaymentOrder && (
+        <div className="modal-mask wechat-payment-mask">
+          <section className="wechat-payment-modal" onClick={(event) => event.stopPropagation()}>
+            <button className="wechat-payment-close" aria-label="关闭" onClick={() => setWechatPaymentOrder(null)}>×</button>
+            <span className="wechat-payment-kicker">微信支付</span>
+            <h2>{wechatPaymentConfirmed ? "支付已核实" : "请使用微信扫码支付"}</h2>
+            <div className={`wechat-payment-qr ${wechatPaymentConfirmed ? "confirmed" : ""}`}>
+              {!paymentQrFailed && <img src="/assets/payment/wechat-fuchong-payment-20260722-v2.jpg" alt="福宠官方微信支付收款码" onError={() => setPaymentQrFailed(true)} />}
+              {paymentQrFailed && <button className="wechat-qr-retry" type="button" onClick={() => setPaymentQrFailed(false)}>收款码加载失败，点击重试</button>}
+              {wechatPaymentConfirmed && <strong>✓ 已支付</strong>}
+            </div>
+            <p className="wechat-payment-order">订单 {wechatPaymentOrder.order_no || wechatPaymentOrder.id} · ¥{wechatPaymentOrder.total_amount ?? orderQuote?.total_amount ?? displayPrice}</p>
+            <p className="wechat-payment-status">
+              {wechatPaymentConfirmed
+                ? "服务器已同步到账，商品已自动标记售出并下架。"
+                : "等待管理员核实到账，确认后订单将更新为待确认。"}
+            </p>
+            <div className="wechat-contact-section">
+              <span className="wechat-payment-kicker">福宠官方客服</span>
+              <h3>支付遇到问题请联系官方</h3>
+              <div className="wechat-contact-qr">
+                {!contactQrFailed && <img src="/assets/payment/wechat-fuchong-contact-20260722.jpg" alt="福宠官方客服二维码" onError={() => setContactQrFailed(true)} />}
+                {contactQrFailed && <button className="wechat-qr-retry" type="button" onClick={() => setContactQrFailed(false)}>客服码加载失败，点击重试</button>}
+              </div>
+            </div>
+            <p className="wechat-payment-note">人太多啦，如果出现支付失败情况，请联系福宠官方进行支付。</p>
+            {paymentDeclareError && <p className="wechat-payment-error" role="alert">{paymentDeclareError}</p>}
+            <button className="wechat-payment-primary" disabled={paymentDeclaring} onClick={declarePaymentAndOpenOrders}>
+              {paymentDeclaring ? "正在提交…" : wechatPaymentConfirmed ? "查看待确认订单" : "我已支付"}
+            </button>
+            {!wechatPaymentConfirmed && <small>请勿重复创建订单；管理员仅在核实到账后确认已支付。</small>}
           </section>
         </div>
       )}
@@ -2822,6 +3254,7 @@ function Charity({ go }: { go: (p: Page) => void }) {
 }
 
 function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about" | "agreement" | "privacy"; go: (p: Page) => void }) {
+  const [openLegalDocument, setOpenLegalDocument] = useState<LegalDocumentKey | null>(null);
   const [orderNotice, setOrderNotice] = useState(
     () => localStorage.getItem("fuchong-order-notice") !== "off",
   );
@@ -2874,6 +3307,25 @@ function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about
             alert("页面缓存已清理，账号和订单数据不受影响");
           }}>清理页面缓存</button>
           <button onClick={() => go("login")}>账号与登录安全</button>
+        </section>
+      ) : kind === "agreement" || kind === "privacy" ? (
+        <section className="policy-card legal-index-card">
+          <div className="legal-test-banner">
+            <b>现行正式协议</b>
+            <span>协议版本 {LEGAL_VERSION}</span>
+            <p>适用于福宠平台现行服务。涉及交易的重要条款在协议正文中以独立章节说明，用户可随时查阅。</p>
+          </div>
+          {(kind === "privacy"
+            ? (["privacy"] as LegalDocumentKey[])
+            : (["user", "transaction", "purchase", "after_sale", "merchant"] as LegalDocumentKey[])
+          ).map((key) => (
+            <button type="button" className="legal-index-item" key={key} onClick={() => setOpenLegalDocument(key)}>
+              <span><b>{LEGAL_DOCUMENTS[key].title}</b><small>适用：{LEGAL_DOCUMENTS[key].audience} · {LEGAL_DOCUMENTS[key].sections.length} 章</small></span>
+              <strong>阅读全文 ›</strong>
+            </button>
+          ))}
+          <p className="legal-validity-note">任何条款均不排除消费者依法投诉、举报、调解、仲裁或诉讼的权利；与强制性法律规定冲突的，依法处理。</p>
+          {openLegalDocument && <LegalDocumentDialog documentKey={openLegalDocument} onClose={() => setOpenLegalDocument(null)} />}
         </section>
       ) : (
         <section className="policy-card">

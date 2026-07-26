@@ -6,7 +6,7 @@ import "./Feishu.css";
 import "./AdminCommunity.css";
 import { announceDataChange, subscribeDataChange } from "./dataEvents";
 import { mediaUrl } from "./mediaUrl";
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
+const API_BASE = import.meta.env.PROD ? "" : import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const adminMediaUrl = (url?: string) => mediaUrl(url);
 
 type AdminTab =
@@ -1084,31 +1084,12 @@ function OrdersManager({ token }: { token: string }) {
     () => ({ authorization: `Bearer ${token}` }),
     [token],
   );
-  const statusOptions: [string, string][] = [
-    ["pending_payment", "待付款"],
-    ["pending_confirm", "已付款/待处理"],
-    ["pending_ship", "已确认/待发货"],
-    ["packed", "打包中"],
-    ["shipped", "已发货"],
-    ["in_transit", "运输中"],
-    ["delivering", "配送中"],
-    ["pending_receive", "待收货"],
-    ["completed", "已完成"],
-    ["cancelled", "已取消"],
-    ["after_sale", "售后"],
-  ];
-  const transitions: Record<string, string[]> = {
-    pending_payment: ["pending_confirm", "cancelled"],
-    pending_confirm: ["pending_ship", "packed", "cancelled", "after_sale"],
-    pending_ship: ["packed", "shipped", "cancelled", "after_sale"],
-    packed: ["shipped", "cancelled", "after_sale"],
-    shipped: ["in_transit", "delivering", "pending_receive", "after_sale"],
-    in_transit: ["delivering", "pending_receive", "after_sale"],
-    delivering: ["pending_receive", "completed", "after_sale"],
-    pending_receive: ["completed", "after_sale"],
-    completed: ["after_sale"],
-    cancelled: [],
-    after_sale: ["completed", "cancelled"],
+  const orderPetSnapshot = (item: any) => {
+    try {
+      return JSON.parse(item?.pet_snapshot || "{}");
+    } catch {
+      return {};
+    }
   };
   const load = useCallback(async () => {
     setLoading(true);
@@ -1128,58 +1109,6 @@ function OrdersManager({ token }: { token: string }) {
   useEffect(() => {
     void load();
   }, [load]);
-  const update = async (
-    id: number,
-    patch: { status?: string; payment_status?: string },
-  ) => {
-    setBusyId(id);
-    try {
-      const response = await fetch(`${API_BASE}/api/admin/orders/${id}`, {
-        method: "PATCH",
-        headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.message || `订单更新失败（${response.status}）`);
-      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...result } : order)));
-      announceDataChange("orders");
-    } catch (updateError) {
-      alert(updateError instanceof Error ? updateError.message : "订单更新失败");
-      await load();
-    } finally {
-      setBusyId(null);
-    }
-  };
-  const markPaid = async (id: number) => {
-    setBusyId(id);
-    try {
-      let paidOrder: any = null;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const response = await fetch(`${API_BASE}/api/admin/orders/${id}/payment`, {
-          method: "POST",
-          headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ method: "admin_manual", note: "管理员确认已付款" }),
-        });
-        const result = await response.json().catch(() => ({}));
-        if (response.ok) {
-          paidOrder = result;
-          break;
-        }
-        if ((response.status < 500 && !result.retryable) || attempt === 2)
-          throw new Error(result.message || `确认付款失败（${response.status}）`);
-        await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
-      }
-      if (!paidOrder) throw new Error("付款状态暂未确认，请刷新后重试");
-      setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...paidOrder } : order)));
-      if (detail?.id === id) setDetail((current: any) => current ? { ...current, ...paidOrder } : current);
-      announceDataChange("orders");
-    } catch (paymentError) {
-      alert(paymentError instanceof Error ? paymentError.message : "确认付款失败");
-      await load();
-    } finally {
-      setBusyId(null);
-    }
-  };
   const confirmOrder = async (id: number) => {
     setBusyId(id);
     try {
@@ -1203,6 +1132,7 @@ function OrdersManager({ token }: { token: string }) {
       setOrders((current) => current.map((order) => (order.id === id ? { ...order, ...confirmed } : order)));
       if (detail?.id === id) setDetail((current: any) => current ? { ...current, ...confirmed } : current);
       announceDataChange("orders");
+      announceDataChange("products");
     } catch (confirmError) {
       alert(confirmError instanceof Error ? confirmError.message : "确认订单失败");
       await load();
@@ -1240,13 +1170,16 @@ function OrdersManager({ token }: { token: string }) {
             <th>支付</th>
             <th>支付时间</th>
             <th>状态</th>
+            <th>费用与商品详情</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {loading && <EmptyRow cols={8} text="订单数据加载中…" />}
-          {!loading && !orders.length && <EmptyRow cols={8} text={error ? "订单服务暂不可用" : "暂无订单数据"} />}
-          {orders.map((o) => (
+          {loading && <EmptyRow cols={9} text="订单数据加载中…" />}
+          {!loading && !orders.length && <EmptyRow cols={9} text={error ? "订单服务暂不可用" : "暂无订单数据"} />}
+          {orders.map((o) => {
+            const pet = orderPetSnapshot({ pet_snapshot: o.pet_snapshot });
+            return (
             <tr key={o.id}>
               <td>{o.order_no}</td>
               <td>
@@ -1258,37 +1191,30 @@ function OrdersManager({ token }: { token: string }) {
               <td>{o.paid_at ? String(o.paid_at).replace("T", " ").slice(0, 19) : "尚未支付"}</td>
               <td>{o.status}</td>
               <td>
+                <div className="order-row-summary">
+                  <b>实付 ¥{o.total_amount}</b>
+                  <small>
+                    原价 ¥{o.subtotal_amount ?? o.total_amount} · 补贴 ¥{o.discount_amount || 0} · 托运 ¥{o.shipping_fee || 0}
+                  </small>
+                  <p>{pet.description || "该订单下单时未保存飞书／商品详情文字"}</p>
+                </div>
+              </td>
+              <td>
                 <button disabled={busyId === o.id} onClick={() => open(o.id)}>详情</button>
                 <button
-                  disabled={busyId === o.id || o.payment_status === "paid"}
-                  onClick={() => markPaid(o.id)}
-                >
-                  确认付款
-                </button>
-                <button
                   className="primary"
-                  disabled={busyId === o.id || o.payment_status !== "paid" || o.status !== "pending_confirm"}
+                  disabled={busyId === o.id || !["pending_payment", "pending_confirm"].includes(o.status)}
                   onClick={() => confirmOrder(o.id)}
                 >
                   {busyId === o.id
                     ? "处理中…"
                     : ["pending_ship", "packed", "shipped", "in_transit", "delivering", "pending_receive", "completed"].includes(o.status)
                       ? "订单已确认"
-                      : "确认订单"}
-                </button>
-                <select disabled={busyId === o.id} value={o.status} onChange={(event) => update(o.id, { status: event.target.value })}>
-                  {statusOptions.filter(([value]) => value === o.status || (transitions[o.status] || []).includes(value)).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-                </select>
-                <button
-                  onClick={() =>
-                    alert(`联系买家：${o.phone || "未绑定手机号"}`)
-                  }
-                >
-                  联系买家
+                      : "确认订单并待发货"}
                 </button>
               </td>
             </tr>
-          ))}
+          )})}
         </tbody>
       </table>
       {detail && (
@@ -1303,8 +1229,39 @@ function OrdersManager({ token }: { token: string }) {
             {detail.payment_status} · 物流：
             {detail.logistics?.status || "待发货"}
           </p>
-          <p>宠物原价：¥{detail.subtotal_amount ?? detail.total_amount} · 新人补贴：¥{detail.discount_amount || 0} · 托运费：¥{detail.shipping_fee || 0}</p>
+          <div className="order-fee-breakdown">
+            <b>订单费用明细</b>
+            <p><span>宠物原价</span><strong>¥{detail.subtotal_amount ?? detail.total_amount}</strong></p>
+            <p><span>新人补贴</span><strong>-¥{detail.discount_amount || 0}</strong></p>
+            <p><span>托运费用</span><strong>¥{detail.shipping_fee || 0}</strong></p>
+            <p><span>订单实付</span><strong>¥{detail.total_amount}</strong></p>
+          </div>
           <p>40日更换保障：{detail.guarantee_eligible ? "已包含（补贴后宠物成交价不高于3000元）" : "不包含"}</p>
+          {!!detail.items?.length && (
+            <div className="order-pet-snapshots">
+              <b>下单时商品资料快照</b>
+              <small>后续商品资料修改不会覆盖本订单</small>
+              {detail.items.map((item: any) => {
+                const pet = orderPetSnapshot(item);
+                const identity = pet.identity_profile || {};
+                return (
+                  <article key={item.id}>
+                    <h4>{pet.name || "宠物商品"} · {pet.breed || "品种待核验"}</h4>
+                    <p>性别：{pet.gender || identity.gender || "待核验"}　出生日期：{pet.birth_date || identity.birthDate || "待核验"}</p>
+                    <p>月龄：{pet.age_months ? `${pet.age_months}个月` : "待核验"}　毛色：{pet.color || identity.color || "待补充"}　体型：{pet.body_type || identity.bodyType || "中型"}</p>
+                    <p>毛发：{pet.fur_length || identity.furLength || "待补充"}　性格：{pet.personality || identity.personality || "待补充"}</p>
+                    <p>健康：{pet.health_status || identity.healthStatus || "健康"}　基础免疫：{pet.vaccine_record || identity.vaccineRecord || "健康（待商家补充详细记录）"}</p>
+                    <p>宠物身份证号：{identity.identityNo || "待生成"}　平台芯片展示号：{identity.chipNo || "待生成"}</p>
+                    <p>下单单价：¥{item.price ?? pet.price ?? 0}</p>
+                    <div className="order-original-description">
+                      <b>飞书／商品原始详情介绍</b>
+                      <p>{pet.description || "该订单下单时未保存详情介绍文字"}</p>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
           {!!detail.status_history?.length && <div className="order-history"><b>订单状态记录</b>{detail.status_history.map((event: any) => <p key={event.id}>{event.created_at}　{event.from_status || "创建"} → {event.to_status}</p>)}</div>}
           <button onClick={() => setDetail(null)}>关闭详情</button>
         </div>
@@ -1314,6 +1271,8 @@ function OrdersManager({ token }: { token: string }) {
 }
 function Logistics({ token }: { token: string }) {
   const [orders, setOrders] = useState<any[]>([]);
+  const [filesByOrder, setFilesByOrder] = useState<Record<number, File[]>>({});
+  const [busyOrder, setBusyOrder] = useState<number | null>(null);
   const [company, setCompany] = useState("");
   const [tracking, setTracking] = useState("");
   const [stage, setStage] = useState("packed");
@@ -1336,7 +1295,7 @@ function Logistics({ token }: { token: string }) {
       .then((r) => r.json())
       .then(setOrders);
   }, [headers]);
-  const update = async (id: number) => {
+  const saveStage = async (id: number, targetStage: string) => {
     const response = await fetch(
       `${API_BASE}/api/admin/orders/${id}/logistics`,
       {
@@ -1345,17 +1304,61 @@ function Logistics({ token }: { token: string }) {
       body: JSON.stringify({
         company,
         tracking_no: tracking,
-        status: stage,
-        progress_percent: stages[stage].percent,
-        note: stages[stage].label,
+        status: targetStage,
+        progress_percent: stages[targetStage].percent,
+        note: stages[targetStage].label,
       }),
       },
     );
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      return alert(error.message || "物流更新失败");
+      throw new Error(error.message || "物流更新失败");
     }
-    alert(`物流已更新到 ${stages[stage].percent}%`);
+    return response.json();
+  };
+  const update = async (id: number) => {
+    if (busyOrder) return;
+    setBusyOrder(id);
+    try {
+      const files = filesByOrder[id] || [];
+      const images = files.filter((file) => file.type.startsWith("image/"));
+      const videos = files.filter((file) => file.type === "video/mp4");
+      if (images.length > 6 || videos.length > 1 || images.length + videos.length !== files.length)
+        throw new Error("每个订单最多选择6张图片和1段MP4视频");
+      let eventId = 0;
+      if (files.length) {
+        const packed = await saveStage(id, "packed");
+        eventId = Number(packed.event_id || 0);
+        if (!eventId) throw new Error("未能建立25%打包实拍节点");
+        for (const file of files) {
+          const upload = await fetch(
+            `${API_BASE}/api/admin/orders/${id}/logistics-events/${eventId}/media`,
+            {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${token}`,
+                "content-type": file.type || "application/octet-stream",
+                "x-file-name": encodeURIComponent(file.name),
+              },
+              body: file,
+            },
+          );
+          if (!upload.ok) {
+            const error = await upload.json().catch(() => ({}));
+            throw new Error(error.message || `${file.name} 上传失败`);
+          }
+        }
+      }
+      if (stage !== "packed" || !files.length) await saveStage(id, stage);
+      setFilesByOrder((items) => ({ ...items, [id]: [] }));
+      alert(files.length
+        ? `物流已更新到 ${stages[stage].percent}%，${files.length}项发货实拍正在压缩处理`
+        : `物流已更新到 ${stages[stage].percent}%`);
+    } catch (cause) {
+      alert(cause instanceof Error ? cause.message : "物流更新失败");
+    } finally {
+      setBusyOrder(null);
+    }
   };
   return (
     <section className="admin-table">
@@ -1400,7 +1403,21 @@ function Logistics({ token }: { token: string }) {
               </td>
               <td>{o.status}</td>
               <td>
-                <button onClick={() => update(o.id)}>更新并发货</button>
+                <label className="logistics-media-picker">
+                  <span>{filesByOrder[o.id]?.length ? `已选 ${filesByOrder[o.id].length} 项实拍` : "选择发货实拍"}</span>
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/jpeg,image/png,image/webp,video/mp4"
+                    onChange={(event) => setFilesByOrder((items) => ({
+                      ...items,
+                      [o.id]: Array.from(event.target.files || []),
+                    }))}
+                  />
+                </label>
+                <button disabled={busyOrder === o.id} onClick={() => update(o.id)}>
+                  {busyOrder === o.id ? "处理中…" : "更新并发货"}
+                </button>
               </td>
             </tr>
           ))}
@@ -1976,7 +1993,7 @@ function FeishuManager({ token }: { token: string }) {
           breed: "品种",
           gender: "性别",
           price: "价格",
-          description: "详细介绍",
+          description: "详情介绍",
           breed_origin: "品种起源",
           breed_alias: "品种别称",
           breed_evolution: "品种演化",
@@ -2126,7 +2143,7 @@ function FeishuManager({ token }: { token: string }) {
     <section className="admin-table">
       <div>
         <h3>飞书同步配置</h3>
-        <p className="feishu-guide">配置保存在系统后台。先保存，再测试授权和数据表，最后生成不写库的同步预览。</p>
+        <p className="feishu-guide">配置保存在系统后台。先保存，再测试授权和数据表，最后生成不写库的同步预览。默认每批100条稳定处理，支持1–500条/批；商品、宠物身份证与图片均逐行留存处理状态，可暂停、继续和重试。</p>
       </div>
       <div className="feishu-form">
         <input
@@ -2146,7 +2163,7 @@ function FeishuManager({ token }: { token: string }) {
       {notice && <p className="feishu-notice">{notice}</p>}
       <div className="sync-connection">
         <span className={connected ? "online" : "offline"}>{connected ? "● 已连接" : "● 未连接"}</span>
-        <p>已保存连接 {configs.length} 个，启用 {configs.filter((item) => item.status === "active").length} 个。固定流程：测试连接 → 同步预览 → 管理员确认 → 分批写入 → 前台更新</p>
+        <p>已保存连接 {configs.length} 个，启用 {configs.filter((item) => item.status === "active").length} 个。固定流程：测试连接 → 同步预览 → 文字识别与默认补全 → 分批写入 → 生成宠物身份证 → 白底证件照 → 前台更新</p>
       </div>
       <section className="sync-command-center">
         <div><small>管理员同步控制台</small><b>{activeConfig ? activeConfig.name || "已保存飞书连接" : "请先保存同步配置"}</b><span>测试不会写库，预览确认后才会同步商品。</span></div>
@@ -2196,6 +2213,8 @@ function FeishuManager({ token }: { token: string }) {
             <article><span>更新</span><b>{activePreview.stats.updates}</b></article>
             <article><span>重复</span><b>{activePreview.stats.duplicates}</b></article>
             <article><span>异常</span><b>{activePreview.stats.errors}</b></article>
+            <article><span>待生成身份证</span><b>{activePreview.stats.identity_profiles || 0}</b></article>
+            <article><span>默认资料补全</span><b>{activePreview.stats.identity_defaults || 0}</b></article>
           </div>
           {!!activePreview.sample?.length && <div className="sync-sample">{activePreview.sample.slice(0, 8).map((item: any) => <p key={item.external_id}><b>{item.name}</b><span>{item.breed} · ¥{item.price} · 图片 {item.images?.length || 0} · 视频 {item.videos?.length || 0}</span></p>)}</div>}
           {!!activePreview.errors?.length && <div className="sync-preview-errors">{activePreview.errors.slice(0, 10).map((error: any) => <p key={`${error.row}-${error.external_id}`}>第 {error.row} 行：{error.error}</p>)}</div>}
@@ -2226,19 +2245,39 @@ function FeishuManager({ token }: { token: string }) {
               <td><span className={`sync-status sync-status-${t.status}`}>{taskStatusLabel(t.status)}</span></td>
               <td>
                 <div className="sync-stage-progress">
-                  <label><span>商品数据</span><b>{t.processed || 0}/{t.total || 0}</b></label>
+                  <label><span>文字识别与商品入库</span><b>{t.processed || 0}/{t.total || 0}</b></label>
                   <div className="sync-progress"><i style={{ width: `${taskPercent(t.processed, t.total)}%` }} /><span>{taskPercent(t.processed, t.total)}%</span></div>
                 </div>
+                <div className="sync-pipeline" aria-label="飞书商品同步处理流">
+                  {[
+                    { label: "读取飞书", done: Number(t.total || 0) > 0, progress: Number(t.total || 0) > 0 ? 100 : 0 },
+                    { label: "解析详情", done: Number(t.processed || 0) >= Number(t.total || 0) && Number(t.total || 0) > 0, progress: taskPercent(t.processed, t.total) },
+                    { label: "补全档案", done: Number(t.processed || 0) >= Number(t.total || 0) && Number(t.total || 0) > 0, progress: taskPercent(t.processed, t.total) },
+                    { label: "生成宠物身份证", done: Number(t.identity_total || 0) > 0 && Number(t.identity_processed || 0) >= Number(t.identity_total || 0), progress: taskPercent(t.identity_processed, t.identity_total) },
+                    { label: "安全入库", done: Number(t.processed || 0) >= Number(t.total || 0) && Number(t.total || 0) > 0, progress: taskPercent(t.processed, t.total) },
+                    { label: "白底证件照", done: Number(t.media_total || 0) === 0 ? Number(t.processed || 0) >= Number(t.total || 0) && Number(t.total || 0) > 0 : Number(t.media_processed || 0) >= Number(t.media_total || 0), progress: Number(t.media_total || 0) ? taskPercent(t.media_processed, t.media_total) : taskPercent(t.processed, t.total) },
+                    { label: "前台可用", done: ["completed", "completed_with_warnings"].includes(t.status), progress: ["completed", "completed_with_warnings"].includes(t.status) ? 100 : 0 },
+                  ].map((stage, index) => (
+                    <div className={stage.done ? "done" : stage.progress > 0 ? "active" : "waiting"} key={stage.label}>
+                      <i>{stage.done ? "✓" : index + 1}</i><span>{stage.label}</span><small>{stage.progress}%</small>
+                    </div>
+                  ))}
+                </div>
+                <div className="sync-stage-progress sync-stage-identity">
+                  <label><span>宠物身份证资料</span><b>{t.identity_processed || 0}/{t.identity_total || 0}</b></label>
+                  <div className="sync-progress"><i style={{ width: `${taskPercent(t.identity_processed, t.identity_total)}%` }} /><span>{taskPercent(t.identity_processed, t.identity_total)}%</span></div>
+                </div>
                 <div className="sync-stage-progress sync-stage-media">
-                  <label><span>白底轮廓</span><b>{t.media_processed || 0}/{t.media_total || 0}</b></label>
+                  <label><span>白底轮廓、展示图与身份证照片</span><b>{t.media_processed || 0}/{t.media_total || 0}</b></label>
                   <div className="sync-progress"><i style={{ width: `${taskPercent(t.media_processed, t.media_total)}%` }} /><span>{taskPercent(t.media_processed, t.media_total)}%</span></div>
                 </div>
               </td>
               <td>
                 <span>数据 {t.success || 0}/{t.failed || 0}</span>
+                <small>身份证 {t.identity_success || 0}/{t.identity_failed || 0}{Number(t.identity_skipped || 0) ? ` · 跳过 ${t.identity_skipped}` : ""}</small>
                 <small>白底 {t.media_success || 0}/{t.media_failed || 0}</small>
               </td>
-              <td>{t.batch_size || 500}<small>白底单并发稳态处理</small></td>
+              <td>{t.batch_size || 500}<small>逐行保存点 · 图片独立稳态处理</small></td>
               <td>
                 <button onClick={() => taskAction(t.id, "pause")}>暂停</button>
                 <button onClick={() => taskAction(t.id, "resume")}>继续</button>

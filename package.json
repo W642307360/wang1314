@@ -15,7 +15,8 @@
     "onnxruntime-node": "^1.17.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.45.0",

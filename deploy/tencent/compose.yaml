@@ -1,0 +1,36 @@
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/tencent/Dockerfile.api
+    image: fuchong-api:${RELEASE_TAG:-latest}
+    container_name: fuchong-api
+    restart: unless-stopped
+    env_file:
+      - /srv/fuchong/shared/.env.production
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DB_PATH: /app/server/data/fuchong.db
+      PUBLIC_API_BASE: https://petinmyall.me
+      APP_ORIGIN: https://petinmyall.me
+      ALLOWED_ORIGINS: https://petinmyall.me,https://www.petinmyall.me
+      CUSTOMER_SERVICE_CORPUS_ENABLED: "1"
+      CUSTOMER_SERVICE_AUTO_RESUME_SECONDS: "30"
+    ports:
+      - 127.0.0.1:3001:3001
+    volumes:
+      - /srv/fuchong/shared/data:/app/server/data
+      - /srv/fuchong/shared/uploads:/app/server/uploads
+      - /srv/fuchong/shared/backups:/app/server/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    init: true

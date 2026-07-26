@@ -5,11 +5,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 const tempDir = mkdtempSync(join(tmpdir(), "fuchong-api-test-"));
 const port = 31991;
 const base = `http://127.0.0.1:${port}`;
+const legalAcceptance = { accepted: true, version: "2026-07-26.2", documents: ["user", "transaction", "purchase", "after_sale", "privacy"] };
 const child = spawn(process.execPath, [join(serverDir, "index.mjs")], {
   cwd: dirname(serverDir),
   env: {
@@ -100,6 +102,14 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       name: "全链路测试布偶猫",
       category_id: 1,
       breed: "布偶猫",
+      gender: "母",
+      birth_date: "2026-04-18",
+      color: "海豹双色",
+      body_type: "中型",
+      fur_length: "中长毛",
+      personality: "温顺亲人",
+      health_status: "健康",
+      vaccine_record: "基础免疫完成",
       price: 6800,
       stock: 1,
       status: "published",
@@ -233,9 +243,22 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(eligibleQuote.response.status, 200);
   assert.equal(eligibleQuote.payload.discount_amount, 0);
   assert.equal(eligibleQuote.payload.pet_amount, 3000);
-  assert.equal(eligibleQuote.payload.shipping_fee, 0);
+  assert.equal(eligibleQuote.payload.shipping_fee, 350);
   assert.equal(eligibleQuote.payload.guarantee_eligible, true);
-  assert.match(eligibleQuote.payload.guarantee_policy, /40日/);
+  assert.match(eligibleQuote.payload.guarantee_policy, /品种纯正/);
+  assert.equal(eligibleQuote.payload.insurance_offer.eligible_now, true);
+  assert.ok(eligibleQuote.payload.insurance_offer.deadline);
+  const unsignedOrder = await request("/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: secondUser.payload.id,
+      pet_id: eligiblePet.payload.id,
+      client_request_id: "unsigned-order-must-fail",
+      address: { name: "新人", phone: "13600000000", detail: "未签约测试地址" },
+    }),
+  });
+  assert.equal(unsignedOrder.response.status, 428);
   const eligibleOrder = await request("/api/orders", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -244,10 +267,11 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       pet_id: eligiblePet.payload.id,
       client_request_id: "eligible-newcomer-order",
       address: { name: "新人", phone: "13600000000", detail: "新人保障测试地址" },
+      legal_acceptance: legalAcceptance,
     }),
   });
   assert.equal(eligibleOrder.response.status, 201);
-  assert.equal(eligibleOrder.payload.total_amount, 3000);
+  assert.equal(eligibleOrder.payload.total_amount, 3350);
   assert.equal(eligibleOrder.payload.guarantee_eligible, true);
   const cancelledEligibleOrder = await request(`/api/orders/${eligibleOrder.payload.id}/cancel`, {
     method: "PATCH",
@@ -326,6 +350,7 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       pet_id: pet.payload.id,
       client_request_id: "api-test-order-request-1",
       address: { name: "测试用户", phone: "13800000000", detail: "测试地址一号" },
+      legal_acceptance: legalAcceptance,
     }),
   });
   assert.equal(order.response.status, 201);
@@ -333,6 +358,24 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(order.payload.pet_amount, 6800);
   assert.equal(order.payload.guarantee_eligible, false);
   assert.match(order.payload.order_no, /^FC\d{8}-\d{4}$/);
+  const changedAfterOrder = await request(`/api/admin/pets/${pet.payload.id}`, {
+    method: "PATCH",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      color: "订单后修改毛色",
+      vaccine_record: "订单后修改免疫记录",
+    }),
+  });
+  assert.equal(changedAfterOrder.response.status, 200);
+  const immutableOrder = await request(`/api/admin/orders/${order.payload.id}`, {
+    headers: adminHeaders,
+  });
+  assert.equal(immutableOrder.response.status, 200);
+  const immutablePetSnapshot = JSON.parse(immutableOrder.payload.items[0].pet_snapshot);
+  assert.equal(immutablePetSnapshot.color, "海豹双色");
+  assert.equal(immutablePetSnapshot.vaccine_record, "基础免疫完成");
+  assert.equal(immutablePetSnapshot.birth_date, "2026-04-18");
+  assert.equal(immutablePetSnapshot.identity_profile.name, "待宠物主起名");
   const repeatedOrder = await request("/api/orders", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -341,11 +384,29 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       pet_id: pet.payload.id,
       client_request_id: "api-test-order-request-1",
       address: { name: "测试用户", phone: "13800000000", detail: "测试地址一号" },
+      legal_acceptance: legalAcceptance,
     }),
   });
   assert.equal(repeatedOrder.response.status, 200);
   assert.equal(repeatedOrder.payload.id, order.payload.id);
   assert.equal(repeatedOrder.payload.idempotent, true);
+  const inventoryBeforePayment = await request(`/api/admin/pets/${pet.payload.id}/inventory`, {
+    headers: adminHeaders,
+  });
+  assert.equal(inventoryBeforePayment.payload[0].available_stock, 2);
+  assert.equal(inventoryBeforePayment.payload[0].locked_stock, 0);
+  const competingOrder = await request("/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: 1,
+      pet_id: pet.payload.id,
+      client_request_id: "api-test-competing-unpaid-order",
+      address: { name: "测试用户", phone: "13800000000", detail: "测试地址一号" },
+      legal_acceptance: legalAcceptance,
+    }),
+  });
+  assert.equal(competingOrder.response.status, 201);
 
   const unpaidShipping = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
@@ -360,19 +421,72 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(unpaidPacked.response.status, 409);
 
-  const paid = await request("/api/payments/mock", {
+  const declared = await request(`/api/orders/${order.payload.id}/payment-declared`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ order_id: order.payload.id, channel: "test" }),
+    body: JSON.stringify({ user_id: 1 }),
   });
-  assert.equal(paid.response.status, 201);
-  const paidAgain = await request("/api/payments/mock", {
+  assert.equal(declared.response.status, 200);
+  assert.equal(declared.payload.status, "pending_confirm");
+  assert.equal(declared.payload.payment_status, "unpaid", "用户声明已支付不能伪造成真实到账");
+  assert.equal(declared.payload.inventory_locked, 0, "管理员核实前不能锁库存");
+  const declaredAgain = await request(`/api/orders/${order.payload.id}/payment-declared`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ order_id: order.payload.id, channel: "test" }),
+    body: JSON.stringify({ user_id: 1 }),
+  });
+  assert.equal(declaredAgain.response.status, 200);
+  assert.equal(declaredAgain.payload.idempotent, true);
+  const inventoryAfterDeclaration = await request(`/api/admin/pets/${pet.payload.id}/inventory`, {
+    headers: adminHeaders,
+  });
+  assert.equal(inventoryAfterDeclaration.payload[0].available_stock, 2);
+  assert.equal(inventoryAfterDeclaration.payload[0].locked_stock, 0);
+
+  const paid = await request(`/api/admin/orders/${order.payload.id}/payment`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ method: "admin_manual", note: "管理员核实到账" }),
+  });
+  assert.equal(paid.response.status, 200);
+  assert.equal(paid.payload.status, "pending_confirm");
+  assert.equal(paid.payload.pet_insurance_eligible, 1, "发布24小时内由管理员确认到账应获赠保险");
+  assert.ok(paid.payload.pet_insurance_confirmed_at);
+  assert.deepEqual(paid.payload.sold_pet_ids, [pet.payload.id]);
+  const paidAgain = await request(`/api/admin/orders/${order.payload.id}/payment`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ method: "admin_manual", note: "重复核实到账" }),
   });
   assert.equal(paidAgain.response.status, 200);
   assert.equal(paidAgain.payload.idempotent, true);
+  assert.deepEqual(paidAgain.payload.sold_pet_ids, [pet.payload.id]);
+  const soldProduct = await request(`/api/pets/${pet.payload.id}`);
+  assert.equal(soldProduct.response.status, 200);
+  assert.equal(soldProduct.payload.status, "sold");
+  assert.equal(soldProduct.payload.product_status, "sold");
+  const soldProductInventory = await request(`/api/admin/pets/${pet.payload.id}/inventory`, {
+    headers: adminHeaders,
+  });
+  assert.equal(soldProductInventory.payload[0].locked_stock, 1);
+  assert.equal(soldProductInventory.payload[0].available_stock, 1);
+  const competingPayment = await request(`/api/admin/orders/${competingOrder.payload.id}/payment`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ method: "admin_manual", note: "竞争订单确认" }),
+  });
+  assert.equal(competingPayment.response.status, 409);
+  const cancelCompetingOrder = await request(`/api/orders/${competingOrder.payload.id}/cancel`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: 1 }),
+  });
+  assert.equal(cancelCompetingOrder.response.status, 200);
+  const inventoryAfterCompetingCancel = await request(`/api/admin/pets/${pet.payload.id}/inventory`, {
+    headers: adminHeaders,
+  });
+  assert.equal(inventoryAfterCompetingCancel.payload[0].available_stock, 1);
+  assert.equal(inventoryAfterCompetingCancel.payload[0].locked_stock, 1);
 
   const confirmedOrder = await request(`/api/admin/orders/${order.payload.id}/confirm`, {
     method: "POST",
@@ -388,6 +502,58 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   );
   assert.equal(repeatedConfirmations.every((item) => item.response.status === 200), true);
   assert.equal(repeatedConfirmations.every((item) => item.payload.idempotent === true), true);
+
+  const packed = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
+    method: "PUT",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      company: "顺丰速运",
+      tracking_no: "SFTEST",
+      status: "packed",
+      note: "发货前宠物实拍检验",
+    }),
+  });
+  assert.equal(packed.response.status, 200);
+  assert.equal(packed.payload.progress_percent, 25);
+  assert.ok(packed.payload.event_id);
+  const onePixelPng = await sharp({
+    create: { width: 16, height: 16, channels: 3, background: "#c79b72" },
+  }).png().toBuffer();
+  const inspectionUpload = await request(
+    `/api/admin/orders/${order.payload.id}/logistics-events/${packed.payload.event_id}/media`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${login.payload.token}`,
+        "content-type": "image/png",
+        "x-file-name": encodeURIComponent("发货实拍.png"),
+      },
+      body: onePixelPng,
+    },
+  );
+  assert.equal(inspectionUpload.response.status, 202);
+  let inspectionMedia = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const detail = await request(`/api/admin/orders/${order.payload.id}`, { headers: adminHeaders });
+    inspectionMedia = detail.payload.logistics_events
+      ?.find((event) => event.id === packed.payload.event_id)
+      ?.media?.[0];
+    if (inspectionMedia?.processing_status !== "processing") break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(
+    inspectionMedia?.processing_status,
+    "ready",
+    inspectionMedia?.processing_error || "实拍图片应处理成功",
+  );
+  assert.match(inspectionMedia?.display_url || "", /inspection-\d+-display\.webp$/);
+  const userOrderListWithInspection = await request("/api/orders?user_id=1");
+  const listedInspectionOrder = userOrderListWithInspection.payload.find(
+    (item) => Number(item.id) === Number(order.payload.id),
+  );
+  assert.equal(Array.isArray(listedInspectionOrder.inspection_media), true);
+  assert.equal(listedInspectionOrder.inspection_media.length, 1);
+  assert.equal(listedInspectionOrder.inspection_media[0].processing_status, "ready");
 
   const shipped = await request(`/api/admin/orders/${order.payload.id}/logistics`, {
     method: "PUT",
@@ -429,7 +595,8 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
     `/api/orders/${order.payload.id}?user_id=1`,
   );
   assert.equal(orderDetail.response.status, 200);
-  assert.equal(orderDetail.payload.logistics_events.length, 1);
+  assert.equal(orderDetail.payload.logistics_events.length, 2);
+  assert.equal(orderDetail.payload.logistics_events[0].media[0].processing_status, "ready");
   const userSummary = await request("/api/users/1/summary");
   assert.equal(userSummary.response.status, 200);
   assert.equal(userSummary.payload.orders.shipped, 1);
@@ -510,6 +677,71 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(refundedInventory.payload[0].locked_stock, 0);
 
+  const oneClickPet = await request("/api/admin/pets", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      name: "后台一键确认测试宠物",
+      category_id: 1,
+      breed: "金渐层",
+      gender: "公",
+      description: "飞书原文详情：性格亲人，基础免疫完成，适合家庭陪伴。",
+      price: 5200,
+      stock: 1,
+      status: "published",
+    }),
+  });
+  assert.equal(oneClickPet.response.status, 201);
+  const oneClickOrder = await request("/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      user_id: secondUser.payload.id,
+      pet_id: oneClickPet.payload.id,
+      client_request_id: "admin-one-click-confirm-order",
+      address: { name: "一键确认用户", phone: "13600000000", detail: "测试地址三号" },
+      legal_acceptance: legalAcceptance,
+    }),
+  });
+  assert.equal(oneClickOrder.response.status, 201);
+  const oneClickBeforeConfirm = await request(`/api/admin/orders/${oneClickOrder.payload.id}`, {
+    headers: adminHeaders,
+  });
+  assert.equal(oneClickBeforeConfirm.payload.status, "pending_payment");
+  const oneClickConfirmed = await request(`/api/admin/orders/${oneClickOrder.payload.id}/confirm`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(oneClickConfirmed.response.status, 200);
+  assert.equal(oneClickConfirmed.payload.payment_status, "paid");
+  assert.equal(oneClickConfirmed.payload.status, "pending_ship");
+  assert.ok(oneClickConfirmed.payload.payment_no);
+  assert.deepEqual(oneClickConfirmed.payload.sold_pet_ids, [oneClickPet.payload.id]);
+  const oneClickDetail = await request(`/api/admin/orders/${oneClickOrder.payload.id}`, {
+    headers: adminHeaders,
+  });
+  const oneClickSnapshot = JSON.parse(oneClickDetail.payload.items[0].pet_snapshot);
+  assert.match(oneClickSnapshot.description, /飞书原文详情/);
+  const adminOrderListWithSnapshot = await request("/api/admin/orders", { headers: adminHeaders });
+  const listedOneClickOrder = adminOrderListWithSnapshot.payload.find(
+    (item) => Number(item.id) === Number(oneClickOrder.payload.id),
+  );
+  assert.match(JSON.parse(listedOneClickOrder.pet_snapshot).description, /飞书原文详情/);
+  const oneClickUserDetail = await request(
+    `/api/orders/${oneClickOrder.payload.id}?user_id=${secondUser.payload.id}`,
+  );
+  assert.equal(oneClickUserDetail.payload.payments.filter((payment) => payment.status === "paid").length, 1);
+  const oneClickRepeat = await request(`/api/admin/orders/${oneClickOrder.payload.id}/confirm`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(oneClickRepeat.response.status, 200);
+  assert.equal(oneClickRepeat.payload.idempotent, true);
+  const oneClickRepeatDetail = await request(
+    `/api/orders/${oneClickOrder.payload.id}?user_id=${secondUser.payload.id}`,
+  );
+  assert.equal(oneClickRepeatDetail.payload.payments.filter((payment) => payment.status === "paid").length, 1);
+
   const feishuConfig = await request("/api/admin/feishu/configs", {
     method: "POST",
     headers: adminHeaders,
@@ -545,6 +777,74 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(syncTask.persisted_items, 5000);
   assert.equal(syncTask.persisted_success, 5000);
   assert.equal(syncTask.persisted_failed, 0);
+  assert.equal(syncTask.identity_total, 5000);
+  assert.equal(syncTask.identity_processed, 5000);
+  assert.equal(syncTask.identity_success, 5000);
+  assert.equal(syncTask.identity_failed, 0);
+  assert.equal(syncTask.identity_skipped, 0);
+  const profileDefaultsSync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 3,
+      items: [
+        { external_id: "profile-small", name: "体型识别小宠样本", breed: "测试犬", description: "活泼亲人，属于迷你小型犬体态", price: 1000, status: "published", source: "feishu" },
+        { external_id: "profile-large", name: "体型识别大宠样本", breed: "测试犬", description: "骨架舒展，是大型犬体型", price: 1000, status: "published", source: "feishu" },
+        { external_id: "profile-default", name: "体型默认中宠样本", breed: "测试犬", description: "性格温顺，没有填写体型文字", price: 1000, status: "published", source: "feishu" },
+      ],
+    }),
+  });
+  assert.equal(profileDefaultsSync.response.status, 202);
+  let profileDefaultsTask;
+  for (let i = 0; i < 80; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    profileDefaultsTask = tasks.payload.find((item) => item.id === profileDefaultsSync.payload.taskId);
+    if (["completed", "completed_with_warnings", "failed"].includes(profileDefaultsTask?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(profileDefaultsTask.status, "completed");
+  const profileDefaults = await request("/api/admin/pets?q=体型", { headers: adminHeaders });
+  const byProfileName = Object.fromEntries(profileDefaults.payload.map((item) => [item.name, item]));
+  assert.equal(byProfileName["体型识别小宠样本"].body_type, "小型");
+  assert.equal(byProfileName["体型识别大宠样本"].body_type, "大型");
+  assert.equal(byProfileName["体型默认中宠样本"].body_type, "中型");
+  assert.equal(byProfileName["体型默认中宠样本"].health_status, "健康");
+  const originalIdentityDetail = await request(`/api/pets/${byProfileName["体型默认中宠样本"].id}`);
+  assert.equal(originalIdentityDetail.response.status, 200);
+  assert.equal(originalIdentityDetail.payload.identity_profile.gender, "待核验");
+  assert.equal(originalIdentityDetail.payload.identity_profile.color, "自然综合色");
+  assert.match(originalIdentityDetail.payload.identity_profile.identityNo, /^FC-D\d{6}-\d{2}$/);
+  const originalIdentityNo = originalIdentityDetail.payload.identity_profile.identityNo;
+  const originalChipNo = originalIdentityDetail.payload.identity_profile.chipNo;
+  const identityResync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 1,
+      items: [{
+        external_id: "profile-default",
+        name: "体型默认中宠样本（更新）",
+        breed: "测试犬",
+        description: "仍未填写体型文字",
+        color: "暖棕色",
+        price: 1000,
+        status: "published",
+        source: "feishu",
+      }],
+    }),
+  });
+  for (let i = 0; i < 80; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    const task = tasks.payload.find((item) => item.id === identityResync.payload.taskId);
+    if (["completed", "completed_with_warnings", "failed"].includes(task?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const updatedIdentityDetail = await request(`/api/pets/${byProfileName["体型默认中宠样本"].id}`);
+  assert.equal(updatedIdentityDetail.payload.identity_profile.identityNo, originalIdentityNo);
+  assert.equal(updatedIdentityDetail.payload.identity_profile.chipNo, originalChipNo);
+  assert.equal(updatedIdentityDetail.payload.identity_profile.color, "暖棕色");
   const mediaSync = await request("/api/admin/feishu/sync", {
     method: "POST",
     headers: adminHeaders,
@@ -610,6 +910,10 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(showcaseTask.media_processed, 500);
   assert.equal(showcaseTask.media_success, 500);
   assert.equal(showcaseTask.media_failed, 0);
+  assert.equal(showcaseTask.identity_total, 500);
+  assert.equal(showcaseTask.identity_processed, 500);
+  assert.equal(showcaseTask.identity_success, 500);
+  assert.equal(showcaseTask.identity_failed, 0);
 
   const banner = await request("/api/admin/banners", {
     method: "POST",

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { halls } from "./catalog";
 import { mediaUrl } from "./mediaUrl";
+import { LEGAL_DOCUMENTS, LEGAL_VERSION, REQUIRED_MERCHANT_DOCUMENTS, type LegalDocumentKey } from "./legalDocuments";
 import "./MerchantPortal.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
+const API_BASE = import.meta.env.PROD ? "" : import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 type View = "login" | "apply" | "dashboard" | "products" | "orders";
 const tokenKey = "fuchong-merchant-token";
 
@@ -13,6 +14,16 @@ const readFile = (file: File) => new Promise<string>((resolve, reject) => {
   reader.onerror = () => reject(new Error("文件读取失败"));
   reader.readAsDataURL(file);
 });
+
+function MerchantLegalDialog({ documentKey, close }: { documentKey: LegalDocumentKey; close: () => void }) {
+  const document = LEGAL_DOCUMENTS[documentKey];
+  return <div className="legal-dialog-mask" role="presentation" onClick={close}>
+    <section className="legal-dialog" role="dialog" aria-modal="true" aria-label={document.title} onClick={(event) => event.stopPropagation()}>
+      <header><div><small>现行版本 · {LEGAL_VERSION}</small><h2>{document.title}</h2><p>适用：{document.audience}</p></div><button type="button" onClick={close}>×</button></header>
+      {document.sections.map((section) => <article className={section.important ? "important" : ""} key={section.title}><h3>{section.title}</h3>{section.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}</article>)}
+    </section>
+  </div>;
+}
 
 export default function MerchantPortal({ back }: { back: () => void }) {
   const [token, setToken] = useState(() => localStorage.getItem(tokenKey) || "");
@@ -24,6 +35,8 @@ export default function MerchantPortal({ back }: { back: () => void }) {
   const [selectedHallKey, setSelectedHallKey] = useState(halls[0].key);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [merchantAgreementAccepted, setMerchantAgreementAccepted] = useState(false);
+  const [legalDocumentOpen, setLegalDocumentOpen] = useState<LegalDocumentKey | null>(null);
   const headers = useMemo(() => ({ authorization: `Bearer ${token}`, "content-type": "application/json" }), [token]);
   const api = useCallback(async (path: string, options: RequestInit = {}) => {
     const response = await fetch(`${API_BASE}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
@@ -59,11 +72,12 @@ export default function MerchantPortal({ back }: { back: () => void }) {
   };
   const apply = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy(true); setMessage("");
+    if (!merchantAgreementAccepted) { setBusy(false); setMessage("请先阅读并主动勾选商家入驻协议与隐私政策"); return; }
     const data = Object.fromEntries(new FormData(event.currentTarget));
     try {
-      const payload = await api("/api/merchant/applications", { method: "POST", body: JSON.stringify(data) });
+      const payload = await api("/api/merchant/applications", { method: "POST", body: JSON.stringify({ ...data, legal_acceptance: { accepted: true, version: LEGAL_VERSION, documents: [...REQUIRED_MERCHANT_DOCUMENTS] } }) });
       setMessage(`申请已提交：${payload.application_no}。管理员审核后会为你设置登录账号与密码。`);
-      event.currentTarget.reset();
+      event.currentTarget.reset(); setMerchantAgreementAccepted(false);
     } catch (error) { setMessage(error instanceof Error ? error.message : "提交失败"); }
     finally { setBusy(false); }
   };
@@ -125,7 +139,7 @@ export default function MerchantPortal({ back }: { back: () => void }) {
     {!token && <>
       <div className="merchant-switch"><button className={view === "apply" ? "on" : ""} onClick={() => setView("apply")}>申请入驻</button><button className={view === "login" ? "on" : ""} onClick={() => setView("login")}>商家登录</button></div>
       {view === "login" ? <form className="merchant-form" onSubmit={login}><h3>已审核商家登录</h3><label>登录账号<input name="username" required autoComplete="username" /></label><label>登录密码<input name="password" type="password" required autoComplete="current-password" /></label><button disabled={busy}>{busy ? "正在登录…" : "登录商家中心"}</button></form>
-        : <form className="merchant-form" onSubmit={apply}><h3>商家入驻申请表</h3><div className="merchant-grid"><label>店铺名称<input name="shop_name" required maxLength={60} /></label><label>申请人<input name="applicant_name" required maxLength={30} /></label><label>联系电话<input name="contact_phone" required inputMode="numeric" pattern="1[0-9]{10}" /></label><label>所在城市<input name="city" maxLength={40} /></label></div><label>经营与资质说明<textarea name="business_description" rows={4} maxLength={1200} required /></label><button disabled={busy}>{busy ? "正在安全提交…" : "提交管理员审核"}</button></form>}
+        : <form className="merchant-form" onSubmit={apply}><h3>商家入驻申请表</h3><div className="merchant-grid"><label>店铺名称<input name="shop_name" required maxLength={60} /></label><label>申请人<input name="applicant_name" required maxLength={30} /></label><label>联系电话<input name="contact_phone" required inputMode="numeric" pattern="1[0-9]{10}" /></label><label>所在城市<input name="city" maxLength={40} /></label></div><label>经营与资质说明<textarea name="business_description" rows={4} maxLength={1200} required /></label><div className="merchant-legal-links"><button type="button" onClick={() => setLegalDocumentOpen("merchant")}>商家入驻协议</button><button type="button" onClick={() => setLegalDocumentOpen("privacy")}>隐私政策</button></div><label className="merchant-legal-check"><input type="checkbox" checked={merchantAgreementAccepted} onChange={(event) => setMerchantAgreementAccepted(event.target.checked)} /><span>我已完整阅读并主动同意《商家入驻与合作协议》《隐私政策》（版本 {LEGAL_VERSION}），确认资料与经营承诺真实。</span></label><button disabled={busy || !merchantAgreementAccepted}>{busy ? "正在安全提交…" : merchantAgreementAccepted ? "同意协议并提交审核" : "请先勾选协议"}</button></form>}
     </>}
     {token && <>
       <section className="merchant-summary"><div><small>当前经营主体</small><h2>{me?.shop_name || "商家资料加载中"}</h2><p>账号 {me?.username} · 商品 {me?.products || 0} · 订单 {me?.orders || 0}</p></div><button onClick={updateShop}>修改店名</button></section>
@@ -135,5 +149,6 @@ export default function MerchantPortal({ back }: { back: () => void }) {
       {view === "orders" && <section className="merchant-orders">{orders.length ? orders.map((order) => <article key={order.id}><div><b>{order.order_no}</b><small>{order.nickname} · {order.phone || "未绑定手机号"}</small><p>{JSON.parse(order.items || "[]").map((item: any) => item.name).join("、")}</p></div><div><strong>{order.payment_status === "paid" ? "已付款" : "待付款"}</strong><small>{order.logistics_status || order.status}</small><button disabled={order.payment_status !== "paid"} onClick={() => updateLogistics(order)}>更新物流</button></div></article>) : <div className="merchant-empty">暂无归属于当前商家的订单</div>}</section>}
     </>}
     {message && <div className="merchant-message" onClick={() => setMessage("")}>{message}</div>}
+    {legalDocumentOpen && <MerchantLegalDialog documentKey={legalDocumentOpen} close={() => setLegalDocumentOpen(null)} />}
   </div>;
 }

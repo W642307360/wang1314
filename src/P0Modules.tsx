@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { ServiceContext, User } from "./UserModules";
 import {
   currentCartUserId,
@@ -44,6 +44,7 @@ type ChatMessage = {
   type?: string;
   service_type?: string;
   created_at?: string;
+  is_read?: number;
 };
 
 type ServiceOrder = {
@@ -59,7 +60,7 @@ type ServiceOrder = {
   trackingNo?: string;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
+const API_BASE = import.meta.env.PROD ? "" : import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const fallbackImg =
   "https://images.unsplash.com/photo-1552053831-71594a27632d?auto=format&fit=crop&w=600&q=88";
 const displayMedia = (url?: string) => mediaUrl(url) || fallbackImg;
@@ -421,33 +422,37 @@ export function P0MessagesPage({
   const [serviceStatus, setServiceStatus] = useState<"ai" | "human_pending" | "human">("ai");
   const [customerCode, setCustomerCode] = useState("");
   const [sending, setSending] = useState(false);
+  const [replying, setReplying] = useState(false);
   const [failedText, setFailedText] = useState("");
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [showHistory, setShowHistory] = useState(true);
   const [sharedProduct, setSharedProduct] = useState<ServiceContext | null>(context || null);
   const [recentOrders, setRecentOrders] = useState<ServiceOrder[]>([]);
+  const [ordersLoaded, setOrdersLoaded] = useState(false);
   const [showOrderPicker, setShowOrderPicker] = useState(false);
-  const [chat, setChat] = useState<ChatMessage[]>([
-    {
-      id: 1,
-      sender: "service",
-      content: context?.productName
-        ? `您好，正在为您连接「${context.productName}」的购买咨询。`
-        : "请选择需要咨询的服务类型。",
-    },
-  ]);
+  const [, setConnecting] = useState(Boolean(context?.productName));
+  const [entryVersion, setEntryVersion] = useState(0);
+  const [entryMode, setEntryMode] = useState<"new" | "history">("new");
+  const autoEntryRef = useRef("");
+  const [chat, setChat] = useState<ChatMessage[]>(context?.productName ? [] : [{
+    id: 1,
+    sender: "service",
+    content: "请选择需要咨询的服务类型。",
+  }]);
   const loadHistory = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}`);
+      const sessionResponse = await fetch(`${API_BASE}/api/customer-service/session?user_id=${userId}`);
+      const session = await sessionResponse.json();
+      if (!sessionResponse.ok || !session?.id) { setHistory([]); return; }
+      setSessionId(Number(session.id));
+      setCustomerCode(session.customer_code || "");
+      setServiceStatus(session.status || "ai");
+      setHumanPending(["human_pending", "human"].includes(session.status));
+      const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}&session_id=${session.id}`);
       const messages = await response.json();
-      if (Array.isArray(messages)) {
-        const latestBySession = new Map<number | string, ChatMessage>();
-        messages.slice().sort((a: ChatMessage, b: ChatMessage) => Number(b.id) - Number(a.id)).forEach((message: ChatMessage) => {
-          const key = message.session_id || `message-${message.id}`;
-          if (!latestBySession.has(key)) latestBySession.set(key, message);
-        });
-        setHistory(Array.from(latestBySession.values()).slice(0, 12));
-      }
+      if (Array.isArray(messages) && messages.length)
+        setHistory([messages.slice().sort((a: ChatMessage, b: ChatMessage) => Number(b.id) - Number(a.id))[0]]);
+      else setHistory([]);
     } catch {
       setHistory([]);
     }
@@ -469,7 +474,15 @@ export function P0MessagesPage({
       ]);
       if (messagesResponse.ok) {
         const messages = await messagesResponse.json();
-        if (Array.isArray(messages)) setChat(messages.map((item) => ({
+        if (Array.isArray(messages)) {
+          if (messages.some((item) => item.is_read === 0 && ["service", "agent"].includes(item.sender))) {
+            fetch(`${API_BASE}/api/customer-service/sessions/${sid}/read`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ user_id: userId }),
+            }).then(loadHistory).catch(() => {});
+          }
+          setChat(messages.map((item) => ({
           id: item.id,
           sender: item.sender,
           content: item.content,
@@ -481,7 +494,9 @@ export function P0MessagesPage({
           product_price: item.product_price,
           type: item.type,
           service_type: item.service_type,
+          is_read: item.is_read,
         })));
+        }
       }
       if (statusResponse.ok) {
         const status = await statusResponse.json();
@@ -493,7 +508,7 @@ export function P0MessagesPage({
     } catch {
       // 短暂断网时保留当前会话，下一轮自动重试。
     }
-  }, [userId]);
+  }, [userId, loadHistory]);
   useEffect(() => {
     if (!activeType || !sessionId) return;
     refreshSession(sessionId);
@@ -504,7 +519,11 @@ export function P0MessagesPage({
     fetch(`${API_BASE}/api/orders?user_id=${userId}`)
       .then((response) => response.json())
       .then((orders) => {
-        if (!Array.isArray(orders)) return setRecentOrders([]);
+        if (!Array.isArray(orders)) {
+          setRecentOrders([]);
+          setOrdersLoaded(true);
+          return;
+        }
         setRecentOrders(orders.slice(0, 8).map((order: any) => {
           let pet: any = {};
           try { pet = JSON.parse(order.pet_snapshot || "{}"); } catch {}
@@ -521,23 +540,25 @@ export function P0MessagesPage({
             trackingNo: order.tracking_no || "物流单号生成中",
           } satisfies ServiceOrder;
         }));
+        setOrdersLoaded(true);
       })
-      .catch(() => setRecentOrders([]));
+      .catch(() => {
+        setRecentOrders([]);
+        setOrdersLoaded(true);
+      });
   }, [userId]);
   const openType = (type: string) => {
     setActiveType(type);
+    setEntryMode("new");
+    setEntryVersion((value) => value + 1);
+    setConnecting(true);
+    setShowOrderPicker(false);
     setFailedText("");
-    setChat([
-      {
-        id: Date.now(),
-        sender: "service",
-        content: context?.productName
-          ? `已进入${type}，当前宠物：${context.productName}。您可以直接发送问题。`
-          : `已进入${type}，请描述您遇到的问题。`,
-      },
-    ]);
+    setChat([]);
   };
   const continueSession = async (message: ChatMessage) => {
+    setEntryMode("history");
+    setConnecting(false);
     if (message.session_id) setSessionId(message.session_id);
     setActiveType(message.service_type || "购买咨询");
     if (message.product_id || message.product_name) {
@@ -553,6 +574,13 @@ export function P0MessagesPage({
     try {
       const response = await fetch(`${API_BASE}/api/messages?user_id=${userId}&session_id=${message.session_id}`);
       const messages = await response.json();
+      if (Array.isArray(messages) && messages.some((item) => item.is_read === 0 && ["service", "agent"].includes(item.sender))) {
+        fetch(`${API_BASE}/api/customer-service/sessions/${message.session_id}/read`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ user_id: userId }),
+        }).then(loadHistory).catch(() => {});
+      }
       setChat(
         Array.isArray(messages)
           ? messages.map((item) => ({
@@ -567,6 +595,7 @@ export function P0MessagesPage({
               product_price: item.product_price,
               type: item.type,
               service_type: item.service_type,
+              is_read: item.is_read,
             }))
           : [],
       );
@@ -581,6 +610,7 @@ export function P0MessagesPage({
     const value = (override ?? text).trim();
     if (!value || sending) return sessionId;
     setSending(true);
+    setReplying(true);
     setFailedText("");
     setChat((items) => [...items, {
       id: Date.now(), sender: "user", content: value, type: meta?.type,
@@ -631,6 +661,7 @@ export function P0MessagesPage({
         { id: Date.now() + 2, sender: "service", content: "发送失败，请重新发送。" },
       ]);
     } finally {
+      setReplying(false);
       setSending(false);
     }
     return sessionId;
@@ -652,6 +683,51 @@ export function P0MessagesPage({
       productName: sharedProduct.productName,
       productImage: sharedProduct.productImage,
     });
+  };
+  const requestHuman = async () => {
+    if (humanPending || serviceStatus === "human" || sending) return;
+    setSending(true);
+    try {
+      let targetSessionId = sessionId;
+      if (!targetSessionId) {
+        const sessionResponse = await fetch(`${API_BASE}/api/customer-service/session`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            service_type: activeType || "官方客服",
+            product_id: sharedProduct?.productId || null,
+            product_name: sharedProduct?.productName || "",
+            seller_id: sharedProduct?.sellerId || null,
+            seller_name: sharedProduct?.sellerName || "福宠认证宠物馆",
+            source: sharedProduct?.source || "message_center",
+          }),
+        });
+        if (!sessionResponse.ok) throw new Error("会话创建失败");
+        const ensured = await sessionResponse.json();
+        targetSessionId = Number(ensured.id);
+        setSessionId(targetSessionId);
+        setCustomerCode(ensured.customer_code || "");
+      }
+      const response = await fetch(`${API_BASE}/api/customer-service/sessions/${targetSessionId}/handoff`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          reason: `客户主动申请${activeType || "官方客服"}福宠用户宠物专员`,
+          preview: text || "客户申请福宠用户宠物专员",
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "转接失败");
+      setServiceStatus("human_pending");
+      setHumanPending(true);
+      setChat((items) => [...items, { id: Date.now(), sender: "service", content: "已进入福宠用户宠物专员队列，可能需要等待。" }]);
+    } catch {
+      setChat((items) => [...items, { id: Date.now(), sender: "service", content: "暂时未能转接，您可以继续留言。" }]);
+    } finally {
+      setSending(false);
+    }
   };
   const sendOrderCard = async (order: ServiceOrder) => {
     const serviceLabel = activeType === "物流帮助" ? "物流咨询" : activeType === "售后服务" ? "订单售后" : "订单咨询";
@@ -682,21 +758,6 @@ export function P0MessagesPage({
       productImage: order.productImage,
     });
   };
-  const handoff = async () => {
-    const sid = sessionId || (await send("需要转人工客服"));
-    if (!sid) return;
-    await fetch(`${API_BASE}/api/customer-service/sessions/${sid}/handoff`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ user_id: userId, reason: "客户主动要求人工", preview: text || "客户请求人工服务" }),
-    }).catch(() => {});
-    setHumanPending(true);
-    setServiceStatus("human_pending");
-    setChat((items) => [
-      ...items,
-      { id: Date.now() + 3, sender: "service", content: "已为您转入人工客服队列。" },
-    ]);
-  };
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
     send();
@@ -719,6 +780,48 @@ export function P0MessagesPage({
       : recentOrders;
   }, [context, recentOrders]);
   const needsOrder = ["订单咨询", "售后服务", "物流帮助"].includes(activeType || "");
+  const unreadByType = useMemo(() => history.reduce<Record<string, number>>((counts, message) => {
+    if (message.is_read === 0 && ["service", "agent"].includes(message.sender))
+      counts[message.service_type || "官方客服"] = (counts[message.service_type || "官方客服"] || 0) + 1;
+    return counts;
+  }, {}), [history]);
+  useEffect(() => {
+    if (!activeType) {
+      setConnecting(false);
+      return;
+    }
+    if (entryMode === "history") return;
+    if (needsOrder && !ordersLoaded) return;
+    const primaryOrder = needsOrder ? shareableOrders[0] : undefined;
+    const contextKey = primaryOrder?.id || sharedProduct?.productId || sharedProduct?.productName || "general";
+    const entryKey = `${entryVersion}:${activeType}:${contextKey}`;
+    if (autoEntryRef.current === entryKey) return;
+    autoEntryRef.current = entryKey;
+    setConnecting(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        if (primaryOrder) {
+          await sendOrderCard(primaryOrder);
+        } else if (sharedProduct?.productName) {
+          await sendProductCard();
+        } else {
+          setReplying(true);
+          await new Promise((resolve) => window.setTimeout(resolve, 1000 + Math.floor(Math.random() * 1001)));
+          setChat([{
+            id: Date.now(),
+            sender: "service",
+            content: `您好，${activeType}在线。您直接说遇到的问题就好，我来帮您看看。`,
+          }]);
+        }
+      } finally {
+        setReplying(false);
+        setConnecting(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // 卡片发送函数随会话状态更新；entryKey 已负责一次接入只自动发送一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeType, entryMode, entryVersion, needsOrder, ordersLoaded, shareableOrders, sharedProduct?.productId, sharedProduct?.productName]);
   return (
     <div className="module-page service-center">
       <Header title="客服中心" back={back} />
@@ -756,7 +859,7 @@ export function P0MessagesPage({
                   {item.product_image ? <img src={displayMedia(item.product_image)} alt={item.product_name || "咨询宠物"} loading="lazy" /> : "宠"}
                 </button>
                 <button className="service-history-main" onClick={() => continueSession(item)}>
-                  <strong>{item.product_name || item.service_type || "客服咨询"}</strong>
+                  <strong>{item.product_name || item.service_type || "客服咨询"}{item.is_read === 0 && ["service", "agent"].includes(item.sender) ? " · 新回复" : ""}</strong>
                   <small>{item.content}</small>
                 </button>
                 <button className="service-history-continue" onClick={() => continueSession(item)}>继续聊天　›</button>
@@ -766,16 +869,27 @@ export function P0MessagesPage({
         )}
       </section>
       {activeType && (
-        <div className="service-sheet-mask" onClick={() => setActiveType(null)}>
-          <section className="service-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="service-sheet-mask" role="dialog" aria-modal="true" aria-label={`${activeType}客服窗口`}>
+          <section className="service-sheet" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <i />
+            <nav className="service-type-tabs" aria-label="客服咨询类型">
+              {serviceTypes.map(([title]) => <button type="button" className={activeType === title ? "on" : ""} key={title} onClick={() => openType(title)}>
+                {title.replace("咨询", "").replace("服务", "")}
+                {!!unreadByType[title] && <em>{unreadByType[title]}</em>}
+              </button>)}
+            </nav>
             <header>
               <div>
-                <small>{serviceStatus === "human" ? "人工客服已接入" : humanPending ? "正在通知对应人工客服" : "AI 即时回复 · 可转人工"}</small>
+                <small className="service-online-state"><i />{serviceStatus === "human" ? "福宠用户宠物专员已接入" : humanPending ? "专员排队中" : "在线客服"}</small>
                 <h2>{activeType}</h2>
                 <p>{customerCode ? `会话 ${customerCode} · ` : ""}{sharedProduct?.productName ? `当前宠物：${sharedProduct.productName}` : "独立客户会话"}</p>
               </div>
-              <button onClick={() => setActiveType(null)}>×</button>
+              <div className="service-header-actions">
+                <button type="button" className="service-specialist-mini" onClick={requestHuman} disabled={sending || humanPending || serviceStatus === "human"}>
+                  {serviceStatus === "human" ? "专员服务中" : humanPending ? "专员排队中" : "转接为福宠用户宠物专员"}
+                </button>
+                <button type="button" aria-label="关闭客服窗口" onClick={() => setActiveType(null)}>×</button>
+              </div>
             </header>
             <div className="service-share-tools">
               {sharedProduct?.productName && <button type="button" onClick={sendProductCard} disabled={sending}>
@@ -805,22 +919,23 @@ export function P0MessagesPage({
                   </div> : <p>{message.content}</p>}
                 </div>
               ))}
+              {replying && <div className="service-typing" role="status" aria-live="polite">
+                <i>福</i><p><span><b /><b /><b /></span>客服正在回复…</p>
+              </div>}
               {failedText && (
                 <button className="retry-send" onClick={() => send(failedText)}>
                   重新发送
                 </button>
               )}
             </div>
-            <form className="sheet-input" onSubmit={onSubmit}>
+            <form className="sheet-input" onSubmit={onSubmit} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
               <input
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 placeholder="输入咨询内容…"
+                disabled={sending}
               />
-              <button type="button" onClick={handoff}>
-                转人工
-              </button>
-              <button disabled={sending}>{sending ? "发送中" : "发送"}</button>
+              <button type="submit" disabled={sending}>{sending ? "发送中" : "发送"}</button>
             </form>
           </section>
         </div>

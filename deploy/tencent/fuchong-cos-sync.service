@@ -1,0 +1,21 @@
+[Unit]
+Description=Synchronize FuChong website media to Tencent COS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+EnvironmentFile=/srv/fuchong/shared/.env.production
+Environment=FUCHONG_PUBLIC_DIR=/srv/fuchong/current/dist/client
+Environment=FUCHONG_UPLOADS_DIR=/srv/fuchong/shared/uploads
+ExecStart=/srv/fuchong/shared/cos-venv/bin/python /srv/fuchong/shared/scripts/cos-sync.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/fuchong
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ const projectDir = dirname(serverDir);
 const tempDir = mkdtempSync(join(tmpdir(), "fuchong-merchant-test-"));
 const port = 31992;
 const base = `http://127.0.0.1:${port}`;
+const merchantLegalAcceptance = { accepted: true, version: "2026-07-26.2", documents: ["merchant", "privacy"] };
 const child = spawn(process.execPath, [join(serverDir, "index.mjs")], {
   cwd: projectDir,
   env: {
@@ -71,10 +72,16 @@ test("商家审核、同库商品、媒体白底与权限隔离", async (t) => {
   const adminLogin = await request("/api/admin/login", jsonOptions("POST", { username: "admin", password: "123456789" }));
   assert.equal(adminLogin.response.status, 200);
   const adminToken = adminLogin.payload.token;
+  const unsignedApplication = await request("/api/merchant/applications", jsonOptions("POST", {
+    shop_name: "未签约商家", applicant_name: "测试员", contact_phone: "13900000000",
+    city: "上海", business_description: "本申请必须被协议校验拦截",
+  }));
+  assert.equal(unsignedApplication.response.status, 428);
   const approveMerchant = async (suffix, phone) => {
     const application = await request("/api/merchant/applications", jsonOptions("POST", {
       shop_name: `商家测试店${suffix}`, applicant_name: `测试员${suffix}`, contact_phone: phone,
       city: "上海", business_description: "隔离测试商家资料",
+      legal_acceptance: merchantLegalAcceptance,
     }));
     assert.equal(application.response.status, 201, JSON.stringify(application.payload));
     const approved = await request(`/api/admin/merchant-applications/${application.payload.id}`, jsonOptions("PATCH", {

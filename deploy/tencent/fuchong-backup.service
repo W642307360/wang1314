@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Fuchong production database
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec fuchong-api node server/backup.mjs
+ExecStartPost=/usr/bin/find /srv/fuchong/shared/backups -type f -name 'fuchong-*.db' -mtime +14 -delete

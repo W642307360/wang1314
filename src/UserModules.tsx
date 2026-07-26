@@ -5,7 +5,7 @@ import "./Chat.css";
 import { publishUserId, useUserId } from "./userIdentity";
 import { subscribeDataChange } from "./dataEvents";
 import { mediaUrl } from "./mediaUrl";
-const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? "" : "http://127.0.0.1:3001");
+const API_BASE = import.meta.env.PROD ? "" : import.meta.env.VITE_API_BASE || "http://127.0.0.1:3001";
 const EMPTY_ADDRESS_FORM = {
   name: "",
   phone: "",
@@ -49,6 +49,7 @@ export type Order = {
   logisticsPercent?: number;
   logisticsStatus?: string;
   trackingNo?: string;
+  inspectionMedia?: any[];
   petId?: number;
   sellerName?: string;
 };
@@ -57,7 +58,7 @@ const userMediaUrl = (url?: string) => mediaUrl(url) || petImg;
 const ORDER_STATUS_LABEL: Record<string, string> = {
   pending_payment: "待付款",
   pending_confirm: "待确认",
-  pending_ship: "待发货",
+  pending_ship: "已确认 · 待发货",
   packed: "打包中",
   shipped: "已发货",
   in_transit: "运输中",
@@ -731,8 +732,8 @@ export function OrdersPage({
     if (!response.ok) return setActionError(result.message || "售后申请失败");
     setRefreshKey((value) => value + 1);
   };
-  const loadOrders = useCallback(() => {
-    setLoading(true);
+  const loadOrders = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     fetch(`${API_BASE}/api/orders?user_id=${userId}`)
       .then((r) => r.json())
       .then(
@@ -760,6 +761,7 @@ export function OrdersPage({
                 logisticsPercent: deliveryProgress(o.status, Number(o.logistics_percent || 0)),
                 logisticsStatus: o.logistics_status,
                 trackingNo: o.tracking_no,
+                inspectionMedia: Array.isArray(o.inspection_media) ? o.inspection_media : [],
                 petId: Number(pet.id || o.pet_id || 0),
                 sellerName: pet.seller_name || "福宠认证宠物馆",
               };
@@ -767,12 +769,32 @@ export function OrdersPage({
           ),
       )
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => !silent && setLoading(false));
   }, [userId]);
   useEffect(() => {
     loadOrders();
   }, [loadOrders, refreshKey]);
   useEffect(() => subscribeDataChange("orders", loadOrders), [loadOrders]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadOrders(true);
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [loadOrders]);
+  useEffect(() => {
+    if (!detail?.id) return;
+    const timer = window.setInterval(async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const response = await fetch(`${API_BASE}/api/orders/${detail.id}?user_id=${userId}`);
+        const result = await response.json();
+        if (response.ok) setDetail(result);
+      } catch {
+        // 弱网时保留最后一次成功状态，下次轮询继续同步。
+      }
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [detail?.id, userId]);
   const visible = orders.filter((order) => {
     if (tab === "全部") return true;
     if (tab === "待发货") return ["pending_ship", "packed"].includes(order.rawStatus || "");
@@ -820,6 +842,31 @@ export function OrdersPage({
                   percent={o.logisticsPercent}
                   trackingNo={o.trackingNo}
                 />
+              )}
+              {!!o.inspectionMedia?.length && (
+                <button className="order-inspection-preview" type="button" onClick={() => openDetail(o)}>
+                  <span>
+                    <b>25% 发货前宠物实拍</b>
+                    <small>
+                      {o.inspectionMedia.filter((media) => media.media_type === "image").length} 张照片 ·
+                      {" "}{o.inspectionMedia.filter((media) => media.media_type === "video").length} 段视频
+                    </small>
+                  </span>
+                  <div>
+                    {o.inspectionMedia.slice(0, 3).map((media) => (
+                      <i key={media.id}>
+                        <img
+                          loading="lazy"
+                          decoding="async"
+                          src={mediaUrl(media.thumbnail_url || media.poster_url || media.display_url)}
+                          alt={media.media_type === "video" ? "宠物实拍视频封面" : "宠物发货实拍"}
+                        />
+                        {media.media_type === "video" && <em>▶</em>}
+                      </i>
+                    ))}
+                  </div>
+                  <strong>查看照片与视频 ›</strong>
+                </button>
               )}
               <footer>
                 <small>订单号 {o.id}</small>
@@ -869,9 +916,31 @@ export function OrdersPage({
               <dt>订单号</dt><dd>{detail.order_no}</dd>
               <dt>订单状态</dt><dd>{ORDER_STATUS_LABEL[detail.status] || detail.status}</dd>
               <dt>支付状态</dt><dd>{detail.payment_status === "paid" ? "已付款" : "未付款"}</dd>
+              <dt>宠物保险</dt><dd>{detail.pet_insurance_eligible ? "已赠送 · 订单权益已确认" : detail.payment_status === "paid" ? "本单未在24小时礼遇期内确认" : "待管理员确认到账后核定"}</dd>
               <dt>收货地址</dt><dd>{(() => { try { const address = JSON.parse(detail.address_snapshot || "{}"); return `${address.name || ""} ${address.phone || ""} ${address.detail || ""}`; } catch { return "地址信息异常"; } })()}</dd>
               <dt>物流单号</dt><dd>{detail.tracking_no || "待发货"}</dd>
             </dl>
+            {!!detail.items?.length && (
+              <div className="user-order-pet-snapshot">
+                <h3>下单时宠物资料</h3>
+                <small>此处保存下单当时的商品资料，后续商品修改不会覆盖</small>
+                {detail.items.map((item: any) => {
+                  let pet: any = item.pet || {};
+                  if (!item.pet && item.pet_snapshot) {
+                    try { pet = JSON.parse(item.pet_snapshot); } catch { pet = {}; }
+                  }
+                  const identity = pet.identity_profile || {};
+                  return (
+                    <article key={item.id}>
+                      <b>{pet.name || "宠物商品"} · {pet.breed || "品种待核验"}</b>
+                      <p>性别 {pet.gender || identity.gender || "待核验"} · 出生日期 {pet.birth_date || identity.birthDate || "待核验"}</p>
+                      <p>毛色 {pet.color || identity.color || "待补充"} · 体型 {pet.body_type || identity.bodyType || "中型"} · 毛发 {pet.fur_length || identity.furLength || "待补充"}</p>
+                      <p>健康 {pet.health_status || identity.healthStatus || "健康"} · 基础免疫 {pet.vaccine_record || identity.vaccineRecord || "健康（待商家补充详细记录）"}</p>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
             <h3>订单处理记录</h3>
             <div className="logistics-timeline order-status-timeline">
               {detail.status_history?.length ? detail.status_history.map((event: any, index: number) => (
@@ -888,7 +957,17 @@ export function OrdersPage({
             )}
             <div className="logistics-timeline">
               {detail.logistics_events?.length ? detail.logistics_events.map((event: any, index: number) => (
-                <p key={index}><b>{event.progress_percent}%</b><span>{event.note || event.status}<small>{event.created_at}</small></span></p>
+                <article className="logistics-event" key={event.id || index}>
+                  <p><b>{event.progress_percent}%</b><span>{event.note || event.status}<small>{event.created_at}</small></span></p>
+                  {event.media?.length > 0 && <div className="shipment-inspection-media">
+                    <header><b>发货前宠物实拍检验</b><small>由平台管理员确认上传</small></header>
+                    <div>{event.media.map((media: any) => media.processing_status === "ready" ? (
+                      media.media_type === "video"
+                        ? <video key={media.id} controls preload="metadata" poster={mediaUrl(media.poster_url || media.thumbnail_url)} src={mediaUrl(media.display_url)} />
+                        : <a key={media.id} href={mediaUrl(media.display_url)} target="_blank" rel="noreferrer"><img loading="lazy" decoding="async" src={mediaUrl(media.thumbnail_url || media.display_url)} alt="发货前宠物实拍" /></a>
+                    ) : <span className="inspection-processing" key={media.id}>{media.processing_status === "failed" ? "实拍处理失败，管理员将重新上传" : "实拍正在压缩处理…"}</span>)}</div>
+                  </div>}
+                </article>
               )) : <p>暂无物流记录</p>}
             </div>
             {detail.after_sales?.map((item: any) => <p className="after-sale-state" key={item.id}>售后：{item.reason} · {item.status}</p>)}
@@ -912,7 +991,7 @@ export function MessagesPage({
       id: 1,
       sender: "service",
       content: context?.productName
-        ? `您好，我是福宠 AI 客服，正在为您查看「${context.productName}」。`
+        ? `您好，我是福宠在线客服，正在为您查看「${context.productName}」。`
         : "您好，我是福宠专属客服，请问有什么可以帮助您？",
     },
   ]);
@@ -925,7 +1004,7 @@ export function MessagesPage({
     setChat((v) => [...v, { id: Date.now(), sender: "user", content: value }]);
     if (!override) setText("");
     try {
-      await fetch(`${API_BASE}/api/messages`, {
+      const response = await fetch(`${API_BASE}/api/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -939,6 +1018,10 @@ export function MessagesPage({
           source: context?.source || "message_center",
         }),
       });
+      if (!response.ok) throw new Error("send failed");
+      const saved = await response.json();
+      if (saved.session_id) setSessionId(saved.session_id);
+      setHumanPending(["human_pending", "human"].includes(saved.status));
       const r = await fetch(
         `${API_BASE}/api/messages?user_id=${userId}`,
       );
@@ -969,30 +1052,13 @@ export function MessagesPage({
     }
     return sessionId;
   };
-  const handoff = async () => {
-    const sid = sessionId || (await send("需要转人工客服"));
-    if (!sid) return;
-    await fetch(
-      `${API_BASE}/api/customer-service/sessions/${sid}/handoff`,
-      { method: "POST" },
-    ).catch(() => {});
-    setHumanPending(true);
-    setChat((v) => [
-      ...v,
-      {
-        id: Date.now() + 3,
-        sender: "service",
-        content: "已为您转入人工客服队列，后台客服会看到商品和聊天记录。",
-      },
-    ]);
-  };
   return (
     <div className="module-page">
       <Header title={context?.sellerName || "专属客服"} back={back} />
       <div className="chat-status">
         <i />
         {context?.productName || "福宠客服在线"}{" "}
-        <span>{humanPending ? "人工排队中" : "AI 即时回复 · 可转人工"}</span>
+        <span>{humanPending ? "客服经理正在接续" : "在线客服 · 复杂问题自动接续经理"}</span>
       </div>
       <div className="chat-window">
         {chat.map((m) => (
@@ -1009,7 +1075,6 @@ export function MessagesPage({
           onKeyDown={(e) => e.key === "Enter" && send()}
           placeholder="输入咨询内容…"
         />
-        <button onClick={handoff}>转人工</button>
         <button onClick={() => send()}>发送</button>
       </div>
     </div>
