@@ -1404,4 +1404,5 @@ git log -5 --oneline
 - 分支：`main`
 - 远程：`origin/main`
 - 本轮包含：2026-07-19至2026-07-26累计的生产源码、迁移、部署配置、客服语料、媒体、协议、结算和本文。
-- 本文完成后创建快照提交并推送，最终提交哈希以本节后续更新和 `git log -1` 为准。
+- 全量源码快照提交：`a847604`（`feat: snapshot production commerce and service platform`）。
+- 本文记录更新将作为紧随其后的文档提交；远程最终状态以 `git log -2 --oneline` 为准。
