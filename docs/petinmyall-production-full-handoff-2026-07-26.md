@@ -1539,3 +1539,33 @@ git log -5 --oneline
 - 未登录批量删除请求返回401。
 - 伪造 `/uploads/../data/fuchong.db` 和编码目录穿越请求仅命中SPA HTML，不返回SQLite文件。
 - 本地最终验证：17/17测试通过，生产构建通过，TypeScript和oxlint通过。
+
+---
+
+## 26. 2026-07-30 服务器谨慎清理
+
+- 清理前磁盘：59GB总量、23GB已用、34GB可用、使用率41%。
+- 清理后磁盘：59GB总量、13GB已用、44GB可用、使用率23%。
+- 实际释放约10GB。
+- 空间主要来源：
+  - 删除4个过旧且非当前版本的发布目录。
+  - 删除45个无容器引用的历史 `fuchong-api` 镜像标签。
+  - 清理无引用Docker构建缓存。
+  - 删除已完成发布的临时 `source.tar.gz`。
+  - 清理APT下载缓存。
+  - 将systemd历史日志压缩至约128MB。
+- 明确保留：
+  - 当前版本 `20260730-bulk-purge-security-v1`。
+  - 回滚版本 `20260730-product-purge-scale-v1`。
+  - 回滚版本 `20260726-checkout-benefits-v2`。
+  - `/srv/fuchong/shared/data`。
+  - `/srv/fuchong/shared/uploads`。
+  - `/srv/fuchong/shared/backups`。
+  - `/srv/fuchong/shared/cos-venv`。
+  - 当前Docker容器和基础构建镜像。
+- 清理后生产数据库：`integrity_check=ok`、外键异常0。
+- 最新独立备份 `fuchong-2026-07-30T051232-012Z.db`：`integrity_check=ok`、外键异常0。
+- 核心计数保持：584用户、201商品、44订单、5支付、8物流事件、50客服会话、291消息。
+- 商品删除任务与媒体删除队列均为0，本次清理没有删除任何商品或业务媒体。
+- 网站、API、Nginx、Fail2ban、备份定时器和COS同步定时器全部active。
+- 后续发布改为保留当前版本和两个最近回滚版本，避免发布目录再次增长到约8GB。

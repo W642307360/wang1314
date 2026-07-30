@@ -76,7 +76,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now fuchong-cos-sync.timer
 sudo systemctl start fuchong-cos-sync.service || echo 'COS sync will retry from its timer' >&2
 
-echo '[cleanup] Retaining the current and six most recent rollback releases'
+echo '[cleanup] Retaining the current release and two recent rollback releases'
 release_root="$(readlink -f /srv/fuchong/releases)"
 current_release="$(readlink -f /srv/fuchong/current)"
 mapfile -t release_list < <(
@@ -84,7 +84,7 @@ mapfile -t release_list < <(
     sort -nr |
     cut -d' ' -f2-
 )
-mapfile -t retained_releases < <(printf '%s\n' "${release_list[@]:0:7}")
+mapfile -t retained_releases < <(printf '%s\n' "${release_list[@]:0:3}")
 if ! printf '%s\n' "${retained_releases[@]}" | grep -Fxq "$current_release"; then
   retained_releases+=("$current_release")
 fi
