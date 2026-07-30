@@ -840,6 +840,57 @@ function Products({
       setBatching(false);
     }
   };
+  const bulkPurge = async () => {
+    if (!selected.length) return setNotice("请先勾选需要批量删除的商品。");
+    setBatching(true);
+    setNotice("正在进行只读安全预检…");
+    try {
+      const previewResponse = await fetch(`${API_BASE}/api/admin/pets/bulk-purge`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ ids: selected, dry_run: true }),
+      });
+      const preview = await previewResponse.json().catch(() => ({}));
+      if (!previewResponse.ok) throw new Error(preview.message || "批量删除预检失败");
+      const size = Number(preview.local_bytes || 0);
+      const formattedSize = size >= 1024 * 1024
+        ? `${(size / 1024 / 1024).toFixed(2)} MB`
+        : `${(size / 1024).toFixed(1)} KB`;
+      const confirmed = window.confirm(
+        `批量删除安全预检完成：\n\n` +
+        `可彻底删除：${preview.purgeable || 0} 件\n` +
+        `因订单等业务记录仅归档：${preview.archive_only || 0} 件\n` +
+        `预检失败：${preview.failed || 0} 件\n` +
+        `本地媒体候选：${preview.local_files || 0} 个（${formattedSize}）\n\n` +
+        `确认继续吗？共享媒体、订单、售后和物流资料不会被删除。`,
+      );
+      if (!confirmed) {
+        setNotice("已取消，未修改任何商品或文件。");
+        return;
+      }
+      const response = await fetch(`${API_BASE}/api/admin/pets/bulk-purge`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          ids: selected,
+          confirmation: "PURGE_SELECTED_PRODUCTS",
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.message || "批量删除失败");
+      setSelected([]);
+      setNotice(
+        `处理完成：彻底删除 ${result.purged || 0} 件，安全归档 ${result.archived || 0} 件，` +
+        `回收本地媒体 ${result.media_deleted || 0} 个，失败 ${result.failed || 0} 件。`,
+      );
+      announceDataChange("products");
+      reload();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "批量删除失败");
+    } finally {
+      setBatching(false);
+    }
+  };
   const offlineAll = async () => {
     if (!window.confirm("确定一键下架全部宠物商品吗？此操作不会删除商品资料。")) return;
     setBatching(true);
@@ -888,6 +939,9 @@ function Products({
           <button onClick={bulkImport}>批量上传</button>{" "}
           <button disabled={batching || !selected.length} onClick={() => batch("published")}>批量上架</button>{" "}
           <button disabled={batching || !selected.length} onClick={() => batch("offline")}>批量下架</button>{" "}
+          <button className="danger" disabled={batching || !selected.length} onClick={bulkPurge}>
+            {batching ? "安全处理中…" : `批量删除并释放磁盘${selected.length ? `（${selected.length}）` : ""}`}
+          </button>{" "}
           <button className="danger" disabled={batching || !products.length} onClick={offlineAll}>{batching ? "处理中…" : "一键下架全部"}</button>{" "}
           <button onClick={open}>＋ 新增宠物</button>
         </span>
@@ -911,7 +965,24 @@ function Products({
           <tr>
             {["选择", "商品ID", "媒体", "宠物名称", "品种", "售价", "状态", "操作"].map(
               (x) => (
-                <th key={x}>{x}</th>
+                <th key={x}>
+                  {x === "选择" ? (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={visibleProducts.length > 0 && visibleProducts.every((product) => selected.includes(product.id))}
+                        onChange={(event) =>
+                          setSelected(
+                            event.target.checked
+                              ? visibleProducts.map((product) => product.id)
+                              : [],
+                          )
+                        }
+                      />{" "}
+                      全选本页
+                    </label>
+                  ) : x}
+                </th>
               ),
             )}
           </tr>

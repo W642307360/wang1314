@@ -189,6 +189,62 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   const favorites = await request("/api/favorites?user_id=1");
   assert.deepEqual(new Set(favorites.payload.map((item) => item.pet_id)), new Set([pet.payload.id, ...extraPets]));
 
+  const bulkDeletePet = await request("/api/admin/pets", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      name: "批量安全删除接口测试商品",
+      category_id: 1,
+      breed: "布偶猫",
+      price: 1000,
+      stock: 1,
+      status: "offline",
+    }),
+  });
+  assert.equal(bulkDeletePet.response.status, 201);
+  const unauthorizedBulkDelete = await request("/api/admin/pets/bulk-purge", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids: [bulkDeletePet.payload.id], dry_run: true }),
+  });
+  assert.equal(unauthorizedBulkDelete.response.status, 401);
+  const bulkDeletePreview = await request("/api/admin/pets/bulk-purge", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ ids: [bulkDeletePet.payload.id], dry_run: true }),
+  });
+  assert.equal(bulkDeletePreview.response.status, 200);
+  assert.equal(bulkDeletePreview.payload.purgeable, 1);
+  assert.equal(
+    (await request(`/api/admin/pets/${bulkDeletePet.payload.id}`, { headers: adminHeaders })).response.status,
+    200,
+  );
+  const unconfirmedBulkDelete = await request("/api/admin/pets/bulk-purge", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ ids: [bulkDeletePet.payload.id] }),
+  });
+  assert.equal(unconfirmedBulkDelete.response.status, 400);
+  const confirmedBulkDelete = await request("/api/admin/pets/bulk-purge", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      ids: [bulkDeletePet.payload.id],
+      confirmation: "PURGE_SELECTED_PRODUCTS",
+    }),
+  });
+  assert.equal(confirmedBulkDelete.response.status, 200);
+  assert.equal(confirmedBulkDelete.payload.purged, 1);
+  const productsAfterBulkDelete = await request(
+    `/api/admin/pets?with_meta=1&q=${encodeURIComponent("批量安全删除接口测试商品")}`,
+    { headers: adminHeaders },
+  );
+  assert.equal(productsAfterBulkDelete.response.status, 200);
+  assert.equal(
+    productsAfterBulkDelete.payload.items.some((item) => item.id === bulkDeletePet.payload.id),
+    false,
+  );
+
   const cartAdd = await request("/api/cart", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -20,6 +20,7 @@ import { createMiniApi } from "./mini-api.mjs";
 import { createServicePush } from "./service-push.mjs";
 import { matchCustomerServiceCorpus } from "./customer-service-corpus.mjs";
 import { createCustomerServiceState } from "./customer-service-state.mjs";
+import { pruneCacheDirectory } from "./cache-retention.mjs";
 import {
   backfillPetIdentityProfiles,
   upsertPetIdentityProfile,
@@ -27,9 +28,12 @@ import {
 import { enrichPetDetails } from "./pet-details.mjs";
 import {
   drainMediaDeletionQueue,
+  inspectProductPurge,
+  managedUploadPath,
   purgeProduct,
 } from "./product-purge.mjs";
 import { dirname, extname, join } from "node:path";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import {
   randomBytes,
@@ -65,6 +69,41 @@ const feishuImageCacheDir = join(root, "data", "feishu-image-cache");
 mkdirSync(feishuImageCacheDir, { recursive: true });
 const showcaseImageCacheDir = join(root, "data", "showcase-image-cache");
 mkdirSync(showcaseImageCacheDir, { recursive: true });
+const cacheLimit = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+};
+const runtimeMediaCacheLimits = {
+  compatible: cacheLimit("COMPATIBLE_VIDEO_CACHE_MAX_BYTES", 8 * 1024 ** 3),
+  feishuImages: cacheLimit("FEISHU_IMAGE_CACHE_MAX_BYTES", 1024 ** 3),
+  showcase: cacheLimit("SHOWCASE_IMAGE_CACHE_MAX_BYTES", 1024 ** 3),
+};
+let lastRuntimeMediaCachePrune = 0;
+const pruneRuntimeMediaCaches = (force = false) => {
+  if (process.env.NODE_ENV !== "production") return [];
+  const now = Date.now();
+  if (!force && now - lastRuntimeMediaCachePrune < 60_000) return [];
+  lastRuntimeMediaCachePrune = now;
+  return [
+    pruneCacheDirectory(compatibleMediaDir, {
+      maxBytes: runtimeMediaCacheLimits.compatible,
+      maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+      now,
+    }),
+    pruneCacheDirectory(feishuImageCacheDir, {
+      maxBytes: runtimeMediaCacheLimits.feishuImages,
+      maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+      now,
+    }),
+    pruneCacheDirectory(showcaseImageCacheDir, {
+      maxBytes: runtimeMediaCacheLimits.showcase,
+      maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+      now,
+    }),
+  ];
+};
+pruneRuntimeMediaCaches(true);
+setInterval(() => pruneRuntimeMediaCaches(true), 10 * 60 * 1000).unref();
 const dbPath = process.env.FUCHONG_TEST_DB_PATH || process.env.DB_PATH || join(root, "data", "fuchong.db");
 const backupDir = join(root, "backups");
 mkdirSync(backupDir, { recursive: true });
@@ -228,8 +267,15 @@ const applyRequestSecurity = (req, res) => {
   return true;
 };
 const requestBuckets = new Map();
-const clientAddress = (req) =>
-  String(req.headers["cf-connecting-ip"] || req.socket.remoteAddress || "unknown").slice(0, 80);
+const clientAddress = (req) => {
+  const forwarded = String(
+    req.headers["cf-connecting-ip"] ||
+    req.headers["x-real-ip"] ||
+    req.headers["x-forwarded-for"] ||
+    "",
+  ).split(",")[0].trim();
+  return (isIP(forwarded) ? forwarded : String(req.socket.remoteAddress || "unknown")).slice(0, 80);
+};
 const allowRequest = (req, scope, limit, windowMs) => {
   const now = Date.now();
   const key = `${scope}:${clientAddress(req)}`;
@@ -1088,7 +1134,10 @@ const ensureCompatibleVideo = async (mediaUrl, accessToken) => {
     });
     if (existsSync(source)) unlinkSync(source);
     return target;
-  })().finally(() => compatibleVideoTasks.delete(key));
+  })().finally(() => {
+    compatibleVideoTasks.delete(key);
+    pruneRuntimeMediaCaches();
+  });
   compatibleVideoTasks.set(key, task);
   return task;
 };
@@ -1225,7 +1274,10 @@ const ensureFeishuImage = async (mediaUrl, variant, config) => {
       );
     });
     return { file: thumb, contentType: "image/webp" };
-  }).finally(() => feishuImageTasks.delete(taskKey));
+  }).finally(() => {
+    feishuImageTasks.delete(taskKey);
+    pruneRuntimeMediaCaches();
+  });
   feishuImageTasks.set(taskKey, task);
   return task;
 };
@@ -1266,7 +1318,10 @@ const ensureShowcaseImage = async (petId) => {
       throw new Error("商品主图暂不支持本地抠图");
     }
     return generateShowcaseThumbnail(source, target);
-  }).finally(() => showcaseImageTasks.delete(identity));
+  }).finally(() => {
+    showcaseImageTasks.delete(identity);
+    pruneRuntimeMediaCaches();
+  });
   showcaseImageTasks.set(identity, task);
   return task;
 };
@@ -1916,6 +1971,7 @@ const server = createServer(async (req, res) => {
     const method = req.method;
     const rateRule =
       path === "/api/admin/login" ? ["admin-login", 8, 15 * 60 * 1000] :
+      path === "/api/admin/pets/bulk-purge" ? ["admin-bulk-purge", 6, 10 * 60 * 1000] :
       path === "/api/merchant/login" ? ["merchant-login", 12, 15 * 60 * 1000] :
       path === "/api/merchant/applications" && method === "POST" ? ["merchant-application", 5, 60 * 60 * 1000] :
       path.startsWith("/api/media/product-showcase/") ? ["showcase-media", 600, 5 * 60 * 1000] :
@@ -1976,7 +2032,10 @@ const server = createServer(async (req, res) => {
       }
     }
     if (path.startsWith("/uploads/") && method === "GET") {
-      const file = join(root, "uploads", path.slice(9));
+      const managed = managedUploadPath(path, join(root, "uploads"));
+      if (!managed)
+        return json(res, 400, { message: "文件路径不合法" });
+      const file = managed.absolutePath;
       if (!existsSync(file)) return json(res, 404, { message: "文件不存在" });
       const contentTypes = {
         ".mp4": "video/mp4",
@@ -3107,6 +3166,79 @@ const server = createServer(async (req, res) => {
         db.exec("ROLLBACK");
         throw error;
       }
+    }
+    if (path === "/api/admin/pets/bulk-purge" && method === "POST") {
+      if (!String(req.headers["content-type"] || "").toLowerCase().startsWith("application/json"))
+        return json(res, 415, { message: "批量删除仅接受 JSON 请求" });
+      const d = await body(req);
+      const ids = Array.isArray(d.ids)
+        ? [...new Set(d.ids.map(Number).filter((id) => Number.isInteger(id) && id > 0))]
+        : [];
+      if (!ids.length)
+        return json(res, 400, { message: "请先勾选需要删除的商品" });
+      if (ids.length > 100)
+        return json(res, 400, { message: "为保护数据库，单次最多处理100件商品" });
+      const uploadsRoot = join(root, "uploads");
+      if (d.dry_run === true) {
+        const items = [];
+        for (const id of ids) {
+          try {
+            items.push(inspectProductPurge(db, id, { uploadsRoot }));
+          } catch (error) {
+            items.push({
+              id,
+              name: `商品 ${id}`,
+              action: "error",
+              error: error instanceof Error ? error.message : "预检失败",
+            });
+          }
+        }
+        return json(res, 200, {
+          ok: true,
+          dry_run: true,
+          selected: ids.length,
+          purgeable: items.filter((item) => item.action === "purge").length,
+          archive_only: items.filter((item) => item.action === "archive").length,
+          failed: items.filter((item) => item.action === "error").length,
+          local_files: items.reduce((sum, item) => sum + Number(item.local_files || 0), 0),
+          local_bytes: items.reduce((sum, item) => sum + Number(item.local_bytes || 0), 0),
+          items,
+        });
+      }
+      if (d.confirmation !== "PURGE_SELECTED_PRODUCTS")
+        return json(res, 400, { message: "请先完成批量删除预检和明确确认" });
+      const results = [];
+      for (const id of ids) {
+        try {
+          const result = purgeProduct(db, id, {
+            requestedBy: Number(admin.sub),
+            uploadsRoot,
+          });
+          results.push({ id, ...result });
+        } catch (error) {
+          results.push({
+            id,
+            ok: false,
+            error: error instanceof Error ? error.message : "删除失败",
+          });
+        }
+      }
+      const summary = {
+        selected: ids.length,
+        purged: results.filter((item) => item.purged).length,
+        archived: results.filter((item) => item.archived).length,
+        failed: results.filter((item) => !item.ok).length,
+        media_deleted: results.reduce(
+          (sum, item) => sum + Number(item.media?.deleted || 0),
+          0,
+        ),
+        media_retained: results.reduce(
+          (sum, item) => sum + Number(item.media?.retained || 0),
+          0,
+        ),
+      };
+      logAdmin(admin, req, "bulk_purge", "pets", ids.join(","), summary);
+      return json(res, 200, { ok: summary.failed === 0, ...summary, results });
     }
     if (path === "/api/admin/pets" && method === "POST") {
       const d = enrichPetDetails(await body(req));

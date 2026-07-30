@@ -105,6 +105,67 @@ export const collectProductMedia = (db, petId) => {
   return [...candidates];
 };
 
+const analyzeProductPurge = (db, petId, uploadsRoot) => {
+  const id = Number(petId);
+  if (!Number.isInteger(id) || id <= 0)
+    throw Object.assign(new Error("商品ID不合法"), { statusCode: 400 });
+  const pet = db.prepare("SELECT * FROM pets WHERE id=?").get(id);
+  if (!pet)
+    throw Object.assign(new Error("商品不存在"), { statusCode: 404 });
+  const references = petForeignKeyReferences(db, id);
+  const blockers = references.filter(
+    (reference) =>
+      !["CASCADE", "SET NULL"].includes(reference.onDelete) &&
+      !PURGEABLE_REFERENCES.has(reference.table),
+  );
+  const media = collectProductMedia(db, id);
+  const managedFiles = new Map();
+  for (const sourceUrl of media) {
+    const managed = managedUploadPath(sourceUrl, uploadsRoot);
+    if (!managed || managedFiles.has(managed.normalizedPath)) continue;
+    let bytes = 0;
+    let exists = false;
+    try {
+      if (existsSync(managed.absolutePath)) {
+        const stat = lstatSync(managed.absolutePath);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          exists = true;
+          bytes = Number(stat.size || 0);
+        }
+      }
+    } catch {}
+    managedFiles.set(managed.normalizedPath, {
+      path: managed.normalizedPath,
+      exists,
+      bytes,
+    });
+  }
+  return {
+    id,
+    pet,
+    references,
+    blockers,
+    media,
+    managedFiles: [...managedFiles.values()],
+  };
+};
+
+export const inspectProductPurge = (db, petId, { uploadsRoot } = {}) => {
+  const analysis = analyzeProductPurge(db, petId, uploadsRoot);
+  return {
+    id: analysis.id,
+    name: String(analysis.pet.name || `商品 ${analysis.id}`),
+    action: analysis.blockers.length ? "archive" : "purge",
+    blockers: analysis.blockers,
+    media_candidates: analysis.media.length,
+    local_files: analysis.managedFiles.filter((item) => item.exists).length,
+    local_bytes: analysis.managedFiles.reduce(
+      (total, item) => total + (item.exists ? item.bytes : 0),
+      0,
+    ),
+  };
+};
+
 export const managedUploadPath = (value, uploadsRoot) => {
   const raw = String(value || "").trim();
   if (!raw) return null;
@@ -228,18 +289,8 @@ export const purgeProduct = (db, petId, {
   requestedBy = null,
   uploadsRoot,
 } = {}) => {
-  const id = Number(petId);
-  if (!Number.isInteger(id) || id <= 0)
-    throw Object.assign(new Error("商品ID不合法"), { statusCode: 400 });
-  const pet = db.prepare("SELECT * FROM pets WHERE id=?").get(id);
-  if (!pet) throw Object.assign(new Error("商品不存在"), { statusCode: 404 });
-
-  const references = petForeignKeyReferences(db, id);
-  const blockers = references.filter(
-    (reference) =>
-      !["CASCADE", "SET NULL"].includes(reference.onDelete) &&
-      !PURGEABLE_REFERENCES.has(reference.table),
-  );
+  const analysis = analyzeProductPurge(db, petId, uploadsRoot);
+  const { id, pet, references, blockers, media } = analysis;
   if (blockers.length) {
     db.exec("BEGIN IMMEDIATE");
     try {
@@ -270,7 +321,6 @@ export const purgeProduct = (db, petId, {
     }
   }
 
-  const media = collectProductMedia(db, id);
   let jobId;
   db.exec("BEGIN IMMEDIATE");
   try {

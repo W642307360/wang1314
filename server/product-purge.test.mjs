@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  inspectProductPurge,
   managedUploadPath,
   purgeProduct,
 } from "./product-purge.mjs";
@@ -75,6 +76,39 @@ const createDatabase = (path) => {
   db.prepare("INSERT INTO admins(id,username) VALUES(1,'admin')").run();
   return db;
 };
+
+test("批量删除预检只读返回硬删除、归档和本地空间，不修改商品数据", () => {
+  const temp = mkdtempSync(join(tmpdir(), "fuchong-purge-preview-"));
+  const uploads = join(temp, "uploads");
+  mkdirSync(uploads, { recursive: true });
+  writeFileSync(join(uploads, "preview.webp"), Buffer.alloc(4096, 1));
+  const db = createDatabase(join(temp, "preview.db"));
+  try {
+    db.prepare(
+      "INSERT INTO pets(id,name,status,thumbnail_url) VALUES(1,'可删除商品','offline','/uploads/preview.webp')",
+    ).run();
+    db.prepare(
+      "INSERT INTO pets(id,name,status,thumbnail_url) VALUES(2,'有订单商品','published','/uploads/preview.webp')",
+    ).run();
+    db.prepare("INSERT INTO orders(id,order_no) VALUES(1,'ORDER-PREVIEW')").run();
+    db.prepare(
+      "INSERT INTO order_items(order_id,pet_id,pet_snapshot) VALUES(1,2,'{}')",
+    ).run();
+
+    const purgeable = inspectProductPurge(db, 1, { uploadsRoot: uploads });
+    const protectedProduct = inspectProductPurge(db, 2, { uploadsRoot: uploads });
+    assert.equal(purgeable.action, "purge");
+    assert.equal(purgeable.local_files, 1);
+    assert.equal(purgeable.local_bytes, 4096);
+    assert.equal(protectedProduct.action, "archive");
+    assert.ok(protectedProduct.blockers.some((item) => item.table === "order_items"));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pets").get().n, 2);
+    assert.equal(existsSync(join(uploads, "preview.webp")), true);
+  } finally {
+    db.close();
+    rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
 
 test("商品硬删除仅回收无引用本地文件，共享媒体和外部媒体保持不变", () => {
   const temp = mkdtempSync(join(tmpdir(), "fuchong-purge-"));
