@@ -965,6 +965,38 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   });
   assert.equal(invalidUpload.response.status, 400);
 
+  const pagedProducts = await request(
+    "/api/admin/pets?with_meta=1&page=2&pageSize=25&q=白底轮廓压力测试",
+    { headers: adminHeaders },
+  );
+  assert.equal(pagedProducts.response.status, 200);
+  assert.equal(Array.isArray(pagedProducts.payload.items), true);
+  assert.ok(pagedProducts.payload.items.length <= 25);
+  assert.ok(pagedProducts.payload.total > 0);
+  assert.equal(pagedProducts.payload.page, 2);
+  assert.equal(pagedProducts.payload.page_size, 25);
+
+  const purgeCandidate = await request("/api/admin/pets", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      name: "无业务引用安全删除测试",
+      category_id: 1,
+      breed: "测试品种",
+      price: 1000,
+      stock: 1,
+      status: "offline",
+    }),
+  });
+  assert.equal(purgeCandidate.response.status, 201);
+  const purged = await request(
+    `/api/admin/pets/${purgeCandidate.payload.id}?mode=purge`,
+    { method: "DELETE", headers: adminHeaders },
+  );
+  assert.equal(purged.response.status, 200);
+  assert.equal(purged.payload.purged, true);
+  assert.equal(purged.payload.archived, false);
+
   const disableUser = await request("/api/admin/users/1", {
     method: "PATCH",
     headers: adminHeaders,

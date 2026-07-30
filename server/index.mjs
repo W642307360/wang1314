@@ -25,6 +25,10 @@ import {
   upsertPetIdentityProfile,
 } from "./pet-identity.mjs";
 import { enrichPetDetails } from "./pet-details.mjs";
+import {
+  drainMediaDeletionQueue,
+  purgeProduct,
+} from "./product-purge.mjs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -100,6 +104,13 @@ const migrate = () => {
   }
 };
 migrate();
+const startupMediaCleanup = drainMediaDeletionQueue(db, join(root, "uploads"), {
+  limit: 500,
+});
+if (startupMediaCleanup.processed)
+  console.log(
+    `本地媒体回收队列恢复完成: ${startupMediaCleanup.deleted} 删除，${startupMediaCleanup.retained} 保留，${startupMediaCleanup.failed} 失败`,
+  );
 const identityBackfill = backfillPetIdentityProfiles(db);
 if (identityBackfill.created)
   console.log(`宠物身份证档案补全完成: ${identityBackfill.created}/${identityBackfill.total}`);
@@ -2998,36 +3009,61 @@ const server = createServer(async (req, res) => {
       const search = String(url.searchParams.get("q") || "").trim();
       const status = String(url.searchParams.get("status") || "").trim();
       const query = `%${search}%`;
-      return json(
-        res,
-        200,
-        rows(
-          `SELECT p.*,pp.status AS product_status,
+      const productStatuses = new Set(["available", "offline", "sold"]);
+      const statusClause = !status
+        ? "1=1"
+        : productStatuses.has(status)
+          ? `COALESCE(pp.status,
+              CASE p.status WHEN 'published' THEN 'available' WHEN 'sold' THEN 'sold' ELSE 'offline' END)=?`
+          : "p.status=?";
+      const filterSql = `
+        p.name NOT LIKE '%验收%'
+        AND p.name NOT LIKE 'P0%'
+        AND (p.external_id IS NULL OR p.external_id NOT LIKE 'mock-%')
+        AND ${statusClause}
+        AND (?='' OR CAST(p.id AS TEXT)=? OR p.name LIKE ? OR p.breed LIKE ?
+             OR COALESCE(p.seller_name,'') LIKE ? OR COALESCE(p.business_id,'') LIKE ?
+             OR COALESCE(p.external_id,'') LIKE ?)`;
+      const filterArgs = [
+        ...(status ? [status] : []),
+        search,
+        search,
+        query,
+        query,
+        query,
+        query,
+        query,
+      ];
+      const items = rows(
+        `SELECT p.*,pp.status AS product_status,
                   COALESCE((SELECT SUM(i.total_stock) FROM inventory i WHERE i.pet_id=p.id),0) AS total_stock,
                   COALESCE((SELECT SUM(i.available_stock) FROM inventory i WHERE i.pet_id=p.id),0) AS available_stock,
                   COALESCE(p.thumbnail_url,(SELECT COALESCE(pi.thumbnail_url,pi.webp_url,pi.url) FROM pet_images pi WHERE pi.pet_id=p.id ORDER BY pi.sort_order,pi.id LIMIT 1)) AS image,
                   (SELECT COUNT(*) FROM pet_images pi WHERE pi.pet_id=p.id) AS image_count,
                   (SELECT COUNT(*) FROM pet_videos pv WHERE pv.pet_id=p.id) AS video_count
            FROM pets p LEFT JOIN pet_products pp ON pp.pet_id=p.id
-           WHERE p.name NOT LIKE '%验收%'
-             AND p.name NOT LIKE 'P0%'
-             AND (p.external_id IS NULL OR p.external_id NOT LIKE 'mock-%')
-             AND (?='' OR p.status=?)
-             AND (?='' OR CAST(p.id AS TEXT)=? OR p.name LIKE ? OR p.breed LIKE ? OR COALESCE(p.seller_name,'') LIKE ? OR COALESCE(p.business_id,'') LIKE ? OR COALESCE(p.external_id,'') LIKE ?)
+           WHERE ${filterSql}
            ORDER BY p.updated_at DESC,p.id DESC LIMIT ? OFFSET ?`,
-          status,
-          status,
-          search,
-          search,
-          query,
-          query,
-          query,
-          query,
-          query,
-          paging.pageSize,
-          paging.offset,
-        ),
+        ...filterArgs,
+        paging.pageSize,
+        paging.offset,
       );
+      if (url.searchParams.get("with_meta") !== "1")
+        return json(res, 200, items);
+      const total = Number(
+        db.prepare(
+          `SELECT COUNT(*) AS count
+           FROM pets p LEFT JOIN pet_products pp ON pp.pet_id=p.id
+           WHERE ${filterSql}`,
+        ).get(...filterArgs)?.count || 0,
+      );
+      return json(res, 200, {
+        items,
+        total,
+        page: paging.page,
+        page_size: paging.pageSize,
+        pages: Math.max(1, Math.ceil(total / paging.pageSize)),
+      });
     }
     if (path === "/api/admin/pets/bulk-status" && method === "PATCH") {
       const d = await body(req);
@@ -3127,6 +3163,25 @@ const server = createServer(async (req, res) => {
     if (petMatch && method === "GET")
       return json(res, 200, petDetail(Number(petMatch[1])));
     if (petMatch && method === "DELETE") {
+      if (url.searchParams.get("mode") === "purge") {
+        const result = purgeProduct(db, Number(petMatch[1]), {
+          requestedBy: Number(admin.sub),
+          uploadsRoot: join(root, "uploads"),
+        });
+        logAdmin(
+          admin,
+          req,
+          result.purged ? "purge" : "archive_protected",
+          "pets",
+          Number(petMatch[1]),
+          {
+            job_id: result.job_id,
+            blockers: result.blockers,
+            media: result.media,
+          },
+        );
+        return json(res, 200, result);
+      }
       db.prepare(
         "UPDATE pets SET status='deleted',updated_at=CURRENT_TIMESTAMP WHERE id=?",
       ).run(Number(petMatch[1]));

@@ -167,6 +167,19 @@ function AdminPanel({ token, logout, updateToken }: { token: string; logout: () 
   const [products, setProducts] = useState<any[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
+  const [productQueryInput, setProductQueryInput] = useState("");
+  const [productQuery, setProductQuery] = useState("");
+  const [productStatus, setProductStatus] = useState("all");
+  const [productPage, setProductPage] = useState(1);
+  const [productTotal, setProductTotal] = useState(0);
+  const productPageSize = 100;
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setProductQuery(productQueryInput.trim());
+      setProductPage(1);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [productQueryInput]);
   const changeAdminPassword = async () => {
     const currentPassword = prompt("请输入当前管理员密码");
     if (!currentPassword) return;
@@ -185,17 +198,25 @@ function AdminPanel({ token, logout, updateToken }: { token: string; logout: () 
   const loadProducts = useCallback(() => {
     setProductsLoading(true);
     setProductsError("");
-    fetch(`${API_BASE}/api/admin/pets?pageSize=500`, {
+    const params = new URLSearchParams({
+      page: String(productPage),
+      pageSize: String(productPageSize),
+      with_meta: "1",
+    });
+    if (productQuery.trim()) params.set("q", productQuery.trim());
+    if (productStatus !== "all") params.set("status", productStatus);
+    fetch(`${API_BASE}/api/admin/pets?${params}`, {
       headers: { authorization: `Bearer ${token}` },
     })
       .then(async (r) => {
         const data = await r.json();
         if (!r.ok) throw new Error(data.message || "商品加载失败");
-        setProducts(Array.isArray(data) ? data : []);
+        setProducts(Array.isArray(data?.items) ? data.items : []);
+        setProductTotal(Number(data?.total || 0));
       })
       .catch((e) => setProductsError(e instanceof Error ? e.message : "商品加载失败"))
       .finally(() => setProductsLoading(false));
-  }, [token]);
+  }, [productPage, productQuery, productStatus, token]);
   useEffect(() => {
     loadProducts();
   }, [loadProducts]);
@@ -406,17 +427,33 @@ function AdminPanel({ token, logout, updateToken }: { token: string; logout: () 
               edit={openEditProduct}
               token={token}
               reload={loadProducts}
+              query={productQueryInput}
+              setQuery={setProductQueryInput}
+              statusFilter={productStatus}
+              setStatusFilter={(value) => {
+                setProductStatus(value);
+                setProductPage(1);
+              }}
+              page={productPage}
+              pages={Math.max(1, Math.ceil(productTotal / productPageSize))}
+              total={productTotal}
+              setPage={setProductPage}
               update={(id, patch) =>
                 setProducts((v) =>
                   v.map((p) => (p.id === id ? { ...p, ...patch } : p)),
                 )
               }
               remove={async (id) => {
-                await fetch(`${API_BASE}/api/admin/pets/${id}`, {
+                const response = await fetch(`${API_BASE}/api/admin/pets/${id}?mode=purge`, {
                   method: "DELETE",
                   headers: { authorization: `Bearer ${token}` },
                 });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(result.message || "商品删除失败");
                 setProducts((v) => v.filter((p) => p.id !== id));
+                setProductTotal((value) => Math.max(0, value - 1));
+                announceDataChange("products");
+                return result;
               }}
             />
         )}{" "}
@@ -689,20 +726,34 @@ function Products({
   update,
   token,
   reload,
+  query,
+  setQuery,
+  statusFilter,
+  setStatusFilter,
+  page,
+  pages,
+  total,
+  setPage,
 }: {
   products: any[];
   open: () => void;
   edit: (product: any) => void;
-  remove: (id: number) => void;
+  remove: (id: number) => Promise<any>;
   update: (id: number, patch: any) => void;
   token: string;
   reload: () => void;
+  query: string;
+  setQuery: (value: string) => void;
+  statusFilter: string;
+  setStatusFilter: (value: string) => void;
+  page: number;
+  pages: number;
+  total: number;
+  setPage: (value: number) => void;
 }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [batching, setBatching] = useState(false);
   const [notice, setNotice] = useState("");
-  const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
   const headers = {
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
@@ -745,6 +796,26 @@ function Products({
         headers,
         body: JSON.stringify({ url }),
       });
+  };
+  const purge = async (product: any) => {
+    if (!window.confirm(
+      `确定删除“${product.name}”吗？\n\n没有订单等业务引用时，将删除商品数据库记录，并仅回收没有被其他数据引用的本地媒体文件；存在历史订单时将自动改为安全归档，绝不会破坏订单和售后数据。`,
+    )) return;
+    setBatching(true);
+    setNotice("");
+    try {
+      const result = await remove(product.id);
+      setSelected((value) => value.filter((id) => id !== product.id));
+      setNotice(
+        result.purged
+          ? `商品已安全删除，本地媒体回收 ${result.media?.deleted || 0} 个，保留共享或外部媒体 ${result.media?.retained || 0} 个。`
+          : result.message || "商品存在业务记录，已安全下架归档。",
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "商品删除失败");
+    } finally {
+      setBatching(false);
+    }
   };
   const batch = async (status: string) => {
     if (!selected.length) return setNotice("请先勾选需要批量处理的商品。");
@@ -808,16 +879,7 @@ function Products({
       alert("JSON 格式错误");
     }
   };
-  const visibleProducts = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return products.filter((product) => {
-      const productStatus = product.product_status || (product.status === "published" ? "available" : "offline");
-      if (statusFilter !== "all" && productStatus !== statusFilter) return false;
-      if (!needle) return true;
-      return [product.id, product.name, product.breed, product.seller_name, product.business_id, product.external_id]
-        .some((value) => String(value || "").toLowerCase().includes(needle));
-    });
-  }, [products, query, statusFilter]);
+  const visibleProducts = products;
   return (
     <section className="admin-table">
       <div>
@@ -838,7 +900,9 @@ function Products({
           <option value="offline">已下架</option>
           <option value="sold">已售出</option>
         </select>
-        <span>找到 {visibleProducts.length} / {products.length} 个商品</span>
+        <span>共 {total} 件 · 当前显示 {visibleProducts.length} 件 · 第 {page}/{pages} 页</span>
+        <button disabled={page <= 1} onClick={() => setPage(Math.max(1, page - 1))}>上一页</button>
+        <button disabled={page >= pages} onClick={() => setPage(Math.min(pages, page + 1))}>下一页</button>
         <button onClick={reload}>刷新商品</button>
       </div>
       {notice && <p className="feishu-notice">{notice}</p>}
@@ -895,9 +959,10 @@ function Products({
                 <button onClick={() => media(p, "images")}>图片</button>
                 <button onClick={() => media(p, "videos")}>视频</button>
                 <button
-                  onClick={() => confirm("确定删除该商品吗？") && remove(p.id)}
+                  disabled={batching}
+                  onClick={() => purge(p)}
                 >
-                  删除
+                  删除并释放空间
                 </button>
               </td>
             </tr>

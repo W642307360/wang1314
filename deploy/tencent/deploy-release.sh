@@ -76,6 +76,35 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now fuchong-cos-sync.timer
 sudo systemctl start fuchong-cos-sync.service || echo 'COS sync will retry from its timer' >&2
 
+echo '[cleanup] Retaining the current and six most recent rollback releases'
+release_root="$(readlink -f /srv/fuchong/releases)"
+current_release="$(readlink -f /srv/fuchong/current)"
+mapfile -t release_list < <(
+  find "$release_root" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' |
+    sort -nr |
+    cut -d' ' -f2-
+)
+mapfile -t retained_releases < <(printf '%s\n' "${release_list[@]:0:7}")
+if ! printf '%s\n' "${retained_releases[@]}" | grep -Fxq "$current_release"; then
+  retained_releases+=("$current_release")
+fi
+for old_release in "${release_list[@]}"; do
+  if printf '%s\n' "${retained_releases[@]}" | grep -Fxq "$old_release"; then
+    continue
+  fi
+  resolved_release="$(readlink -f "$old_release")"
+  case "$resolved_release" in
+    "$release_root"/*) ;;
+    *) echo "Skipping unsafe release path: $resolved_release" >&2; continue ;;
+  esac
+  if [[ "$resolved_release" == "$current_release" ]]; then
+    continue
+  fi
+  sudo rm -rf -- "$resolved_release"
+done
+sudo docker builder prune -f >/dev/null || true
+sudo docker image prune -f >/dev/null || true
+
 switched=0
 trap - ERR
 curl -fsS https://petinmyall.me/api/health
