@@ -4692,8 +4692,20 @@ const server = createServer(async (req, res) => {
             d.detail,
             d.is_default ? 1 : 0,
           );
+        let phoneSynced = false;
+        if (d.sync_user_phone) {
+          const account = db.prepare("SELECT phone FROM users WHERE id=?").get(userId);
+          const duplicate = db.prepare("SELECT id FROM users WHERE phone=? AND id<>?").get(String(d.phone), userId);
+          if (!String(account?.phone || "").trim() && !duplicate) {
+            db.prepare("UPDATE users SET phone=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(String(d.phone), userId);
+            phoneSynced = true;
+          }
+        }
         db.exec("COMMIT");
-        return json(res, 201, { id: r.lastInsertRowid });
+        return json(res, 201, {
+          ...db.prepare("SELECT * FROM addresses WHERE id=?").get(r.lastInsertRowid),
+          phone_synced: phoneSynced,
+        });
       } catch (e) {
         db.exec("ROLLBACK");
         throw e;
@@ -4731,8 +4743,20 @@ const server = createServer(async (req, res) => {
           id,
           userId,
         );
+        let phoneSynced = false;
+        if (d.sync_user_phone) {
+          const account = db.prepare("SELECT phone FROM users WHERE id=?").get(userId);
+          const duplicate = db.prepare("SELECT id FROM users WHERE phone=? AND id<>?").get(phone, userId);
+          if (!String(account?.phone || "").trim() && !duplicate) {
+            db.prepare("UPDATE users SET phone=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(phone, userId);
+            phoneSynced = true;
+          }
+        }
         db.exec("COMMIT");
-        return json(res, 200, db.prepare("SELECT * FROM addresses WHERE id=?").get(id));
+        return json(res, 200, {
+          ...db.prepare("SELECT * FROM addresses WHERE id=?").get(id),
+          phone_synced: phoneSynced,
+        });
       } catch (e) {
         db.exec("ROLLBACK");
         throw e;

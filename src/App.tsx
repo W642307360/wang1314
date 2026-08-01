@@ -47,6 +47,7 @@ import { readCart, writeCart, type StoredCartPet } from "./cartStore";
 import { publishUserId, useUserId } from "./userIdentity";
 import { mediaUrl, mediaVideoUrl } from "./mediaUrl";
 import { BrandIntro } from "./BrandIntro";
+import { WelcomeOffer } from "./WelcomeOffer";
 import { soundForPet } from "./petSounds";
 import { generatedPetName } from "./petNaming";
 import {
@@ -1604,6 +1605,9 @@ function Detail({
   const [sellerReportMessage, setSellerReportMessage] = useState("");
   const [selectedAddress, setSelectedAddress] = useState<any>(null);
   const [addressLoading, setAddressLoading] = useState(false);
+  const [addressEditorOpen, setAddressEditorOpen] = useState(false);
+  const [addressSaving, setAddressSaving] = useState(false);
+  const [addressDraft, setAddressDraft] = useState({ name: "", phone: "", region: "", detail: "" });
   const [orderQuote, setOrderQuote] = useState<any>(null);
   const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [orderError, setOrderError] = useState("");
@@ -1697,16 +1701,72 @@ function Detail({
   useEffect(() => {
     if (!buyOpen) return;
     setAddressLoading(true);
+    setAddressEditorOpen(false);
     setOrderError("");
     fetch(`${API_BASE}/api/addresses?user_id=${userId}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("地址加载失败"))))
       .then((items) => {
         const list = Array.isArray(items) ? items : [];
-        setSelectedAddress(list.find((item) => item.is_default) || list[0] || null);
+        const address = list.find((item) => item.is_default) || list[0] || null;
+        setSelectedAddress(address);
+        setAddressDraft(address ? {
+          name: String(address.name || ""),
+          phone: String(address.phone || ""),
+          region: [address.province, address.city, address.district].filter(Boolean).join(" "),
+          detail: String(address.detail || ""),
+        } : { name: "", phone: "", region: "", detail: "" });
       })
       .catch(() => setOrderError("收货地址加载失败，请稍后重试"))
       .finally(() => setAddressLoading(false));
   }, [buyOpen, userId]);
+  const saveCheckoutAddress = async () => {
+    const name = addressDraft.name.trim();
+    const phone = addressDraft.phone.trim();
+    const region = addressDraft.region.trim();
+    const detail = addressDraft.detail.trim();
+    if (!name) return setOrderError("请填写收货人姓名");
+    if (!/^1\d{10}$/.test(phone)) return setOrderError("请填写正确的11位手机号");
+    if (!region || !detail) return setOrderError("请填写所在地区和详细配送地址");
+    setAddressSaving(true);
+    setOrderError("");
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/addresses${selectedAddress?.id ? `/${selectedAddress.id}` : ""}`,
+        {
+          method: selectedAddress?.id ? "PATCH" : "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            user_id: userId,
+            name,
+            phone,
+            province: region,
+            city: "",
+            district: "",
+            detail,
+            is_default: true,
+            sync_user_phone: true,
+          }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "地址保存失败");
+      setSelectedAddress({
+        id: Number(result.id || selectedAddress?.id),
+        name,
+        phone,
+        province: region,
+        city: "",
+        district: "",
+        detail,
+        is_default: 1,
+      });
+      setAddressEditorOpen(false);
+    } catch (error) {
+      setOrderError(error instanceof Error ? error.message : "地址保存失败，请重试");
+    } finally {
+      setAddressSaving(false);
+    }
+  };
   const displayName = generatedPetName(detailPet, breed.name);
   const displayGender = String(detailPet?.gender || "").trim().toLowerCase();
   const isMalePet = ["公", "male", "男", "弟弟"].includes(displayGender);
@@ -1862,7 +1922,8 @@ function Detail({
       return;
     }
     if (!selectedAddress) {
-      setOrderError("请先到“我的－收货地址”新增地址");
+      setAddressEditorOpen(true);
+      setOrderError("请先填写配送地址");
       return;
     }
     setOrderSubmitting(true);
@@ -2558,16 +2619,64 @@ function Detail({
               </p>
               <strong>¥{displayPrice}</strong>
             </div>
-            <div className="buy-line">
-              <span>配送地址</span>
-              <b>
-                {addressLoading
-                  ? "地址加载中…"
-                  : selectedAddress
-                    ? `${selectedAddress.name} · ${selectedAddress.phone} · ${selectedAddress.detail}`
-                    : "暂无地址，请先新增"}
-              </b>
-            </div>
+            <section className={`checkout-address${selectedAddress ? " saved" : " required"}`}>
+              <button
+                type="button"
+                className="checkout-address-summary"
+                disabled={addressLoading}
+                onClick={() => setAddressEditorOpen((current) => !current)}
+              >
+                <span><i>⌖</i><b>配送地址</b></span>
+                <strong>
+                  {addressLoading
+                    ? "加载中…"
+                    : selectedAddress
+                      ? `${selectedAddress.name} · ${selectedAddress.phone} · ${selectedAddress.detail}`
+                      : "需填写"}
+                </strong>
+                <em>{addressEditorOpen ? "收起" : selectedAddress ? "修改" : "填写地址"}</em>
+              </button>
+              {addressEditorOpen && (
+                <div className="checkout-address-form">
+                  <div>
+                    <input
+                      value={addressDraft.name}
+                      onChange={(event) => setAddressDraft((current) => ({ ...current, name: event.target.value }))}
+                      autoComplete="name"
+                      inputMode="text"
+                      placeholder="收货人姓名"
+                      maxLength={30}
+                    />
+                    <input
+                      value={addressDraft.phone}
+                      onChange={(event) => setAddressDraft((current) => ({ ...current, phone: event.target.value.replace(/\D/g, "").slice(0, 11) }))}
+                      autoComplete="tel"
+                      inputMode="tel"
+                      placeholder="手机号"
+                      maxLength={11}
+                    />
+                  </div>
+                  <input
+                    value={addressDraft.region}
+                    onChange={(event) => setAddressDraft((current) => ({ ...current, region: event.target.value }))}
+                    autoComplete="address-level1"
+                    inputMode="text"
+                    placeholder="省 / 市 / 区"
+                    maxLength={80}
+                  />
+                  <textarea
+                    value={addressDraft.detail}
+                    onChange={(event) => setAddressDraft((current) => ({ ...current, detail: event.target.value }))}
+                    autoComplete="street-address"
+                    placeholder="街道、门牌号等详细地址"
+                    maxLength={300}
+                  />
+                  <button type="button" disabled={addressSaving} onClick={saveCheckoutAddress}>
+                    {addressSaving ? "保存中…" : "保存并用于本次配送"}
+                  </button>
+                </div>
+              )}
+            </section>
             <div className="buy-line transport-fee-line">
               <span>宠物专属托运</span>
               <b>
@@ -3344,9 +3453,15 @@ export default function App() {
     if (!localStorage.getItem("fuchong-user")) ensureVisitor();
   }, []);
   const adminMode = location.hash.startsWith("#admin");
-  const skipBrandIntro = new URLSearchParams(location.search).get("logo-intro") === "0";
+  const introParams = new URLSearchParams(location.search);
+  const openedFromWechatMini = introParams.get("from") === "wechat-mini";
+  const skipBrandIntro = introParams.get("logo-intro") === "0" && !openedFromWechatMini;
   const [showBrandIntro, setShowBrandIntro] = useState(() => !skipBrandIntro);
-  const closeBrandIntro = useCallback(() => setShowBrandIntro(false), []);
+  const [showWelcomeOffer, setShowWelcomeOffer] = useState(() => skipBrandIntro);
+  const closeBrandIntro = useCallback(() => {
+    setShowBrandIntro(false);
+    setShowWelcomeOffer(true);
+  }, []);
   const [page, setPage] = useState<Page>("home");
   const [user, setUser] = useState<User | null>(() => {
     try {
@@ -3400,7 +3515,8 @@ export default function App() {
   return (
     <main className="phone-shell">
       {showBrandIntro && <BrandIntro onClose={closeBrandIntro} />}
-      {page === "home" && <Home openHall={openHall} go={go} replayBrandIntro={() => setShowBrandIntro(true)} />}{" "}
+      {!showBrandIntro && showWelcomeOffer && <WelcomeOffer onClose={() => setShowWelcomeOffer(false)} />}
+      {page === "home" && <Home openHall={openHall} go={go} replayBrandIntro={() => { setShowWelcomeOffer(false); setShowBrandIntro(true); }} />}{" "}
       {page === "search" && (
         <SearchPage go={go} openBreed={openBreed} openPet={openPet} />
       )}
