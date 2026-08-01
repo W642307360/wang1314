@@ -28,13 +28,16 @@ export const optimizePetImage = (
   const source = url || fallback;
   if (!source) return source;
   if (!source.startsWith("http")) {
+    let localSource = source;
     if (
       variant === "thumb" &&
       (/^\/assets\/catalog\//.test(source) || /^\/assets\/cats\//.test(source)) &&
       !/-thumb\.webp(?:\?|$)/.test(source)
     )
-      return source.replace(/\.(?:jpe?g|png|webp)(\?.*)?$/i, "-thumb.webp$1");
-    return source;
+      localSource = source.replace(/\.(?:jpe?g|png|webp)(\?.*)?$/i, "-thumb.webp$1");
+    if (/^\/assets\/(?:catalog|cats)\//.test(localSource))
+      return appendParams(localSource, { asset_source: "origin-20260801" });
+    return localSource;
   }
   if (source.includes("/api/media/feishu")) return source;
   const { width, quality } = variantSize[variant];

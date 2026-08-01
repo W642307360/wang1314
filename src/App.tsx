@@ -3453,7 +3453,7 @@ export default function App() {
     if (!localStorage.getItem("fuchong-user")) ensureVisitor();
     const welcomeImage = new Image();
     welcomeImage.fetchPriority = "low";
-    welcomeImage.src = "/assets/brand/fuchong-mobile-welcome-20260801.webp";
+    welcomeImage.src = "/assets/brand/fuchong-mobile-welcome-20260801.webp?asset_source=origin-20260801";
   }, []);
   const adminMode = location.hash.startsWith("#admin");
   const introParams = new URLSearchParams(location.search);
