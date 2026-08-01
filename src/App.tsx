@@ -3451,6 +3451,9 @@ function SubPage({ title, kind, go }: { title: string; kind: "settings" | "about
 export default function App() {
   useEffect(() => {
     if (!localStorage.getItem("fuchong-user")) ensureVisitor();
+    const welcomeImage = new Image();
+    welcomeImage.fetchPriority = "low";
+    welcomeImage.src = "/assets/brand/fuchong-mobile-welcome-20260801.webp";
   }, []);
   const adminMode = location.hash.startsWith("#admin");
   const introParams = new URLSearchParams(location.search);
