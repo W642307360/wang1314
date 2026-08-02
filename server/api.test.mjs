@@ -798,6 +798,13 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   );
   assert.equal(oneClickRepeatDetail.payload.payments.filter((payment) => payment.status === "paid").length, 1);
 
+  const sharedShowcaseSource = join(
+    dirname(serverDir),
+    "public",
+    "assets",
+    "catalog",
+    "devon-rex.webp",
+  );
   const feishuConfig = await request("/api/admin/feishu/configs", {
     method: "POST",
     headers: adminHeaders,
@@ -817,11 +824,12 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
       config_id: feishuConfig.payload.id,
       batch_size: 100,
       total: 5000,
+      with_media: true,
     }),
   });
   assert.equal(sync.response.status, 202);
   let syncTask;
-  for (let i = 0; i < 240; i += 1) {
+  for (let i = 0; i < 800; i += 1) {
     const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
     syncTask = tasks.payload.find((item) => item.id === sync.payload.taskId);
     if (["completed", "failed"].includes(syncTask?.status)) break;
@@ -838,6 +846,60 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(syncTask.identity_success, 5000);
   assert.equal(syncTask.identity_failed, 0);
   assert.equal(syncTask.identity_skipped, 0);
+  assert.equal(syncTask.media_total, 5000);
+  assert.equal(syncTask.media_processed, 5000);
+  assert.equal(syncTask.media_success, 5000);
+  assert.equal(syncTask.media_failed, 0);
+  assert.equal(syncTask.total_batches, 50);
+  assert.equal(syncTask.completed_batches, 50);
+  assert.equal(syncTask.overall_percent, 100);
+  assert.equal(syncTask.heartbeat_ok, true);
+  assert.equal(syncTask.max_attempt_count, 1);
+  assert.equal(syncTask.retried_items, 0);
+  const libraryStats = await request("/api/admin/feishu/library-stats", { headers: adminHeaders });
+  assert.equal(libraryStats.response.status, 200);
+  assert.ok(libraryStats.payload.categories.length >= 6);
+  assert.ok(libraryStats.payload.breeds.length >= 6);
+  assert.ok(Number(libraryStats.payload.coverage.total) >= 5000);
+  for (const sampleIndex of [2500, 4999, 5000]) {
+    const products = await request(`/api/pets?q=${encodeURIComponent(`同步宠物 ${sampleIndex}`)}&page_size=50`);
+    const sample = products.payload.find((item) => item.name === `同步宠物 ${sampleIndex}`);
+    assert.ok(sample);
+    const detail = await request(`/api/pets/${sample.id}`);
+    assert.equal(detail.payload.description, `第 ${sampleIndex} 条飞书图文详情，用于验证大批量商品关联顺序`);
+    assert.equal(detail.payload.images.length, 1);
+    assert.equal(detail.payload.videos.length, 1);
+    assert.equal(detail.payload.videos[0].url, `https://media.example.test/pets/${sampleIndex}.mp4`);
+  }
+  const resumableSync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ config_id: feishuConfig.payload.id, batch_size: 50, total: 1000 }),
+  });
+  assert.equal(resumableSync.response.status, 202);
+  const pauseResumable = await request(`/api/admin/feishu/tasks/${resumableSync.payload.taskId}/pause`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(pauseResumable.response.status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  let resumableTasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+  let resumableTask = resumableTasks.payload.find((item) => item.id === resumableSync.payload.taskId);
+  assert.equal(resumableTask.status, "paused");
+  const resumeResumable = await request(`/api/admin/feishu/tasks/${resumableSync.payload.taskId}/resume`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(resumeResumable.response.status, 200);
+  for (let i = 0; i < 160; i += 1) {
+    resumableTasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    resumableTask = resumableTasks.payload.find((item) => item.id === resumableSync.payload.taskId);
+    if (["completed", "completed_with_warnings", "failed"].includes(resumableTask?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(resumableTask.status, "completed");
+  assert.equal(resumableTask.success, 1000);
+  assert.equal(resumableTask.failed, 0);
   const profileDefaultsSync = await request("/api/admin/feishu/sync", {
     method: "POST",
     headers: adminHeaders,
@@ -901,6 +963,44 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(updatedIdentityDetail.payload.identity_profile.identityNo, originalIdentityNo);
   assert.equal(updatedIdentityDetail.payload.identity_profile.chipNo, originalChipNo);
   assert.equal(updatedIdentityDetail.payload.identity_profile.color, "暖棕色");
+  const selectiveRetrySync = await request("/api/admin/feishu/sync", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      config_id: feishuConfig.payload.id,
+      batch_size: 2,
+      items: [
+        { external_id: "retry-valid", name: "选择性重试有效商品", breed: "测试犬", price: 1200 },
+        { external_id: "retry-invalid", name: "选择性重试无效商品", breed: "测试犬" },
+      ],
+    }),
+  });
+  assert.equal(selectiveRetrySync.response.status, 202);
+  let selectiveRetryTask;
+  for (let i = 0; i < 80; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    selectiveRetryTask = tasks.payload.find((item) => item.id === selectiveRetrySync.payload.taskId);
+    if (["completed", "completed_with_warnings", "failed"].includes(selectiveRetryTask?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(selectiveRetryTask.status, "completed_with_warnings");
+  assert.equal(selectiveRetryTask.success, 1);
+  assert.equal(selectiveRetryTask.failed, 1);
+  const selectiveRetry = await request(`/api/admin/feishu/tasks/${selectiveRetrySync.payload.taskId}/retry`, {
+    method: "POST",
+    headers: adminHeaders,
+  });
+  assert.equal(selectiveRetry.response.status, 200);
+  for (let i = 0; i < 80; i += 1) {
+    const tasks = await request("/api/admin/feishu/tasks", { headers: adminHeaders });
+    selectiveRetryTask = tasks.payload.find((item) => item.id === selectiveRetrySync.payload.taskId);
+    if (selectiveRetryTask?.status === "completed_with_warnings" && Number(selectiveRetryTask.retry_count) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(selectiveRetryTask.max_attempt_count, 2);
+  assert.equal(selectiveRetryTask.retried_items, 1);
+  assert.equal(selectiveRetryTask.success, 1);
+  assert.equal(selectiveRetryTask.failed, 1);
   const mediaSync = await request("/api/admin/feishu/sync", {
     method: "POST",
     headers: adminHeaders,
@@ -927,13 +1027,6 @@ test("用户、商品、订单、支付、物流全链路", async (t) => {
   assert.equal(syncedMediaDetail.payload.images.length, 4);
   assert.equal(syncedMediaDetail.payload.videos.length, 2);
 
-  const sharedShowcaseSource = join(
-    dirname(serverDir),
-    "public",
-    "assets",
-    "catalog",
-    "devon-rex.webp",
-  );
   const showcaseSync = await request("/api/admin/feishu/sync", {
     method: "POST",
     headers: adminHeaders,

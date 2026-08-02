@@ -644,12 +644,17 @@ function Field({
 }
 function Dashboard({ token }: { token: string }) {
   const [stats, setStats] = useState<any>(null);
+  const [libraryStats, setLibraryStats] = useState<any>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   useEffect(() => {
-    fetch(`${API_BASE}/api/admin/stats`, {
-      headers: { authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json())
-      .then(setStats);
+    const headers = { authorization: `Bearer ${token}` };
+    Promise.all([
+      fetch(`${API_BASE}/api/admin/stats`, { headers }).then((r) => r.json()),
+      fetch(`${API_BASE}/api/admin/feishu/library-stats`, { headers }).then((r) => r.json()),
+    ]).then(([nextStats, nextLibraryStats]) => {
+      setStats(nextStats);
+      setLibraryStats(nextLibraryStats);
+    });
   }, [token]);
   const cards = [
     ["在售宠物", stats?.products?.published ?? "—", "实时商品库"],
@@ -668,6 +673,16 @@ function Dashboard({ token }: { token: string }) {
   }), { orders: 0, paid: 0, revenue: 0, activeUsers: 0, views: 0 });
   const paidRate = trendTotals.orders ? Math.round((trendTotals.paid / trendTotals.orders) * 100) : 0;
   const averageOrderValue = trendTotals.paid ? Math.round(trendTotals.revenue / trendTotals.paid) : 0;
+  const categoryDistribution = Array.isArray(libraryStats?.categories) ? libraryStats.categories : [];
+  const maxCategoryTotal = Math.max(1, ...categoryDistribution.map((item: any) => Number(item.total || 0)));
+  const nonEmptyCategories = categoryDistribution.filter((item: any) => Number(item.total || 0) > 0);
+  const mostCategory = [...nonEmptyCategories].sort((a: any, b: any) => Number(b.total) - Number(a.total))[0];
+  const leastCategory = [...nonEmptyCategories].sort((a: any, b: any) => Number(a.total) - Number(b.total))[0];
+  const selectedCategory = categoryDistribution.find((item: any) => Number(item.id) === selectedCategoryId);
+  const selectedBreeds = (Array.isArray(libraryStats?.breeds) ? libraryStats.breeds : [])
+    .filter((item: any) => Number(item.category_id) === selectedCategoryId)
+    .slice(0, 24);
+  const maxBreedTotal = Math.max(1, ...selectedBreeds.map((item: any) => Number(item.total || 0)));
   return (
     <>
       <section className="admin-stats">
@@ -678,6 +693,35 @@ function Dashboard({ token }: { token: string }) {
             <span>{x[2]}</span>
           </article>
         ))}
+      </section>
+      <section className="market-distribution-card">
+        <header>
+          <div><small>PRODUCT MIX</small><h3>宠物市场商品分布</h3><p>按商品库有效商品统计，库存件数单独展示</p></div>
+          <div className="distribution-insights">
+            <span><small>商品最多</small><b>{mostCategory?.name || "暂无"} · {Number(mostCategory?.total || 0)}</b></span>
+            <span><small>商品最少</small><b>{leastCategory?.name || "暂无"} · {Number(leastCategory?.total || 0)}</b></span>
+            <span><small>暂缺类别</small><b>{libraryStats?.missing_categories?.length || 0}</b></span>
+          </div>
+        </header>
+        <div className="market-distribution-bars">
+          {categoryDistribution.map((item: any, index: number) => {
+            const total = Number(item.total || 0);
+            const percent = Math.max(total ? 7 : 2, Math.round(total / maxCategoryTotal * 100));
+            return <article className={`${total ? "" : "empty"} ${selectedCategoryId === Number(item.id) ? "selected" : ""}`} key={item.id} role="button" tabIndex={0} onClick={() => setSelectedCategoryId(Number(item.id))} onKeyDown={(event) => event.key === "Enter" && setSelectedCategoryId(Number(item.id))} title={`${item.name}：${total}件商品，可售库存${Number(item.available_stock || 0)}；点击查看品种`}>
+              <div><span>{item.name}</span><b>{total}</b></div>
+              <i><em style={{ width: `${percent}%`, animationDelay: `${index * 70}ms` }} /></i>
+              <small>在售 {Number(item.published || 0)} · 库存 {Number(item.available_stock || 0)}{total ? "" : " · 当前缺失"}</small>
+            </article>;
+          })}
+        </div>
+        {selectedCategory && <div className="breed-distribution-panel">
+          <header><div><small>BREED DETAIL</small><h4>{selectedCategory.name} · 品种分布</h4></div><button onClick={() => setSelectedCategoryId(null)}>收起</button></header>
+          {selectedBreeds.length ? <div className="breed-distribution-grid">{selectedBreeds.map((breed: any) => <article key={breed.name}>
+            <div><span>{breed.name}</span><b>{Number(breed.total || 0)}</b></div>
+            <i><em style={{ width: `${Math.max(5, Math.round(Number(breed.total || 0) / maxBreedTotal * 100))}%` }} /></i>
+            <small>在售 {Number(breed.published || 0)} · 库存 {Number(breed.available_stock || 0)}</small>
+          </article>)}</div> : <p className="breed-empty">该场馆当前还没有品种商品</p>}
+        </div>}
       </section>
       <section className="admin-panels">
         <article>
@@ -2052,6 +2096,7 @@ function FeishuManager({ token }: { token: string }) {
   const [configs, setConfigs] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [previews, setPreviews] = useState<any[]>([]);
+  const [libraryStats, setLibraryStats] = useState<any>(null);
   const [activePreview, setActivePreview] = useState<any>(null);
   const [connectionTest, setConnectionTest] = useState<any>(null);
   const [syncing, setSyncing] = useState(false);
@@ -2086,12 +2131,15 @@ function FeishuManager({ token }: { token: string }) {
     fetch(`${API_BASE}/api/admin/feishu/previews`, { headers })
       .then((r) => r.json())
       .then(setPreviews);
+    fetch(`${API_BASE}/api/admin/feishu/library-stats`, { headers })
+      .then((r) => r.json())
+      .then(setLibraryStats);
   }, [headers]);
   useEffect(() => {
     void load();
   }, [load]);
   useEffect(() => {
-    if (!tasks.some((task) => ["pending", "running", "processing_images"].includes(task.status))) return;
+    if (!tasks.some((task) => ["pending", "reading_remote", "running", "processing_images"].includes(task.status))) return;
     const timer = window.setInterval(() => {
       fetch(`${API_BASE}/api/admin/feishu/tasks`, { headers })
         .then((response) => response.json())
@@ -2266,6 +2314,7 @@ function FeishuManager({ token }: { token: string }) {
   };
   const taskStatusLabel = (status: string) => ({
     pending: "等待同步",
+    reading_remote: "分批读取飞书",
     running: "同步商品数据",
     processing_images: "处理白底轮廓图",
     completed: "已完成",
@@ -2301,6 +2350,29 @@ function FeishuManager({ token }: { token: string }) {
         <span className={connected ? "online" : "offline"}>{connected ? "● 已连接" : "● 未连接"}</span>
         <p>已保存连接 {configs.length} 个，启用 {configs.filter((item) => item.status === "active").length} 个。固定流程：测试连接 → 同步预览 → 文字识别与默认补全 → 分批写入 → 生成宠物身份证 → 白底证件照 → 前台更新</p>
       </div>
+      {libraryStats && <section className="sync-library-overview">
+        <header>
+          <div><small>商品库实时结构</small><h3>{Number(libraryStats.coverage?.total || 0).toLocaleString()} 个商品</h3></div>
+          <span>{libraryStats.missing_categories?.length ? `尚无商品：${libraryStats.missing_categories.join("、")}` : "全部一级类别已有商品"}</span>
+        </header>
+        <div className="sync-category-chart">
+          {(libraryStats.categories || []).map((category: any) => {
+            const maximum = Math.max(1, ...(libraryStats.categories || []).map((item: any) => Number(item.total || 0)));
+            return <article key={category.id}>
+              <label><b>{category.name}</b><span>{category.total || 0} 件 · 飞书 {category.feishu || 0}</span></label>
+              <div><i style={{ width: `${Math.max(Number(category.total || 0) ? 5 : 0, Math.round(Number(category.total || 0) / maximum * 100))}%` }} /></div>
+              <small>在售 {category.published || 0} · 草稿 {category.draft || 0} · 下架 {category.offline || 0}</small>
+            </article>;
+          })}
+        </div>
+        <div className="sync-coverage-grid">
+          <span>缺主图 <b>{libraryStats.coverage?.missing_images || 0}</b></span>
+          <span>缺视频 <b>{libraryStats.coverage?.missing_videos || 0}</b></span>
+          <span>缺详情 <b>{libraryStats.coverage?.missing_description || 0}</b></span>
+          <span>缺身份证 <b>{libraryStats.coverage?.missing_identity || 0}</b></span>
+          <span>待分配商家 <b>{libraryStats.coverage?.missing_seller || 0}</b></span>
+        </div>
+      </section>}
       <section className="sync-command-center">
         <div><small>管理员同步控制台</small><b>{activeConfig ? activeConfig.name || "已保存飞书连接" : "请先保存同步配置"}</b><span>测试不会写库，预览确认后才会同步商品。</span></div>
         <button disabled={syncing || !activeConfig} onClick={() => activeConfig && testConnection(activeConfig.id)}>① 测试连接</button>
@@ -2380,6 +2452,11 @@ function FeishuManager({ token }: { token: string }) {
               <td>#{t.id}</td>
               <td><span className={`sync-status sync-status-${t.status}`}>{taskStatusLabel(t.status)}</span></td>
               <td>
+                <div className="sync-overall-progress">
+                  <label><span>总任务</span><b>{t.overall_percent || 0}%</b></label>
+                  <div className="sync-progress"><i style={{ width: `${t.overall_percent || 0}%` }} /><span>{t.overall_percent || 0}%</span></div>
+                  <small>批次 {t.completed_batches || 0}/{t.total_batches || 0} · {t.heartbeat_ok === false ? "心跳等待恢复" : "处理器在线"}</small>
+                </div>
                 <div className="sync-stage-progress">
                   <label><span>文字识别与商品入库</span><b>{t.processed || 0}/{t.total || 0}</b></label>
                   <div className="sync-progress"><i style={{ width: `${taskPercent(t.processed, t.total)}%` }} /><span>{taskPercent(t.processed, t.total)}%</span></div>

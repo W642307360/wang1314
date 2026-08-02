@@ -981,11 +981,16 @@ const persistSyncItems = (taskId, items) => {
     throw error;
   }
 };
-const persistedSyncItems = (taskId) =>
-  rows(
-    "SELECT payload FROM feishu_sync_task_items WHERE task_id=? ORDER BY row_no",
-    taskId,
-  ).map((item) => JSON.parse(item.payload));
+const hasPersistedSyncItems = (taskId) =>
+  Number(
+    db.prepare("SELECT COUNT(*) AS count FROM feishu_sync_task_items WHERE task_id=?").get(taskId)?.count || 0,
+  ) > 0;
+const activeFeishuTask = (configId) =>
+  db.prepare(
+    `SELECT id,status,total,processed FROM feishu_sync_tasks
+     WHERE config_id=? AND status IN ('pending','reading_remote','running','processing_images','paused')
+     ORDER BY id DESC LIMIT 1`,
+  ).get(Number(configId));
 const userDataCounts = (userId) => ({
   favorites: db.prepare("SELECT COUNT(*) AS count FROM favorites WHERE user_id=?").get(userId).count,
   cart: db.prepare("SELECT COUNT(*) AS count FROM cart_items WHERE user_id=?").get(userId).count,
@@ -1353,7 +1358,7 @@ const commitShowcaseResult = (itemId, taskId, status, error = null) => {
     ).run(status, error, itemId);
     db.prepare(
       `UPDATE feishu_sync_tasks SET media_processed=media_processed+1,
-       media_success=media_success+?,media_failed=media_failed+? WHERE id=?`,
+       media_success=media_success+?,media_failed=media_failed+?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?`,
     ).run(status === "success" ? 1 : 0, status === "failed" ? 1 : 0, taskId);
     db.exec("COMMIT");
   } catch (databaseError) {
@@ -1361,42 +1366,55 @@ const commitShowcaseResult = (itemId, taskId, status, error = null) => {
     throw databaseError;
   }
 };
+const activeShowcaseSyncTasks = new Set();
 const processShowcaseTask = async (taskId) => {
-  const state = syncQueues.get(taskId);
-  if (!state || state.paused) return;
-  const task = db.prepare("SELECT * FROM feishu_sync_tasks WHERE id=?").get(taskId);
-  if (!task || task.status !== "processing_images") return;
-  const item = db.prepare(
-    `SELECT id,pet_id FROM feishu_sync_task_items
-     WHERE task_id=? AND showcase_status IN ('pending','processing')
-     ORDER BY CASE showcase_status WHEN 'processing' THEN 0 ELSE 1 END,row_no LIMIT 1`,
-  ).get(taskId);
-  if (!item) {
-    const failed = Number(task.media_failed || 0);
-    db.prepare(
-      `UPDATE feishu_sync_tasks SET status=?,media_status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?`,
-    ).run(failed ? "completed_with_warnings" : "completed", failed ? "completed_with_warnings" : "completed", taskId);
-    syncQueues.delete(taskId);
-    return;
-  }
-  db.prepare(
-    "UPDATE feishu_sync_task_items SET showcase_status='processing',showcase_error=NULL WHERE id=?",
-  ).run(item.id);
+  if (activeShowcaseSyncTasks.has(taskId)) return;
+  activeShowcaseSyncTasks.add(taskId);
   try {
-    await ensureShowcaseImage(item.pet_id);
-    commitShowcaseResult(item.id, taskId, "success");
-  } catch (error) {
-    try {
-      commitShowcaseResult(item.id, taskId, "failed", error instanceof Error ? error.message : String(error));
-    } catch (databaseError) {
+    const state = syncQueues.get(taskId);
+    if (!state || state.paused) return;
+    const task = db.prepare("SELECT * FROM feishu_sync_tasks WHERE id=?").get(taskId);
+    if (!task || task.status !== "processing_images") return;
+    const mediaBatchSize = Math.min(50, Math.max(1, Number(process.env.FEISHU_MEDIA_BATCH_SIZE || 20)));
+    const items = rows(
+      `SELECT id,pet_id FROM feishu_sync_task_items
+       WHERE task_id=? AND showcase_status IN ('pending','processing')
+       ORDER BY CASE showcase_status WHEN 'processing' THEN 0 ELSE 1 END,row_no LIMIT ?`,
+      taskId,
+      mediaBatchSize,
+    );
+    if (!items.length) {
+      const failed = Number(task.media_failed || 0) + Number(task.failed || 0);
       db.prepare(
-        "UPDATE feishu_sync_tasks SET status='failed',media_status='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
-      ).run(databaseError instanceof Error ? databaseError.message : String(databaseError), taskId);
+        `UPDATE feishu_sync_tasks SET status=?,media_status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?`,
+      ).run(failed ? "completed_with_warnings" : "completed", failed ? "completed_with_warnings" : "completed", taskId);
       syncQueues.delete(taskId);
       return;
     }
+    for (const item of items) {
+      if (syncQueues.get(taskId)?.paused) return;
+      db.prepare(
+        "UPDATE feishu_sync_task_items SET showcase_status='processing',showcase_error=NULL WHERE id=?",
+      ).run(item.id);
+      try {
+        await ensureShowcaseImage(item.pet_id);
+        commitShowcaseResult(item.id, taskId, "success");
+      } catch (error) {
+        try {
+          commitShowcaseResult(item.id, taskId, "failed", error instanceof Error ? error.message : String(error));
+        } catch (databaseError) {
+          db.prepare(
+            "UPDATE feishu_sync_tasks SET status='failed',media_status='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+          ).run(databaseError instanceof Error ? databaseError.message : String(databaseError), taskId);
+          syncQueues.delete(taskId);
+          return;
+        }
+      }
+    }
+    setTimeout(() => processShowcaseTask(taskId), 0);
+  } finally {
+    activeShowcaseSyncTasks.delete(taskId);
   }
-  setTimeout(() => processShowcaseTask(taskId), 0);
 };
 const beginShowcaseStage = (taskId) => {
   const stats = db.prepare(
@@ -1407,20 +1425,22 @@ const beginShowcaseStage = (taskId) => {
   ).get(taskId);
   const total = Number(stats?.total || 0);
   if (!total) {
+    const task = db.prepare("SELECT failed FROM feishu_sync_tasks WHERE id=?").get(taskId);
+    const hasWarnings = Number(task?.failed || 0) > 0;
     db.prepare(
-      "UPDATE feishu_sync_tasks SET status='completed',media_status='not_required',finished_at=CURRENT_TIMESTAMP WHERE id=?",
-    ).run(taskId);
+      "UPDATE feishu_sync_tasks SET status=?,media_status='not_required',heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(hasWarnings ? "completed_with_warnings" : "completed", taskId);
     syncQueues.delete(taskId);
     return;
   }
   const success = Number(stats.success || 0);
   const failed = Number(stats.failed || 0);
   db.prepare(
-    `UPDATE feishu_sync_tasks SET status='processing_images',media_status='running',media_total=?,media_processed=?,media_success=?,media_failed=?,finished_at=NULL WHERE id=?`,
+    `UPDATE feishu_sync_tasks SET status='processing_images',media_status='running',media_total=?,media_processed=?,media_success=?,media_failed=?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP,finished_at=NULL WHERE id=?`,
   ).run(total, success + failed, success, failed, taskId);
   setTimeout(() => processShowcaseTask(taskId), 0);
 };
-const generateSyncItems = (total = 500) =>
+const generateSyncItems = (total = 500, withMedia = false) =>
   Array.from({ length: total }, (_, i) => ({
     name: `同步宠物 ${i + 1}`,
     category_id: (i % 6) + 1,
@@ -1432,7 +1452,11 @@ const generateSyncItems = (total = 500) =>
     personality: "亲人稳定",
     health_status: "健康",
     vaccine_record: "同步档案待复核",
-    description: "外部商品库同步数据",
+    description: withMedia
+      ? `第 ${i + 1} 条飞书图文详情，用于验证大批量商品关联顺序`
+      : "外部商品库同步数据",
+    images: withMedia ? [join(dirname(root), "public", "assets", "catalog", "devon-rex.webp")] : undefined,
+    videos: withMedia ? [`https://media.example.test/pets/${i + 1}.mp4`] : undefined,
     price: 2999 + (i % 50) * 100,
     seller_name: "福宠同步商家",
     status: "published",
@@ -1499,7 +1523,32 @@ const normalizeFeishuBodyType = (explicitValue, detailValue) => {
   };
   return classify(explicitValue) || classify(detailValue) || "中型";
 };
-const feishuItems = async (config) => {
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const readFeishuPage = async (endpoint, accessToken) => {
+  let lastError;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const response = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      const data = await response.json();
+      if (response.ok && !data.code) return data;
+      const retryable = response.status === 429 || response.status >= 500;
+      const error = new Error(data.msg || `读取飞书多维表格失败（${response.status}）`);
+      if (!retryable) throw error;
+      lastError = error;
+      const retryAfter = Math.max(0, Number(response.headers.get("retry-after") || 0) * 1000);
+      await wait(Math.max(retryAfter, Math.min(5000, 300 * 2 ** (attempt - 1))));
+    } catch (error) {
+      lastError = error;
+      if (attempt === 5) break;
+      await wait(Math.min(5000, 300 * 2 ** (attempt - 1)));
+    }
+  }
+  throw new Error(`飞书分页连续重试失败：${lastError instanceof Error ? lastError.message : "网络异常"}`);
+};
+const feishuItems = async (config, onPage = null) => {
   const appId = config.app_id || process.env.FEISHU_APP_ID;
   const appSecret = process.env.FEISHU_APP_SECRET;
   const missingCredentials = [
@@ -1526,22 +1575,28 @@ const feishuItems = async (config) => {
     return "";
   };
   const records = [];
+  const maxRecords = Math.min(20_000, Math.max(5_000, Number(process.env.FEISHU_SYNC_MAX_RECORDS || 10_000)));
   let pageToken = "";
-  for (let page = 0; page < 200; page++) {
+  const seenPageTokens = new Set();
+  for (let page = 0; page < Math.ceil(maxRecords / 500) + 1; page++) {
     const endpoint = new URL(
       `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`,
     );
     endpoint.searchParams.set("page_size", "500");
     if (pageToken) endpoint.searchParams.set("page_token", pageToken);
-    const response = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const data = await response.json();
-    if (!response.ok || data.code)
-      throw new Error(data.msg || "读取飞书多维表格失败");
-    records.push(...(data.data?.items || []));
+    const data = await readFeishuPage(endpoint, accessToken);
+    const pageItems = data.data?.items || [];
+    if (records.length + pageItems.length > maxRecords)
+      throw new Error(`飞书数据超过单次安全上限 ${maxRecords} 条，请拆分数据表后同步`);
+    records.push(...pageItems);
+    if (typeof onPage === "function")
+      await onPage({ page: page + 1, records: records.length, has_more: Boolean(data.data?.has_more) });
     if (!data.data?.has_more) break;
-    pageToken = data.data.page_token;
+    const nextPageToken = String(data.data.page_token || "");
+    if (!nextPageToken || seenPageTokens.has(nextPageToken))
+      throw new Error("飞书分页游标异常，已停止同步以避免重复写入");
+    seenPageTokens.add(nextPageToken);
+    pageToken = nextPageToken;
   }
   return records.map((record) => {
     const images = feishuMediaList(record, [
@@ -1748,17 +1803,37 @@ const exportProductsToFeishu = async (config, options = {}) => {
   }
   return result;
 };
-const processSyncTask = (taskId, items) => {
+const processSyncTask = (taskId) => {
   const state = syncQueues.get(taskId);
   if (!state || state.paused) return;
   const task = db
     .prepare("SELECT * FROM feishu_sync_tasks WHERE id=?")
     .get(taskId);
   if (!task || ["completed", "completed_with_warnings", "paused", "processing_images"].includes(task.status)) return;
-  const batchSize = Number(task.batch_size || 500);
-  const start = Number(task.processed || 0);
-  const batch = items.slice(start, start + batchSize);
-  if (!batch.length) {
+  const batchSize = Math.min(500, Math.max(1, Number(task.batch_size || 100)));
+  const batchRows = rows(
+    `SELECT row_no,payload FROM feishu_sync_task_items
+     WHERE task_id=? AND status='pending' ORDER BY row_no LIMIT ?`,
+    taskId,
+    batchSize,
+  );
+  if (!batchRows.length) {
+    const counts = db.prepare(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
+       FROM feishu_sync_task_items WHERE task_id=?`,
+    ).get(taskId);
+    if (Number(counts?.total || 0) !== Number(task.total || 0)) {
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET status='failed',error='任务明细数量与总数不一致，已停止以保护商品库',heartbeat_at=CURRENT_TIMESTAMP,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(taskId);
+      syncQueues.delete(taskId);
+      return;
+    }
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET processed=?,success=?,failed=?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(Number(counts.success || 0) + Number(counts.failed || 0), Number(counts.success || 0), Number(counts.failed || 0), taskId);
     beginShowcaseStage(taskId);
     return;
   }
@@ -1789,11 +1864,16 @@ const processSyncTask = (taskId, items) => {
        status=CASE WHEN excluded.status='draft' AND pets.status='published' THEN pets.status ELSE excluded.status END,
        updated_at=CURRENT_TIMESTAMP`,
     );
-    for (const [i, rawItem] of batch.entries()) {
-      const item = enrichPetDetails(rawItem);
+    for (const taskItem of batchRows) {
+      const rowNo = Number(taskItem.row_no);
+      let item = {};
       let identityStarted = false;
+      db.prepare(
+        "UPDATE feishu_sync_task_items SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP WHERE task_id=? AND row_no=?",
+      ).run(taskId, rowNo);
       db.exec("SAVEPOINT feishu_sync_row");
       try {
+        item = enrichPetDetails(JSON.parse(taskItem.payload));
         if (!item.name || !item.breed || !item.price)
           throw new Error("缺少名称、品种或价格");
         insertPet.run(
@@ -1814,14 +1894,14 @@ const processSyncTask = (taskId, items) => {
           item.seller_name ?? null,
           item.status || "draft",
           item.source || "feishu",
-          item.external_id || `task-${taskId}-${start + i + 1}`,
+          item.external_id || `task-${taskId}-${rowNo}`,
           item.business_id ?? null,
         );
         const petId = db
           .prepare("SELECT id FROM pets WHERE source=? AND external_id=?")
           .get(
             item.source || "feishu",
-            item.external_id || `task-${taskId}-${start + i + 1}`,
+            item.external_id || `task-${taskId}-${rowNo}`,
           )?.id;
         const assignedSellerId = item.seller_id || (petId ? ((Number(petId) - 1) % 20) + 1 : null);
         const assignedSeller = assignedSellerId
@@ -1922,7 +2002,7 @@ const processSyncTask = (taskId, items) => {
                identity_status='success',identity_error=NULL,identity_processed_at=CURRENT_TIMESTAMP,
                showcase_status=?,showcase_error=NULL,showcase_processed_at=NULL
            WHERE task_id=? AND row_no=?`,
-        ).run(petId || null, petId && item.images?.length ? "pending" : "not_required", taskId, start + i + 1);
+        ).run(petId || null, petId && item.images?.length ? "pending" : "not_required", taskId, rowNo);
         db.exec("RELEASE SAVEPOINT feishu_sync_row");
         success++;
       } catch (e) {
@@ -1939,26 +2019,66 @@ const processSyncTask = (taskId, items) => {
           identityStarted ? "failed" : "skipped",
           identityStarted ? e.message : "商品资料校验未通过，未生成身份证",
           taskId,
-          start + i + 1,
+          rowNo,
         );
         db.prepare(
           "INSERT INTO sync_task_errors(task_id,row_no,payload,error) VALUES(?,?,?,?)",
-        ).run(taskId, start + i + 1, JSON.stringify(item), e.message);
+        ).run(taskId, rowNo, JSON.stringify(item), e.message);
       }
     }
+    const checkpoint = db.prepare(
+      `SELECT COUNT(*) AS processed,
+              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+              MAX(CASE WHEN status IN ('success','failed') THEN row_no ELSE 0 END) AS cursor
+       FROM feishu_sync_task_items WHERE task_id=?`,
+    ).get(taskId);
     db.prepare(
-      "UPDATE feishu_sync_tasks SET status='running',processed=processed+?,success=success+?,failed=failed+? WHERE id=?",
-    ).run(batch.length, success, failed, taskId);
+      `UPDATE feishu_sync_tasks SET status=CASE WHEN status='paused' THEN status ELSE 'running' END,processed=?,success=?,failed=?,cursor=?,
+       started_at=COALESCE(started_at,CURRENT_TIMESTAMP),heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP
+       WHERE id=?`,
+    ).run(Number(checkpoint.processed || 0), Number(checkpoint.success || 0), Number(checkpoint.failed || 0), String(checkpoint.cursor || ""), taskId);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     db.prepare(
-      "UPDATE feishu_sync_tasks SET status='failed',error=?,retry_count=retry_count+1,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+      "UPDATE feishu_sync_tasks SET status='failed',error=?,retry_count=retry_count+1,heartbeat_at=CURRENT_TIMESTAMP,finished_at=CURRENT_TIMESTAMP WHERE id=?",
     ).run(e.message, taskId);
     syncQueues.delete(taskId);
     return;
   }
-  setTimeout(() => processSyncTask(taskId, items), 0);
+  setTimeout(() => processSyncTask(taskId), 15);
+};
+
+const loadRemoteSyncTask = async (taskId, config) => {
+  try {
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='reading_remote',started_at=COALESCE(started_at,CURRENT_TIMESTAMP),heartbeat_at=CURRENT_TIMESTAMP,error=NULL,finished_at=NULL WHERE id=?",
+    ).run(taskId);
+    const items = await feishuItems(config, async ({ page, records: recordCount }) => {
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET cursor=?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(`remote:${page}:${recordCount}`, taskId);
+    });
+    persistSyncItems(taskId, items);
+    const current = db.prepare("SELECT status FROM feishu_sync_tasks WHERE id=?").get(taskId);
+    if (current?.status === "paused") {
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET total=?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(items.length, taskId);
+      return;
+    }
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET total=?,status='running',heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(items.length, taskId);
+    syncQueues.set(taskId, { paused: false });
+    processSyncTask(taskId);
+  } catch (error) {
+    db.prepare(
+      "UPDATE feishu_sync_tasks SET status='failed',error=?,heartbeat_at=CURRENT_TIMESTAMP,finished_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).run(error instanceof Error ? error.message : String(error), taskId);
+    syncQueues.delete(taskId);
+  }
 };
 
 const server = createServer(async (req, res) => {
@@ -5572,6 +5692,16 @@ const server = createServer(async (req, res) => {
         identity_defaults: valid.filter((item) =>
           !item.gender || !item.color || !Number(item.age_months || 0),
         ).length,
+        category_distribution: Object.entries(
+          valid.reduce((result, item) => {
+            const key = Number(item.category_id || 1);
+            result[key] = Number(result[key] || 0) + 1;
+            return result;
+          }, {}),
+        ).map(([category_id, count]) => ({ category_id: Number(category_id), count })),
+        missing_categories: [1, 2, 3, 4, 5, 6].filter(
+          (categoryId) => !valid.some((item) => Number(item.category_id || 1) === categoryId),
+        ),
       };
       const created = db
         .prepare(
@@ -5595,6 +5725,13 @@ const server = createServer(async (req, res) => {
       if (!preview) return json(res, 404, { message: "同步预览不存在" });
       if (preview.status !== "ready")
         return json(res, 409, { message: "该预览已提交或不可用" });
+      const runningTask = activeFeishuTask(preview.config_id);
+      if (runningTask)
+        return json(res, 409, {
+          message: "An unfinished synchronization task already exists for this data source",
+          task_id: runningTask.id,
+          status: runningTask.status,
+        });
       const d = await body(req);
       const previewItems = JSON.parse(preview.items_json || "[]");
       const publishAfterSync = Boolean(d.publish_after_sync);
@@ -5612,12 +5749,15 @@ const server = createServer(async (req, res) => {
           Math.min(500, Math.max(1, Number(d.batch_size || 100))),
         );
       const taskId = Number(created.lastInsertRowid);
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET started_at=CURRENT_TIMESTAMP,heartbeat_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(taskId);
       persistSyncItems(taskId, items);
       db.prepare(
         "UPDATE feishu_sync_previews SET status='confirmed',confirmed_at=CURRENT_TIMESTAMP,task_id=? WHERE id=?",
       ).run(taskId, preview.id);
-      syncQueues.set(taskId, { items, paused: false });
-      setTimeout(() => processSyncTask(taskId, items), 0);
+      syncQueues.set(taskId, { paused: false });
+      setTimeout(() => processSyncTask(taskId), 0);
       logAdmin(admin, req, "commit_preview", "feishu_sync_tasks", taskId, {
         preview_id: preview.id,
         total: items.length,
@@ -5631,10 +5771,17 @@ const server = createServer(async (req, res) => {
         .prepare("SELECT * FROM feishu_sync_configs WHERE id=?")
         .get(Number(d.config_id));
       if (!config) return json(res, 404, { message: "飞书数据源不存在" });
+      const runningTask = activeFeishuTask(config.id);
+      if (runningTask)
+        return json(res, 409, {
+          message: "An unfinished synchronization task already exists for this data source",
+          task_id: runningTask.id,
+          status: runningTask.status,
+        });
       const suppliedItems = Array.isArray(d.items) ? d.items : null;
       const mockItems =
         !suppliedItems && !d.read_remote
-          ? generateSyncItems(Number(d.total || 500))
+          ? generateSyncItems(Number(d.total || 500), Boolean(d.with_media))
           : null;
       const initialItems = suppliedItems || mockItems;
       const r = db
@@ -5644,31 +5791,20 @@ const server = createServer(async (req, res) => {
         .run(
           d.config_id,
           d.mode || "incremental",
-          "pending",
+          initialItems ? "pending" : "reading_remote",
           initialItems?.length || 0,
           Math.min(500, Math.max(1, Number(d.batch_size || 500))),
         );
       const taskId = Number(r.lastInsertRowid);
+      db.prepare(
+        "UPDATE feishu_sync_tasks SET started_at=CURRENT_TIMESTAMP,heartbeat_at=CURRENT_TIMESTAMP WHERE id=?",
+      ).run(taskId);
       if (initialItems) {
         persistSyncItems(taskId, initialItems);
-        syncQueues.set(taskId, { items: initialItems, paused: false });
-        setTimeout(() => processSyncTask(taskId, initialItems), 0);
+        syncQueues.set(taskId, { paused: false });
+        setTimeout(() => processSyncTask(taskId), 0);
       } else {
-        setTimeout(async () => {
-          try {
-            const items = await feishuItems(config);
-            db.prepare(
-              "UPDATE feishu_sync_tasks SET total=?,status='running' WHERE id=?",
-            ).run(items.length, taskId);
-            persistSyncItems(taskId, items);
-            syncQueues.set(taskId, { items, paused: false });
-            processSyncTask(taskId, items);
-          } catch (e) {
-            db.prepare(
-              "UPDATE feishu_sync_tasks SET status='failed',error=?,finished_at=CURRENT_TIMESTAMP WHERE id=?",
-            ).run(e.message, taskId);
-          }
-        }, 0);
+        setTimeout(() => loadRemoteSyncTask(taskId, config), 0);
       }
       logAdmin(
         admin,
@@ -5687,11 +5823,47 @@ const server = createServer(async (req, res) => {
         message: "同步任务已进入队列",
       });
     }
-    if (path === "/api/admin/feishu/tasks" && method === "GET")
-      return json(
-        res,
-        200,
-        rows(
+    if (path === "/api/admin/feishu/library-stats" && method === "GET") {
+      const categories = rows(
+        `SELECT c.id,c.name,
+                COUNT(p.id) AS total,
+                SUM(CASE WHEN p.status='published' THEN 1 ELSE 0 END) AS published,
+                SUM(CASE WHEN p.status='draft' THEN 1 ELSE 0 END) AS draft,
+                SUM(CASE WHEN p.status='offline' THEN 1 ELSE 0 END) AS offline,
+                SUM(CASE WHEN p.source='feishu' THEN 1 ELSE 0 END) AS feishu,
+                SUM(COALESCE((SELECT SUM(i.available_stock) FROM inventory i WHERE i.pet_id=p.id),0)) AS available_stock
+         FROM categories c
+         LEFT JOIN pets p ON p.category_id=c.id AND p.status<>'deleted'
+         WHERE c.status='active' AND c.parent_id IS NULL
+         GROUP BY c.id,c.name ORDER BY c.sort_order,c.id`,
+      );
+      const coverage = db.prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM pet_images i WHERE i.pet_id=p.id) THEN 1 ELSE 0 END) AS missing_images,
+                SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM pet_videos v WHERE v.pet_id=p.id) THEN 1 ELSE 0 END) AS missing_videos,
+                SUM(CASE WHEN COALESCE(TRIM(p.description),'')='' THEN 1 ELSE 0 END) AS missing_description,
+                SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM pet_identity_profiles x WHERE x.pet_id=p.id) THEN 1 ELSE 0 END) AS missing_identity,
+                SUM(CASE WHEN p.seller_id IS NULL THEN 1 ELSE 0 END) AS missing_seller
+         FROM pets p WHERE p.status<>'deleted'`,
+      ).get();
+      const breeds = rows(
+        `SELECT p.category_id,COALESCE(NULLIF(TRIM(p.breed),''),'待补充品种') AS name,
+                COUNT(*) AS total,
+                SUM(CASE WHEN p.status='published' THEN 1 ELSE 0 END) AS published,
+                SUM(COALESCE((SELECT SUM(i.available_stock) FROM inventory i WHERE i.pet_id=p.id),0)) AS available_stock
+         FROM pets p WHERE p.status<>'deleted'
+         GROUP BY p.category_id,COALESCE(NULLIF(TRIM(p.breed),''),'待补充品种')
+         ORDER BY p.category_id,total DESC,name`,
+      );
+      return json(res, 200, {
+        categories,
+        breeds,
+        missing_categories: categories.filter((category) => Number(category.total || 0) === 0).map((category) => category.name),
+        coverage,
+      });
+    }
+    if (path === "/api/admin/feishu/tasks" && method === "GET") {
+      const taskRows = rows(
           `SELECT t.*,
                   (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id) AS persisted_items,
                   (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.status='success') AS persisted_success,
@@ -5700,10 +5872,30 @@ const server = createServer(async (req, res) => {
                   (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.identity_status IN ('success','failed','skipped')) AS identity_processed,
                   (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.identity_status='success') AS identity_success,
                   (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.identity_status='failed') AS identity_failed,
-                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.identity_status='skipped') AS identity_skipped
+                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.identity_status='skipped') AS identity_skipped,
+                  (SELECT COALESCE(MAX(attempt_count),0) FROM feishu_sync_task_items i WHERE i.task_id=t.id) AS max_attempt_count,
+                  (SELECT COUNT(*) FROM feishu_sync_task_items i WHERE i.task_id=t.id AND i.attempt_count>1) AS retried_items
            FROM feishu_sync_tasks t ORDER BY t.id DESC`,
-        ),
       );
+      return json(res, 200, taskRows.map((task) => {
+        const total = Number(task.total || 0);
+        const processed = Number(task.processed || 0);
+        const mediaTotal = Number(task.media_total || 0);
+        const mediaProcessed = Number(task.media_processed || 0);
+        const dataPercent = total ? Math.min(100, Math.round(processed / total * 100)) : 0;
+        const mediaPercent = mediaTotal ? Math.min(100, Math.round(mediaProcessed / mediaTotal * 100)) : 0;
+        const completed = ["completed", "completed_with_warnings"].includes(task.status);
+        const overallPercent = completed ? 100 : task.status === "processing_images" ? 70 + Math.round(mediaPercent * 0.3) : Math.round(dataPercent * 0.7);
+        const heartbeatAge = task.heartbeat_at ? Date.now() - Date.parse(`${String(task.heartbeat_at).replace(" ", "T")}Z`) : null;
+        return {
+          ...task,
+          total_batches: total ? Math.ceil(total / Math.max(1, Number(task.batch_size || 100))) : 0,
+          completed_batches: processed ? Math.ceil(processed / Math.max(1, Number(task.batch_size || 100))) : 0,
+          overall_percent: Math.min(100, overallPercent),
+          heartbeat_ok: heartbeatAge == null || heartbeatAge < 120_000 || !["reading_remote", "running", "processing_images"].includes(task.status),
+        };
+      }));
+    }
     const syncAction = path.match(
       /^\/api\/admin\/feishu\/tasks\/(\d+)\/(pause|resume|retry|errors)$/,
     );
@@ -5720,33 +5912,80 @@ const server = createServer(async (req, res) => {
       const taskId = Number(syncAction[1]);
       const action = syncAction[2];
       if (action === "pause") {
+        const paused = db.prepare(
+          `UPDATE feishu_sync_tasks SET status='paused',paused_at=CURRENT_TIMESTAMP,heartbeat_at=CURRENT_TIMESTAMP
+           WHERE id=? AND status IN ('pending','reading_remote','running','processing_images')`,
+        ).run(taskId);
+        if (!paused.changes)
+          return json(res, 409, { message: "Only an active synchronization task can be paused" });
         const state = syncQueues.get(taskId);
         if (state) state.paused = true;
-        db.prepare(
-          "UPDATE feishu_sync_tasks SET status='paused',paused_at=CURRENT_TIMESTAMP WHERE id=?",
-        ).run(taskId);
       }
       if (action === "resume" || action === "retry") {
-        const storedItems = persistedSyncItems(taskId);
-        const items = syncQueues.get(taskId)?.items || storedItems;
-        if (!items.length)
+        const task = db.prepare("SELECT * FROM feishu_sync_tasks WHERE id=?").get(taskId);
+        if (!task) return json(res, 404, { message: "同步任务不存在" });
+        if (!hasPersistedSyncItems(taskId))
           return json(res, 409, { message: "同步任务缺少持久化数据，请重新创建同步预览" });
-        syncQueues.set(taskId, { items, paused: false });
+        syncQueues.set(taskId, { paused: false });
         if (action === "retry") {
+          db.exec("BEGIN");
+          try {
           db.prepare(
-            `UPDATE feishu_sync_task_items SET status='pending',error=NULL,processed_at=NULL,pet_id=NULL,
+            `UPDATE feishu_sync_task_items SET status='pending',error=NULL,processed_at=NULL,
              identity_status='pending',identity_error=NULL,identity_processed_at=NULL,
-             showcase_status='not_required',showcase_error=NULL,showcase_processed_at=NULL WHERE task_id=?`,
+             showcase_status='not_required',showcase_error=NULL,showcase_processed_at=NULL
+             WHERE task_id=? AND status='failed'`,
           ).run(taskId);
           db.prepare(
-            `UPDATE feishu_sync_tasks SET status='running',processed=0,success=0,failed=0,error=NULL,paused_at=NULL,
-             retry_count=retry_count+1,finished_at=NULL,media_total=0,media_processed=0,media_success=0,media_failed=0,media_status='pending' WHERE id=?`,
+            `UPDATE feishu_sync_task_items SET showcase_status='pending',showcase_error=NULL,showcase_processed_at=NULL
+             WHERE task_id=? AND status='success' AND showcase_status='failed'`,
           ).run(taskId);
-        } else
+          const counts = db.prepare(
+            `SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN showcase_status<>'not_required' THEN 1 ELSE 0 END) AS media_total,
+                    SUM(CASE WHEN showcase_status='success' THEN 1 ELSE 0 END) AS media_success,
+                    SUM(CASE WHEN showcase_status='failed' THEN 1 ELSE 0 END) AS media_failed,
+                    SUM(CASE WHEN showcase_status='pending' THEN 1 ELSE 0 END) AS media_pending
+             FROM feishu_sync_task_items WHERE task_id=?`,
+          ).get(taskId);
+          const retryData = Number(counts.pending || 0) > 0;
+          const nextStatus = retryData ? "running" : Number(counts.media_pending || 0) > 0 ? "processing_images" : "completed";
           db.prepare(
-            "UPDATE feishu_sync_tasks SET status='running',paused_at=NULL,finished_at=NULL WHERE id=?",
-          ).run(taskId);
-        setTimeout(() => processSyncTask(taskId, items), 0);
+            `UPDATE feishu_sync_tasks SET status=?,processed=?,success=?,failed=?,error=NULL,paused_at=NULL,
+             retry_count=retry_count+1,finished_at=NULL,media_total=?,media_processed=?,media_success=?,media_failed=?,
+             media_status=?,heartbeat_at=CURRENT_TIMESTAMP,last_checkpoint_at=CURRENT_TIMESTAMP WHERE id=?`,
+          ).run(
+            nextStatus,
+            Number(counts.success || 0) + Number(counts.failed || 0),
+            Number(counts.success || 0),
+            Number(counts.failed || 0),
+            Number(counts.media_total || 0),
+            Number(counts.media_success || 0) + Number(counts.media_failed || 0),
+            Number(counts.media_success || 0),
+            Number(counts.media_failed || 0),
+            nextStatus === "processing_images" ? "running" : Number(counts.media_total || 0) ? "pending" : "not_required",
+            taskId,
+          );
+          db.exec("COMMIT");
+          } catch (error) {
+            db.exec("ROLLBACK");
+            throw error;
+          }
+        } else {
+          const hasPendingMedia = Number(db.prepare(
+            "SELECT COUNT(*) AS count FROM feishu_sync_task_items WHERE task_id=? AND showcase_status IN ('pending','processing')",
+          ).get(taskId)?.count || 0) > 0;
+          const resumeImages = Number(task.processed || 0) >= Number(task.total || 0) && hasPendingMedia;
+          db.prepare(
+            "UPDATE feishu_sync_tasks SET status=?,media_status=CASE WHEN ? THEN 'running' ELSE media_status END,paused_at=NULL,heartbeat_at=CURRENT_TIMESTAMP,finished_at=NULL WHERE id=?",
+          ).run(resumeImages ? "processing_images" : "running", resumeImages ? 1 : 0, taskId);
+        }
+        const refreshed = db.prepare("SELECT status FROM feishu_sync_tasks WHERE id=?").get(taskId);
+        if (refreshed?.status === "processing_images") setTimeout(() => processShowcaseTask(taskId), 0);
+        else if (refreshed?.status === "running") setTimeout(() => processSyncTask(taskId), 0);
       }
       logAdmin(admin, req, action, "feishu_sync_tasks", taskId);
       return json(res, 200, { ok: true, action });
@@ -5775,19 +6014,25 @@ const server = createServer(async (req, res) => {
   }
 });
 
-for (const task of rows("SELECT id,status FROM feishu_sync_tasks WHERE status IN ('pending','running','processing_images') ORDER BY id")) {
-  const items = persistedSyncItems(task.id);
-  if (!items.length) {
+for (const task of rows("SELECT id,config_id,status FROM feishu_sync_tasks WHERE status IN ('pending','reading_remote','running','processing_images') ORDER BY id")) {
+  if (!hasPersistedSyncItems(task.id)) {
+    if (task.status === "reading_remote") {
+      const config = db.prepare("SELECT * FROM feishu_sync_configs WHERE id=?").get(task.config_id);
+      if (config) {
+        setTimeout(() => loadRemoteSyncTask(task.id, config), 0);
+        continue;
+      }
+    }
     db.prepare("UPDATE feishu_sync_tasks SET status='failed',error='服务重启后未找到持久化同步数据',finished_at=CURRENT_TIMESTAMP WHERE id=?").run(task.id);
     continue;
   }
-  syncQueues.set(task.id, { items, paused: false });
+  syncQueues.set(task.id, { paused: false });
   if (task.status === "processing_images") {
     db.prepare(
       "UPDATE feishu_sync_task_items SET showcase_status='pending' WHERE task_id=? AND showcase_status='processing'",
     ).run(task.id);
     setTimeout(() => processShowcaseTask(task.id), 0);
-  } else setTimeout(() => processSyncTask(task.id, items), 0);
+  } else setTimeout(() => processSyncTask(task.id), 0);
 }
 
 server.listen(Number(process.env.FUCHONG_TEST_PORT || process.env.PORT || 3001), () =>
